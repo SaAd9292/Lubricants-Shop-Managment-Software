@@ -91,7 +91,12 @@ class ReportService:
 
     # ---- 3. Profit Report ------------------------------------------
     def profit(self, date_from: str, date_to: str) -> dict[str, Any]:
+        # hi appends 23:59:59 so the BETWEEN range includes the whole end day
+        # (dates without a time would otherwise stop at 00:00:00 of date_to).
         lo, hi = date_from, date_to + " 23:59:59"
+        # Profit uses the cost SNAPSHOTTED on each sale line (si.unit_cost_minor),
+        # not the product's current cost — so historical profit never shifts when
+        # a product is repriced later. Gross profit = revenue - COGS per product.
         rows = self.db.query(
             """SELECT si.product_name,
                   SUM(si.qty) qty,
@@ -110,6 +115,10 @@ class ReportService:
         sales_agg = self.db.query_one(
             """SELECT COALESCE(SUM(discount_minor),0) disc, COALESCE(SUM(tax_minor),0) tax
                FROM sales WHERE status='completed' AND sale_date BETWEEN ? AND ?""", (lo, hi))
+        # Discounts and tax live on the SALES header, not the line items, so they
+        # are summed separately. Net profit subtracts whole-sale discounts from
+        # gross; tax is pass-through (collected for the govt, not income) so it is
+        # reported but NOT subtracted from profit.
         revenue = totals["revenue"]
         cost = totals["cost"]
         gross = revenue - cost
@@ -138,6 +147,9 @@ class ReportService:
     # ---- 4. Stock Report (filterable by brand / product) -----------
     def stock(self, brand_id: int | None = None,
               product_id: int | None = None) -> dict[str, Any]:
+        # Build the WHERE incrementally so the optional brand/product filters are
+        # applied only when supplied. Always starts from active products; the same
+        # clause list + params is reused for both the rows and the summary query.
         clauses, params = ["p.is_active=1"], []
         if brand_id:
             clauses.append("p.brand_id = ?")

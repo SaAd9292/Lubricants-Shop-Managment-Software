@@ -96,6 +96,10 @@ class ProductService:
     # -- writes -------------------------------------------------------
     def create(self, data: dict[str, Any], *, user_id: int | None = None) -> int:
         clean = self._validate(data, creating=True)
+        # Column names are interpolated into the SQL string, but this is safe:
+        # _validate() keeps only keys from the _EDITABLE whitelist, so no
+        # user-controlled text reaches the column list. VALUES are always bound
+        # as ? parameters, never interpolated.
         cols = ", ".join(clean)
         placeholders = ", ".join("?" for _ in clean)
         try:

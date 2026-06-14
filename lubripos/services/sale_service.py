@@ -65,6 +65,9 @@ class SaleService:
                 raise ValidationError("Discount cannot exceed the subtotal.")
             net = subtotal - discount_minor
 
+            # Read tax config LIVE at sale time, then snapshot it onto the sale
+            # row below. This keeps every historical invoice correct even if the
+            # shop later changes its GST rate, label, or turns tax off entirely.
             tax = conn.execute("SELECT * FROM tax_settings WHERE id = 1").fetchone()
             tax_enabled = bool(tax["tax_enabled"]) if tax else False
             tax_label = tax["tax_label"] if tax else "GST"
@@ -72,6 +75,9 @@ class SaleService:
             tax_inclusive = bool(tax["tax_inclusive"]) if tax else False
 
             if tax_enabled and tax_rate_bps > 0:
+                # Inclusive: the net already contains tax, so the grand total is
+                # just the net (tax_minor is the portion backed out, for reports).
+                # Exclusive: tax is added on top of the net.
                 _, tax_minor = apply_tax(net, tax_rate_bps, inclusive=tax_inclusive)
                 grand_total = net if tax_inclusive else net + tax_minor
             else:
@@ -104,6 +110,8 @@ class SaleService:
                     (ln["qty"], ln["product_id"]),
                 )
 
+        # Change is only meaningful for cash tendered; non-cash methods (Bank,
+        # EasyPaisa, JazzCash) settle the exact amount, so change is always 0.
         change_minor = max(0, amount_paid_minor - grand_total) if payment_method == "Cash" else 0
         self.audit.record(action="SALE", user_id=user_id, entity_type="sale",
                           entity_id=sale_id,
@@ -241,6 +249,11 @@ class SaleService:
         return lines
 
     def _next_invoice_no(self, conn) -> str:
+        # Invoice numbers come from a monotonic counter in app_meta ('invoice_seq')
+        # rather than the sales row id, so the shop gets clean sequential numbers
+        # (INV-000001, INV-000002, ...) with a configurable prefix. This runs
+        # INSIDE the sale transaction, so the read-increment-write is atomic and
+        # two sales can never collide on the same number (single-process app).
         prefix_row = conn.execute(
             "SELECT invoice_prefix FROM company_settings WHERE id = 1"
         ).fetchone()
