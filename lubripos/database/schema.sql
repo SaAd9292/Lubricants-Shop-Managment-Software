@@ -95,6 +95,10 @@ CREATE TABLE IF NOT EXISTS products (
                             CHECK (unit_type IN ('Piece','Bottle','Carton','Litre','Kg')),
     purchase_price_minor INTEGER NOT NULL DEFAULT 0 CHECK (purchase_price_minor >= 0),
     sale_price_minor     INTEGER NOT NULL DEFAULT 0 CHECK (sale_price_minor >= 0),
+    -- Markup over cost in basis points (2000 = 20%). When > 0, the sale price is
+    -- auto-derived as cost*(1+markup) on every purchase. 0 = manual pricing
+    -- (sale price is never auto-changed).
+    markup_bps          INTEGER NOT NULL DEFAULT 0 CHECK (markup_bps >= 0),
     stock_qty           INTEGER NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
     min_stock_level     INTEGER NOT NULL DEFAULT 0 CHECK (min_stock_level >= 0),
     is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
@@ -251,3 +255,4 @@ CREATE TRIGGER IF NOT EXISTS trg_company_updated
 BEGIN
     UPDATE company_settings SET updated_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = OLD.id;
 END;
+

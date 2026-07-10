@@ -1,7 +1,7 @@
 """Backup & restore.
 
 Backups are created with SQLite's ONLINE BACKUP API (conn.backup), so they are
-internally consistent even if taken mid-write — never a raw file copy of a live
+internally consistent even if taken mid-write -- never a raw file copy of a live
 WAL database.
 
 Backup folder resolution:
@@ -134,6 +134,35 @@ class BackupService:
         self.ctx.audit.record(action="RESTORE", user_id=user_id, entity_type="backup",
                               details={"restored_from": path, "safety_backup": safety})
         log.warning("Restored database from %s (safety backup at %s)", path, safety)
+        return safety
+
+    # -- flush / reset shop data -------------------------------------
+    # Wiped on flush (children before parents for FK safety). Users,
+    # company_settings, tax_settings, categories, brands and
+    # expense_categories are intentionally KEPT.
+    _FLUSH_TABLES = ("sale_items", "sales", "purchase_items", "purchases",
+                     "expenses", "suppliers", "products")
+
+    def flush_shop_data(self, *, user_id: int | None = None) -> str:
+        """Reset the shop to a clean state for a new business, keeping users,
+        settings, and the category/brand/expense-category lists.
+
+        A safety backup is taken FIRST so a mistaken flush is fully recoverable
+        (restore it from Backup & Restore). Deletions run in one transaction and
+        the invoice counter is reset to 1. Returns the safety-backup path.
+        """
+        safety = self.create_backup(backup_type="pre_restore", user_id=user_id)
+        with self.db.transaction() as conn:
+            for tbl in self._FLUSH_TABLES:
+                conn.execute(f"DELETE FROM {tbl}")  # names are a fixed constant
+            conn.execute("DELETE FROM audit_logs")
+            conn.execute("UPDATE app_meta SET value='0' WHERE key='invoice_seq'")
+        # record AFTER clearing so this is the first entry in the fresh log
+        self.ctx.audit.record(action="FLUSH_DATA", user_id=user_id,
+                              entity_type="database",
+                              details={"safety_backup": safety})
+        log.warning("Shop data flushed by user=%s (safety backup at %s)",
+                    user_id, safety)
         return safety
 
     # -- automatic daily backup --------------------------------------

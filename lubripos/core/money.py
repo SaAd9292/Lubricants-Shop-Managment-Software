@@ -46,5 +46,21 @@ def apply_tax(subtotal_minor: int, tax_rate_bps: int, *, inclusive: bool = False
     return subtotal_minor, int(tax.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def apply_markup(cost_minor: int, markup_bps: int, round_to_minor: int = 1) -> int:
+    """Sale price (minor units) = cost marked up by markup_bps, then rounded.
+
+    markup_bps is basis points over cost (2000 = +20%). round_to_minor is the
+    rounding step in MINOR units: pass the currency's minor_units (e.g. 100) to
+    round to the nearest whole currency unit (Rs 1). Half-up rounding.
+    """
+    if cost_minor <= 0 or markup_bps <= 0:
+        return max(0, int(cost_minor))
+    raw = Decimal(cost_minor) * (10_000 + markup_bps) / 10_000
+    step = max(1, int(round_to_minor))
+    # round raw to the nearest multiple of `step`
+    units = (raw / step).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return int(units) * step
+
+
 def _decimals(minor_units: int) -> int:
     return max(0, len(str(minor_units)) - 1)

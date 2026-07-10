@@ -5,11 +5,14 @@ from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QLabel,
-    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
+from ..ui.widgets import DataTable
 from ..controllers.report_controller import ReportController
+from .day_close_widget import DayCloseWidget
+from .report_sections_widget import SectionsWidget
 
 # (label, key, mode)  mode: day | month | range | none
 REPORTS = [
@@ -20,7 +23,7 @@ REPORTS = [
     ("Low Stock", "low_stock", "none"),
     ("Purchases", "purchases", "range"),
     ("Expenses", "expenses", "range"),
-    ("Tax", "tax", "range"),
+    ("GST / Tax", "tax", "range"),
 ]
 
 
@@ -91,11 +94,23 @@ class ReportsView(QWidget):
         self.hint.setObjectName("Muted")
         root.addWidget(self.hint)
 
-        self.table = QTableWidget(0, 0)
+        self.table = DataTable(0, 0)
+        self.table.placeholder = "Choose a report and date range, then click Generate."
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         root.addWidget(self.table, 1)
+
+        # Daily Sales uses a multi-panel "day close" grid instead of the flat
+        # table; only one of the two is visible at a time (see _render).
+        self.dayclose = DayCloseWidget()
+        self.dayclose.setVisible(False)
+        root.addWidget(self.dayclose, 1)
+
+        # Multi-section reports (e.g. Monthly Sales: by day + by product)
+        self.sections = SectionsWidget()
+        self.sections.setVisible(False)
+        root.addWidget(self.sections, 1)
 
         self.summary = QLabel("")
         self.summary.setWordWrap(True)
@@ -123,6 +138,15 @@ class ReportsView(QWidget):
     def _on_type_changed(self) -> None:
         mode = self._mode()
         key = self.type.currentData()[0]
+        # Sensible default date per mode. Day/Month reports are about a single
+        # point in time, so default to TODAY (the old code defaulted the shared
+        # 'from' field to 30 days ago, which made Daily Sales look empty because
+        # it queried a month back). Range reports keep a trailing-30-day window.
+        if mode in ("day", "month"):
+            self.date_from.setDate(QDate.currentDate())
+        elif mode == "range":
+            self.date_from.setDate(QDate.currentDate().addDays(-30))
+            self.date_to.setDate(QDate.currentDate())
         show_to = mode == "range"
         show_from = mode in ("range", "day", "month")
         self.lbl_from.setVisible(show_from)
@@ -162,9 +186,31 @@ class ReportsView(QWidget):
         for b in (self.pdf_btn, self.xlsx_btn, self.print_btn):
             b.setEnabled(True)
 
+    def _show_only(self, widget) -> None:
+        """Show one render surface (table / dayclose / sections) and hide the
+        rest, including the flat-table summary label."""
+        for w in (self.table, self.summary, self.dayclose, self.sections):
+            w.setVisible(w is widget)
+
     def _render(self, report: dict) -> None:
+        # Route by layout: day-close grid, stacked sections, or flat table.
+        layout = report.get("layout")
+        if layout == "day_close":
+            self._show_only(self.dayclose)
+            self.dayclose.render(report, self.controller.fmt)
+            return
+        if layout == "sections":
+            self._show_only(self.sections)
+            self.sections.render(report, self.controller.fmt)
+            return
+        self.table.setVisible(True)
+        self.summary.setVisible(True)
+        self.dayclose.setVisible(False)
+        self.sections.setVisible(False)
         cols = report["columns"]
         rows = report["rows"]
+        # empty-state text shown by DataTable when a report returns no rows
+        self.table.placeholder = "" if rows else "No data for the selected range."
         self.table.clear()
         self.table.setColumnCount(len(cols))
         self.table.setHorizontalHeaderLabels([c["label"] for c in cols])

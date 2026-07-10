@@ -32,7 +32,7 @@ _SORT_COLUMNS = {
 
 _EDITABLE = {
     "barcode", "name", "brand_id", "category_id", "unit_type",
-    "purchase_price_minor", "sale_price_minor", "stock_qty",
+    "purchase_price_minor", "sale_price_minor", "markup_bps", "stock_qty",
     "min_stock_level",
 }
 
@@ -144,6 +144,29 @@ class ProductService:
                           entity_id=product_id, details={"is_active": bool(active)})
         log.info("Set product id=%s active=%s", product_id, active)
 
+    def adjust_stock(self, product_id: int, new_qty: int, reason: str,
+                     *, user_id: int | None = None) -> int:
+        """Set a product's stock to a counted/corrected value (stock-take).
+
+        Unlike purchases/sales this is a manual override, so it records the
+        before/after and a reason to the audit log for accountability.
+        """
+        product = self.get(product_id)  # raises NotFoundError if missing
+        new_qty = int(new_qty)
+        if new_qty < 0:
+            raise ValidationError("Stock quantity cannot be negative.")
+        old_qty = product["stock_qty"]
+        self.db.execute(
+            "UPDATE products SET stock_qty = ? WHERE id = ?", (new_qty, product_id))
+        self.audit.record(action="ADJUST_STOCK", user_id=user_id, entity_type="product",
+                          entity_id=product_id,
+                          details={"from": old_qty, "to": new_qty,
+                                   "delta": new_qty - old_qty,
+                                   "reason": (reason or "").strip()})
+        log.info("Adjusted stock product id=%s %s->%s (%s)",
+                 product_id, old_qty, new_qty, reason)
+        return new_qty
+
     # -- helpers ------------------------------------------------------
     def _build_where(self, search, category_id, brand_id, only_active, low_stock_only):
         clauses: list[str] = []
@@ -183,6 +206,8 @@ class ProductService:
         for money_field in ("purchase_price_minor", "sale_price_minor"):
             if money_field in clean and int(clean[money_field]) < 0:
                 raise ValidationError("Prices cannot be negative.")
+        if "markup_bps" in clean and int(clean["markup_bps"]) < 0:
+            raise ValidationError("Markup cannot be negative.")
         for qty_field in ("stock_qty", "min_stock_level"):
             if qty_field in clean and int(clean[qty_field]) < 0:
                 raise ValidationError("Quantities cannot be negative.")

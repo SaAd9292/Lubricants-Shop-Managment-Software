@@ -141,3 +141,25 @@ class UserService:
         self.audit.record(action="UPDATE", user_id=actor_id, entity_type="user",
                           entity_id=user_id, details={"is_active": bool(active)})
         log.info("Set user_id=%s active=%s", user_id, active)
+
+    def delete_user(self, user_id: int, *, actor_id: int | None = None) -> None:
+        """Permanently delete a user. Referentially safe: every FK to users is
+        ON DELETE SET NULL and sales keep a cashier_name snapshot, so invoice
+        history stays intact (only the live account link is removed).
+
+        Guards mirror deactivation: you cannot delete your own account, nor the
+        last active admin (which would lock everyone out). For a user with
+        history, deactivating is usually preferable so the audit link survives.
+        """
+        user = self.get(user_id)  # raises NotFound if missing
+        if actor_id == user_id:
+            raise ValidationError("You cannot delete your own account.")
+        if user["role"] == "admin" and self._active_admin_count(exclude_id=user_id) == 0:
+            raise ValidationError("Cannot delete the last active admin account.")
+        # record BEFORE the row goes away (details keep the username for the log)
+        self.audit.record(action="DELETE", user_id=actor_id, entity_type="user",
+                          entity_id=user_id,
+                          details={"username": user["username"], "role": user["role"]})
+        self.db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        log.warning("Deleted user_id=%s (%s) by actor=%s",
+                    user_id, user["username"], actor_id)

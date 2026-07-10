@@ -51,9 +51,7 @@ class ExpensesView(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda: self._debounce.start())
         self.f_category = QComboBox()
-        self.f_category.addItem("All categories", None)
-        for c in self.controller.categories():
-            self.f_category.addItem(c["name"], c["name"])
+        self._fill_categories()
         self.f_category.currentIndexChanged.connect(self._reset_and_reload)
         filters.addWidget(self.search, 1)
         filters.addWidget(self.f_category)
@@ -96,6 +94,12 @@ class ExpensesView(QWidget):
         footer.addWidget(self.page_label)
         footer.addWidget(self.next_btn)
         root.addLayout(footer)
+
+    def _fill_categories(self) -> None:
+        self.f_category.clear()
+        self.f_category.addItem("All categories", None)
+        for c in self.controller.categories():
+            self.f_category.addItem(c["name"], c["name"])
 
     def _reset_and_reload(self) -> None:
         self._page = 0
@@ -181,10 +185,7 @@ class ExpensesView(QWidget):
     def _refresh_filter_and_reload(self) -> None:
         cur = self.f_category.currentData()
         self.f_category.blockSignals(True)
-        self.f_category.clear()
-        self.f_category.addItem("All categories", None)
-        for c in self.controller.categories():
-            self.f_category.addItem(c["name"], c["name"])
+        self._fill_categories()
         idx = self.f_category.findData(cur)
         self.f_category.setCurrentIndex(idx if idx >= 0 else 0)
         self.f_category.blockSignals(False)

@@ -40,6 +40,10 @@ class UserController:
         return self._guarded(lambda uid: self.users.set_active(
             user_id, active, actor_id=uid) or user_id)
 
+    def delete(self, user_id):
+        return self._guarded(lambda uid: self.users.delete_user(
+            user_id, actor_id=uid) or user_id)
+
     def _guarded(self, op):
         try:
             user = current_session.require_role("admin")

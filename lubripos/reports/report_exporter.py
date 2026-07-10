@@ -42,6 +42,98 @@ def _currency(company: dict) -> tuple[str, int, int]:
     return symbol, mu, decimals
 
 
+_METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
+
+
+def _box_style():
+    return TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.4, LINE),
+        ("INNERGRID", (0, 0), (-1, -1), 0.3, LINE),
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 7),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+    ])
+
+
+def _multi_pdf(story, report, symbol, mu, cell, with_cards):
+    """Append a multi-section report to a story. with_cards=True adds the
+    day-close KPI + payment strip; with_cards=False appends a summary block."""
+    def money(v):
+        return format_money(int(v or 0), symbol, mu)
+
+    hsec = ParagraphStyle("sec", parent=cell, fontSize=11, leading=14,
+                          spaceBefore=6, spaceAfter=2)
+
+    if with_cards:
+        kpi_cells = []
+        for s in report.get("summary", []):
+            val = money(s["value"]) if s.get("money") else str(s["value"])
+            kpi_cells.append(Paragraph(f"<b>{s['label']}</b><br/>{val}", cell))
+        if kpi_cells:
+            kt = Table([kpi_cells], hAlign="LEFT")
+            kt.setStyle(_box_style())
+            story.append(kt)
+            story.append(Spacer(1, 6))
+
+        pays = report.get("payments", {})
+        pcells = [Paragraph(f"<b>{m}</b><br/>{money(pays.get(m, 0))}", cell) for m in _METHODS]
+        pt = Table([pcells], hAlign="LEFT")
+        pt.setStyle(_box_style())
+        story.append(pt)
+        story.append(Spacer(1, 10))
+
+    for sec in report.get("sections", []):
+        story.append(Paragraph(f"<b>{sec['name']}</b>", hsec))
+        cols = sec["columns"]
+        data = [[Paragraph(f"<b>{c['label']}</b>", cell) for c in cols]]
+        for row in sec["rows"]:
+            line = []
+            for c in cols:
+                val = row.get(c["key"])
+                txt = money(val) if c.get("money") else ("" if val is None else str(val))
+                line.append(Paragraph(txt, cell))
+            data.append(line)
+        if len(data) == 1:
+            data.append([Paragraph("<i>None.</i>", cell)]
+                        + [Paragraph("", cell)] * (len(cols) - 1))
+        total_line = ([Paragraph(f"<b>{sec['total_label']}</b>", cell)]
+                      + [Paragraph("", cell)] * (len(cols) - 2)
+                      + [Paragraph(f"<b>{money(sec['total'])}</b>", cell)])
+        data.append(total_line)
+        aligns = [c.get("align", "left").upper() for c in cols]
+        tbl = Table(data, repeatRows=1, hAlign="LEFT")
+        style = [
+            ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f2f2f2")]),
+            ("LINEABOVE", (0, -1), (-1, -1), 0.5, LINE),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]
+        for idx, a in enumerate(aligns):
+            style.append(("ALIGN", (idx, 0), (idx, -1), a))
+        tbl.setStyle(TableStyle(style))
+        story.append(tbl)
+        story.append(Spacer(1, 8))
+
+    if not with_cards:
+        summ_rows = []
+        for s in report.get("summary", []):
+            v = money(s["value"]) if s.get("money") else str(s["value"])
+            summ_rows.append([Paragraph(f"<b>{s['label']}</b>", cell), Paragraph(v, cell)])
+        if summ_rows:
+            summ = Table(summ_rows, colWidths=[70 * mm, 50 * mm], hAlign="RIGHT")
+            summ.setStyle(TableStyle([
+                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+                ("LINEABOVE", (0, 0), (-1, 0), 0.5, LINE),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(Spacer(1, 6))
+            story.append(summ)
+
+
 # ===================== PDF =====================
 def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | Path) -> str:
     output_path = Path(output_path)
@@ -68,6 +160,12 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
                   f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}", p_muted),
         Spacer(1, 8),
     ]
+
+    if report.get("layout") in ("day_close", "sections"):
+        _multi_pdf(story, report, symbol, mu, cell,
+                   with_cards=report.get("layout") == "day_close")
+        doc.build(story)
+        return str(output_path)
 
     cols = report["columns"]
     header = [Paragraph(f"<b>{c['label']}</b>", cell) for c in cols]
@@ -123,6 +221,81 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
     return str(output_path)
 
 
+def _day_close_xlsx(report, company, output_path, wb, ws, symbol, mu, money_fmt, with_payments=True):
+    """Write the day-close report (summary, payment split, three sections)
+    into a worksheet and save."""
+    bold = Font(bold=True)
+    title_font = Font(bold=True, size=14)
+    header_fill = PatternFill("solid", fgColor="E6E6E6")
+    header_font = Font(bold=True, color="000000")
+
+    ws.cell(1, 1, company.get("shop_name") or "Penguix").font = title_font
+    ws.cell(2, 1, report["title"]).font = bold
+    ws.cell(3, 1, report.get("subtitle", "")).font = Font(italic=True, color="64748B")
+
+    r = 5
+    ws.cell(r, 1, "Summary").font = bold
+    r += 1
+    for s in report.get("summary", []):
+        ws.cell(r, 1, s["label"]).font = bold
+        c = ws.cell(r, 2)
+        if s.get("money"):
+            c.value = float(Decimal(int(s["value"])) / mu)
+            c.number_format = money_fmt
+        else:
+            c.value = s["value"]
+        r += 1
+
+    if with_payments:
+        r += 1
+        ws.cell(r, 1, "Money received by method").font = bold
+        r += 1
+        pays = report.get("payments", {})
+        for m in ("Cash", "Bank", "EasyPaisa", "JazzCash"):
+            ws.cell(r, 1, m)
+            c = ws.cell(r, 2)
+            c.value = float(Decimal(int(pays.get(m, 0))) / mu)
+            c.number_format = money_fmt
+            r += 1
+
+    r += 2
+    for sec in report.get("sections", []):
+        ws.cell(r, 1, sec["name"]).font = bold
+        r += 1
+        cols = sec["columns"]
+        for j, c in enumerate(cols, start=1):
+            cell = ws.cell(r, j, c["label"] + (f" ({symbol})" if c.get("money") else ""))
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="right" if c.get("align") == "right" else "left")
+        r += 1
+        for row in sec["rows"]:
+            for j, c in enumerate(cols, start=1):
+                val = row.get(c["key"])
+                cell = ws.cell(r, j)
+                if c.get("money"):
+                    cell.value = float(Decimal(int(val or 0)) / mu)
+                    cell.number_format = money_fmt
+                    cell.alignment = Alignment(horizontal="right")
+                else:
+                    cell.value = "" if val is None else val
+                    if c.get("align") == "right":
+                        cell.alignment = Alignment(horizontal="right")
+            r += 1
+        ws.cell(r, 1, sec["total_label"]).font = bold
+        tc = ws.cell(r, len(cols))
+        tc.value = float(Decimal(int(sec["total"])) / mu)
+        tc.number_format = money_fmt
+        tc.font = bold
+        r += 2
+
+    for j in range(1, 6):
+        ws.column_dimensions[get_column_letter(j)].width = 26 if j == 1 else 15
+    wb.save(output_path)
+    return str(output_path)
+
+
+
 # ===================== Excel =====================
 def to_xlsx(report: dict[str, Any], company: dict[str, Any], output_path: str | Path) -> str:
     output_path = Path(output_path)
@@ -133,6 +306,10 @@ def to_xlsx(report: dict[str, Any], company: dict[str, Any], output_path: str | 
     wb = Workbook()
     ws = wb.active
     ws.title = report["key"][:31]
+
+    if report.get("layout") in ("day_close", "sections"):
+        return _day_close_xlsx(report, company, output_path, wb, ws, symbol, mu, money_fmt,
+                               with_payments=report.get("layout") == "day_close")
 
     cols = report["columns"]
     ncols = len(cols)

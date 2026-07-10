@@ -97,6 +97,25 @@ def run(db):
     except ValidationError:
         check(True, "cannot deactivate your own account")
 
+    print("\n[users] delete guards + success")
+    # both admin + uid are active admins here
+    try:
+        users.delete_user(admin, actor_id=admin)
+        check(False, "self-delete should raise")
+    except ValidationError:
+        check(True, "cannot delete your own account")
+    # demote uid so 'admin' becomes the only active admin, then deleting it must fail
+    users.update_user(uid, role="cashier", actor_id=admin)
+    try:
+        users.delete_user(admin, actor_id=uid)
+        check(False, "deleting last admin should raise")
+    except ValidationError:
+        check(True, "cannot delete the last active admin")
+    # deleting an ordinary user succeeds and removes the row
+    users.delete_user(uid, actor_id=admin)
+    check(db.query_one("SELECT id FROM users WHERE id=?", (uid,)) is None,
+          "deleted user row is gone")
+
 
 def main():
     with tempfile.TemporaryDirectory() as tmp:

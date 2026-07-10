@@ -30,8 +30,9 @@ class _Card(QFrame):
         self._title = QLabel(title)
         self._title.setObjectName("Muted")
         self._value = QLabel("—")
-        color = ACCENT if accent else "palette(text)"
-        self._value.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {color};")
+        self._default_color = ACCENT if accent else "palette(text)"
+        self._value.setStyleSheet(
+            f"font-size: 24px; font-weight: 800; color: {self._default_color};")
         self._hint = QLabel("")
         self._hint.setObjectName("Muted")
         self._hint.setStyleSheet("font-size: 11px;")
@@ -39,9 +40,11 @@ class _Card(QFrame):
         lay.addWidget(self._value)
         lay.addWidget(self._hint)
 
-    def set_value(self, text: str, hint: str = "") -> None:
+    def set_value(self, text: str, hint: str = "", color: str | None = None) -> None:
         self._value.setText(text)
         self._hint.setText(hint)
+        c = color or self._default_color
+        self._value.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {c};")
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if self.nav_key and self.on_click and e.button() == Qt.LeftButton:
@@ -116,8 +119,8 @@ class DashboardView(QWidget):
         nav = self.navigate
         grid = QGridLayout()
         grid.setSpacing(16)
-        self.card_sales = _Card("Today's Sales", "sales", nav, accent=True)
-        self.card_profit = _Card("Today's Profit", "reports", nav, accent=True)
+        self.card_sales = _Card("Today's Sales", "sales", nav)
+        self.card_profit = _Card("Today's Profit", "reports", nav)
         self.card_expenses = _Card("Today's Expenses", "expenses", nav)
         self.card_stock = _Card("Total Stock Value", "products", nav)
         self.card_low = _Card("Low Stock Alerts", "products", nav)
@@ -150,7 +153,9 @@ class DashboardView(QWidget):
         self.card_profit.set_value(m(s["today_profit_minor"]), "gross, today")
         self.card_expenses.set_value(m(s["today_expenses_minor"]), "today")
         self.card_stock.set_value(m(s["stock_value_minor"]), "at cost")
-        self.card_low.set_value(str(s["low_stock_count"]), "at/below minimum")
+        low_n = s["low_stock_count"]
+        self.card_low.set_value(str(low_n), "at/below minimum",
+                                color="#b45309" if low_n else None)
         self.card_products.set_value(str(s["product_count"]), "active")
 
         sales = self.svc.recent_sales(6)

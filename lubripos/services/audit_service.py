@@ -44,3 +44,28 @@ class AuditService:
             )
         except Exception:  # auditing must never break the primary action
             log.exception("Failed to write audit log for action=%s", action)
+
+    def list_logs(self, *, search: str = "", action: str | None = None,
+                  limit: int = 100, offset: int = 0) -> dict[str, Any]:
+        """Read the audit trail (newest first), with optional text/action filter."""
+        clauses, params = [], []
+        if search:
+            like = f"%{search.strip()}%"
+            clauses.append("(a.username LIKE ? OR a.action LIKE ? OR a.entity_type LIKE ?)")
+            params += [like, like, like]
+        if action:
+            clauses.append("a.action = ?")
+            params.append(action)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        total = self.db.query_one(
+            f"SELECT COUNT(*) AS n FROM audit_logs a {where}", tuple(params))["n"]
+        rows = self.db.query(
+            f"""SELECT a.*, COALESCE(a.username, u.username) AS who
+                FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
+                {where} ORDER BY a.id DESC LIMIT ? OFFSET ?""",
+            (*params, int(limit), int(offset)))
+        return {"rows": [dict(r) for r in rows], "total": total}
+
+    def distinct_actions(self) -> list[str]:
+        rows = self.db.query("SELECT DISTINCT action FROM audit_logs ORDER BY action")
+        return [r["action"] for r in rows]

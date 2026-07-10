@@ -1,4 +1,4 @@
-"""Add / Edit expense dialog."""
+"""Add / Edit expense dialog (fast-entry: auto-focus, Enter saves, add-another)."""
 from __future__ import annotations
 
 from decimal import Decimal
@@ -20,12 +20,14 @@ class ExpenseEditDialog(QDialog):
         self.expense_id = expense_id
         self._minor_units = controller.currency()[1]
         self._decimals = max(0, len(str(self._minor_units)) - 1)
+        self._saved_any = False
         self.setWindowTitle("Edit Expense" if expense_id else "Add Expense")
         self.setMinimumWidth(420)
         self._build_ui()
         self._load_categories()
         if expense_id:
             self._load()
+        self.amount.setFocus()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -63,13 +65,19 @@ class ExpenseEditDialog(QDialog):
         root.addLayout(form)
 
         actions = QHBoxLayout()
-        actions.addStretch(1)
         cancel = QPushButton("Cancel")
         cancel.setObjectName("Secondary")
-        cancel.clicked.connect(self.reject)
-        save = QPushButton("Save")
-        save.clicked.connect(self._save)
+        cancel.clicked.connect(self._close)
         actions.addWidget(cancel)
+        actions.addStretch(1)
+        if self.expense_id is None:
+            add_more = QPushButton("Save && add another")
+            add_more.setObjectName("Secondary")
+            add_more.clicked.connect(lambda: self._save(add_another=True))
+            actions.addWidget(add_more)
+        save = QPushButton("Save")
+        save.setDefault(True)
+        save.clicked.connect(lambda: self._save())
         actions.addWidget(save)
         root.addLayout(actions)
 
@@ -103,7 +111,7 @@ class ExpenseEditDialog(QDialog):
         self.amount.setValue(float(Decimal(e["amount_minor"]) / self._minor_units))
         self.description.setText(e.get("description") or "")
 
-    def _save(self) -> None:
+    def _save(self, add_another: bool = False) -> None:
         if not self.category.currentText().strip():
             QMessageBox.warning(self, "Required", "Please choose a category.")
             return
@@ -117,7 +125,16 @@ class ExpenseEditDialog(QDialog):
             "description": self.description.text().strip(),
         }
         ok, msg, _ = self.controller.save(form, self.expense_id)
-        if ok:
-            self.accept()
-        else:
+        if not ok:
             QMessageBox.warning(self, "Could not save", msg)
+            return
+        if add_another:
+            self._saved_any = True
+            self.amount.setValue(0)
+            self.description.clear()
+            self.amount.setFocus()
+        else:
+            self.accept()
+
+    def _close(self) -> None:
+        self.accept() if self._saved_any else self.reject()

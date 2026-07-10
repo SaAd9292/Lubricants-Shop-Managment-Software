@@ -12,12 +12,13 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 3
+CURRENT_VERSION = 4
 
 
 def run_migrations(db: Database) -> None:
     _migration_2_drop_product_image(db)
     _migration_3_relax_backup_type(db)
+    _migration_4_add_product_markup(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -74,3 +75,23 @@ def _migration_3_relax_backup_type(db: Database) -> None:
         """
     )
     log.info("Migration: relaxed backups.backup_type to allow 'pre_restore'")
+
+
+def _migration_4_add_product_markup(db: Database) -> None:
+    """v4: products.markup_bps (markup-over-cost pricing).
+
+    Adds the column, then BACK-FILLS each existing product's implied markup from
+    its current sale/cost so prices don't change on the first purchase after the
+    upgrade. Products with no cost, or priced at/below cost, keep markup 0 (which
+    means 'manual price -- never auto-derived').
+    """
+    if _column_exists(db, "products", "markup_bps"):
+        return
+    db.execute(
+        "ALTER TABLE products ADD COLUMN markup_bps INTEGER NOT NULL DEFAULT 0")
+    db.execute(
+        "UPDATE products SET markup_bps = CAST(ROUND("
+        "  (sale_price_minor - purchase_price_minor) * 10000.0 / purchase_price_minor"
+        ") AS INTEGER) "
+        "WHERE purchase_price_minor > 0 AND sale_price_minor > purchase_price_minor")
+    log.info("Migration: added products.markup_bps and back-filled implied markup")

@@ -3,13 +3,17 @@
 Editing shop_name here changes the app title, login screen, and every
 invoice automatically. Nothing about the shop is hardcoded.
 Admin-only (enforced by the main window's menu and re-checked here).
+
+The Danger Zone at the bottom flushes all shop data (products, suppliers,
+purchases, sales, expenses, audit log) for a fresh start, keeping users,
+settings and the category/brand lists — with an automatic safety backup first.
 """
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QVBoxLayout, QWidget,
+    QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+    QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -94,6 +98,28 @@ class SettingsView(QWidget):
         tax_form.addRow("Tax rate", self.tax_rate)
         tax_form.addRow("", self.tax_inclusive)
         col.addWidget(tax_box)
+
+        # --- Danger zone ---
+        danger = QGroupBox("Danger Zone")
+        d_lay = QVBoxLayout(danger)
+        warn = QLabel(
+            "Flush all shop data for a fresh start. Products, suppliers, "
+            "purchases, sales, expenses and the audit log are permanently "
+            "deleted, and the invoice number resets to 1. Users, settings, and "
+            "your category/brand lists are KEPT. A safety backup is taken first "
+            "so this can be undone from Backup & Restore.")
+        warn.setWordWrap(True)
+        warn.setObjectName("Muted")
+        d_lay.addWidget(warn)
+        flush_row = QHBoxLayout()
+        flush_btn = QPushButton("Flush all data…")
+        flush_btn.setObjectName("Danger")
+        flush_btn.clicked.connect(self._flush)
+        flush_row.addWidget(flush_btn)
+        flush_row.addStretch(1)
+        d_lay.addLayout(flush_row)
+        col.addWidget(danger)
+
         col.addStretch(1)
 
         # --- Actions ---
@@ -157,5 +183,32 @@ class SettingsView(QWidget):
         }, user_id=uid)
 
         QMessageBox.information(self, "Saved", "Settings updated.")
+        if self._on_saved:
+            self._on_saved()
+
+    # -- danger zone --------------------------------------------------
+    def _flush(self) -> None:
+        text, ok = QInputDialog.getText(
+            self, "Flush all data",
+            "This permanently deletes all products, suppliers, purchases, sales, "
+            "expenses and the audit log.\n\nUsers, settings, and your category / "
+            "brand lists are kept, and a safety backup is taken first.\n\n"
+            "Type FLUSH to confirm:")
+        if not ok or text.strip().upper() != "FLUSH":
+            return
+        try:
+            user = current_session.require_role("admin")
+        except Exception as exc:
+            QMessageBox.warning(self, "Not allowed", str(exc))
+            return
+        try:
+            safety = self.ctx.backup.flush_shop_data(user_id=user.id)
+        except Exception as exc:
+            QMessageBox.warning(self, "Flush failed", f"Could not flush data: {exc}")
+            return
+        QMessageBox.information(
+            self, "Data flushed",
+            "All shop data was cleared. A safety backup was saved to:\n"
+            f"{safety}\n\nPlease restart Penguix to load the clean state.")
         if self._on_saved:
             self._on_saved()

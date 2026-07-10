@@ -21,51 +21,113 @@ class ReportService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    # ---- 1. Daily Sales Report -------------------------------------
+    # ---- 1. Daily Sales Report (day-close grid) --------------------
     def daily_sales(self, day: str) -> dict[str, Any]:
+        """End-of-day close sheet. Returns a multi-section (layout='day_close')
+        report: every sale LINE (each sale on its own row), the day's expenses,
+        and the money received split BY PAYMENT METHOD (cash / bank / EasyPaisa
+        / JazzCash), plus an overall summary. Rendered as a grid on screen and
+        as a one-page sheet in PDF/Excel."""
         like = f"{day}%"
-        rows = self.db.query(
-            """SELECT s.invoice_no, substr(s.sale_date,12,5) AS time, s.cashier_name,
-                  (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id=s.id) AS items,
-                  s.subtotal_minor, s.discount_minor, s.tax_minor, s.grand_total_minor
-               FROM sales s WHERE s.status='completed' AND s.sale_date LIKE ?
-               ORDER BY s.id""", (like,))
-        data = [dict(r) for r in rows]
+
+        # -- section 1: every sale LINE (each sale on its own row, even when
+        #    the same product is sold across several invoices) --
+        line_rows = [dict(r) for r in self.db.query(
+            """SELECT s.invoice_no AS invoice, substr(s.sale_date,12,5) AS time,
+                  si.product_name AS product, si.qty AS qty,
+                  si.unit_price_minor AS price, si.line_total_minor AS amount
+               FROM sale_items si JOIN sales s ON s.id = si.sale_id
+               WHERE s.status='completed' AND s.sale_date LIKE ?
+               ORDER BY s.id, si.id""", (like,))]
+        items_subtotal = sum(r["amount"] for r in line_rows)
+
+        # -- section 2: expenses for the day --
+        exp_rows = [dict(r) for r in self.db.query(
+            """SELECT category, COALESCE(description, '') AS description,
+                  amount_minor AS amount
+               FROM expenses WHERE expense_date LIKE ?
+               ORDER BY amount_minor DESC""", (like,))]
+        expense_total = sum(r["amount"] for r in exp_rows)
+
+        # -- section 3: money received by payment method --
+        pay_rows = [dict(r) for r in self.db.query(
+            """SELECT payment_method AS method, COUNT(*) AS sales,
+                  SUM(grand_total_minor) AS amount
+               FROM sales WHERE status='completed' AND sale_date LIKE ?
+               GROUP BY payment_method ORDER BY amount DESC""", (like,))]
+
+        # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
             """SELECT COUNT(*) n, COALESCE(SUM(subtotal_minor),0) sub,
                   COALESCE(SUM(discount_minor),0) disc, COALESCE(SUM(tax_minor),0) tax,
                   COALESCE(SUM(grand_total_minor),0) total
                FROM sales WHERE status='completed' AND sale_date LIKE ?""", (like,))
+        gross = agg["total"]
+        net = gross - expense_total
+
+        # per-method map so the UI can show a card per channel even at zero
+        by_method = {r["method"]: r["amount"] for r in pay_rows}
+
         return {
-            "key": "daily_sales", "title": "Daily Sales Report", "subtitle": day,
+            "key": "daily_sales", "title": "Daily Sales Report (Day Close)",
+            "subtitle": day, "layout": "day_close",
+            # generic fallback (sales-by-product) so any single-table consumer
+            # still works; the day_close renderer/exporter use `sections`.
             "columns": [
-                _col("invoice_no", "Invoice"), _col("time", "Time"),
-                _col("cashier_name", "Cashier"), _col("items", "Items", "right"),
-                _col("subtotal_minor", "Subtotal", "right", True),
-                _col("discount_minor", "Discount", "right", True),
-                _col("tax_minor", "Tax", "right", True),
-                _col("grand_total_minor", "Total", "right", True),
+                _col("invoice", "Invoice"), _col("time", "Time"),
+                _col("product", "Product"), _col("qty", "Qty", "right"),
+                _col("price", "Price", "right", True),
+                _col("amount", "Amount", "right", True),
             ],
-            "rows": data,
+            "rows": line_rows,
+            "sections": [
+                {"name": "Sales",
+                 "columns": [_col("invoice", "Invoice"), _col("time", "Time"),
+                             _col("product", "Product"), _col("qty", "Qty", "right"),
+                             _col("price", "Price", "right", True),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": line_rows,
+                 "total_label": "Items subtotal", "total": items_subtotal},
+                {"name": "Expenses",
+                 "columns": [_col("category", "Category"), _col("description", "Description"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": exp_rows,
+                 "total_label": "Total expenses", "total": expense_total},
+                {"name": "Money received",
+                 "columns": [_col("method", "Method"), _col("sales", "Sales", "right"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": pay_rows,
+                 "total_label": "Total received", "total": gross},
+            ],
+            "payments": by_method,
             "summary": [
-                {"label": "Number of sales", "value": agg["n"], "money": False},
-                {"label": "Subtotal", "value": agg["sub"], "money": True},
+                {"label": "Invoices", "value": agg["n"], "money": False},
+                {"label": "Gross sales", "value": gross, "money": True},
                 {"label": "Discounts", "value": agg["disc"], "money": True},
-                {"label": "Tax", "value": agg["tax"], "money": True},
-                {"label": "Grand Total", "value": agg["total"], "money": True},
+                {"label": "Tax collected", "value": agg["tax"], "money": True},
+                {"label": "Expenses", "value": expense_total, "money": True},
+                {"label": "Net (sales - expenses)", "value": net, "money": True},
             ],
         }
 
-    # ---- 2. Monthly Sales Report -----------------------------------
+    # ---- 2. Monthly Sales Report (by day + by product) -------------
     def monthly_sales(self, year: int, month: int) -> dict[str, Any]:
+        """Multi-section (layout='sections'): a per-DAY summary plus a per-
+        PRODUCT breakdown for the month, sharing one overall summary."""
         like = f"{year:04d}-{month:02d}%"
-        rows = self.db.query(
+        day_rows = [dict(r) for r in self.db.query(
             """SELECT substr(sale_date,1,10) AS day, COUNT(*) AS sales,
                   SUM(subtotal_minor) sub, SUM(discount_minor) disc,
                   SUM(tax_minor) tax, SUM(grand_total_minor) total
                FROM sales WHERE status='completed' AND sale_date LIKE ?
-               GROUP BY day ORDER BY day""", (like,))
-        data = [dict(r) for r in rows]
+               GROUP BY day ORDER BY day""", (like,))]
+        prod_rows = [dict(r) for r in self.db.query(
+            """SELECT si.product_name AS product, SUM(si.qty) AS qty,
+                  SUM(si.line_total_minor) AS revenue
+               FROM sale_items si JOIN sales s ON s.id = si.sale_id
+               WHERE s.status='completed' AND s.sale_date LIKE ?
+               GROUP BY si.product_name ORDER BY revenue DESC""", (like,))]
+        items_subtotal = sum(r["revenue"] for r in prod_rows)
         agg = self.db.query_one(
             """SELECT COUNT(*) n, COALESCE(SUM(subtotal_minor),0) sub,
                   COALESCE(SUM(discount_minor),0) disc, COALESCE(SUM(tax_minor),0) tax,
@@ -73,13 +135,30 @@ class ReportService:
                FROM sales WHERE status='completed' AND sale_date LIKE ?""", (like,))
         label = f"{calendar.month_name[month]} {year}"
         return {
-            "key": "monthly_sales", "title": "Monthly Sales Report", "subtitle": label,
+            "key": "monthly_sales", "title": "Monthly Sales Report",
+            "subtitle": label, "layout": "sections",
+            # generic fallback = the per-day table
             "columns": [
                 _col("day", "Date"), _col("sales", "Sales", "right"),
                 _col("sub", "Subtotal", "right", True), _col("disc", "Discount", "right", True),
                 _col("tax", "Tax", "right", True), _col("total", "Total", "right", True),
             ],
-            "rows": data,
+            "rows": day_rows,
+            "sections": [
+                {"name": "By day",
+                 "columns": [_col("day", "Date"), _col("sales", "Sales", "right"),
+                             _col("sub", "Subtotal", "right", True),
+                             _col("disc", "Discount", "right", True),
+                             _col("tax", "Tax", "right", True),
+                             _col("total", "Total", "right", True)],
+                 "rows": day_rows,
+                 "total_label": "Month total", "total": agg["total"]},
+                {"name": "By product",
+                 "columns": [_col("product", "Product"), _col("qty", "Qty Sold", "right"),
+                             _col("revenue", "Revenue", "right", True)],
+                 "rows": prod_rows,
+                 "total_label": "Items subtotal", "total": items_subtotal},
+            ],
             "summary": [
                 {"label": "Number of sales", "value": agg["n"], "money": False},
                 {"label": "Subtotal", "value": agg["sub"], "money": True},
@@ -207,31 +286,44 @@ class ReportService:
             "summary": [{"label": "Products at/below minimum", "value": len(data), "money": False}],
         }
 
-    # ---- 6. Purchase Report ----------------------------------------
+    # ---- 6. Purchase Report (itemized) -----------------------------
     def purchases(self, date_from: str, date_to: str) -> dict[str, Any]:
+        # One row per purchased line item so the report records WHAT was bought
+        # and AT WHAT price, not just a per-purchase total. Product name is
+        # joined from products (COALESCE guards a removed product).
         lo, hi = date_from, date_to + " 23:59:59"
         rows = self.db.query(
-            """SELECT substr(p.purchase_date,1,10) AS date, s.name AS supplier,
-                  (SELECT COUNT(*) FROM purchase_items pi WHERE pi.purchase_id=p.id) AS lines,
-                  (SELECT COALESCE(SUM(qty),0) FROM purchase_items pi WHERE pi.purchase_id=p.id) AS qty,
-                  p.total_minor
-               FROM purchases p LEFT JOIN suppliers s ON s.id=p.supplier_id
-               WHERE p.purchase_date BETWEEN ? AND ? ORDER BY p.purchase_date DESC, p.id DESC""",
+            """SELECT substr(p.purchase_date,1,10) AS date,
+                  COALESCE(s.name, '—') AS supplier,
+                  COALESCE(pr.name, '(removed product)') AS product,
+                  pi.qty AS qty,
+                  pi.unit_cost_minor AS unit_cost,
+                  pi.line_total_minor AS line_total
+               FROM purchase_items pi
+               JOIN purchases p ON p.id = pi.purchase_id
+               LEFT JOIN suppliers s ON s.id = p.supplier_id
+               LEFT JOIN products pr ON pr.id = pi.product_id
+               WHERE p.purchase_date BETWEEN ? AND ?
+               ORDER BY p.purchase_date DESC, p.id DESC, pi.id""",
             (lo, hi))
         data = [dict(r) for r in rows]
         agg = self.db.query_one(
-            "SELECT COUNT(*) n, COALESCE(SUM(total_minor),0) total FROM purchases "
-            "WHERE purchase_date BETWEEN ? AND ?", (lo, hi))
+            """SELECT COUNT(*) n, COALESCE(SUM(pi.qty),0) qty,
+                  COALESCE(SUM(pi.line_total_minor),0) total
+               FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
+               WHERE p.purchase_date BETWEEN ? AND ?""", (lo, hi))
         return {
             "key": "purchases", "title": "Purchase Report", "subtitle": f"{date_from} to {date_to}",
             "columns": [
                 _col("date", "Date"), _col("supplier", "Supplier"),
-                _col("lines", "Lines", "right"), _col("qty", "Total Qty", "right"),
-                _col("total_minor", "Amount", "right", True),
+                _col("product", "Product"), _col("qty", "Qty", "right"),
+                _col("unit_cost", "Unit Cost", "right", True),
+                _col("line_total", "Line Total", "right", True),
             ],
             "rows": data,
             "summary": [
-                {"label": "Purchases", "value": agg["n"], "money": False},
+                {"label": "Line items", "value": agg["n"], "money": False},
+                {"label": "Total qty purchased", "value": agg["qty"], "money": False},
                 {"label": "Total purchased", "value": agg["total"], "money": True},
             ],
         }
@@ -260,9 +352,14 @@ class ReportService:
             ],
         }
 
-    # ---- 8. Tax Report ---------------------------------------------
+    # ---- 8. Tax / GST Report ---------------------------------------
     def tax(self, date_from: str, date_to: str) -> dict[str, Any]:
         lo, hi = date_from, date_to + " 23:59:59"
+        # Title/columns reflect the shop's configured tax label (e.g. "GST").
+        cfg = self.db.query_one(
+            "SELECT tax_label, tax_rate_bps FROM tax_settings WHERE id = 1")
+        label = (cfg["tax_label"] if cfg and cfg["tax_label"] else "Tax")
+        rate_txt = f"{(cfg['tax_rate_bps'] / 100.0) if cfg else 0:g}%"
         rows = self.db.query(
             """SELECT substr(sale_date,1,10) AS day, COUNT(*) AS sales,
                   SUM(subtotal_minor - discount_minor) AS taxable, SUM(tax_minor) AS tax
@@ -274,15 +371,17 @@ class ReportService:
                   COALESCE(SUM(tax_minor),0) tax
                FROM sales WHERE status='completed' AND sale_date BETWEEN ? AND ?""", (lo, hi))
         return {
-            "key": "tax", "title": "Tax Report", "subtitle": f"{date_from} to {date_to}",
+            "key": "tax", "title": f"{label} Report",
+            "subtitle": f"{date_from} to {date_to}    \u2022    {label} @ {rate_txt}",
             "columns": [
                 _col("day", "Date"), _col("sales", "Sales", "right"),
                 _col("taxable", "Taxable Amount", "right", True),
-                _col("tax", "Tax Collected", "right", True),
+                _col("tax", f"{label} Collected", "right", True),
             ],
             "rows": data,
             "summary": [
                 {"label": "Taxable amount", "value": agg["taxable"], "money": True},
                 {"label": "Total tax collected", "value": agg["tax"], "money": True},
+                {"label": f"{label} rate", "value": rate_txt, "money": False},
             ],
         }

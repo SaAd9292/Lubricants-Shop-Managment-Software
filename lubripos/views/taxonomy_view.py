@@ -46,7 +46,7 @@ class _Panel(QWidget):
         # add row
         add_row = QHBoxLayout()
         self.new_name = QLineEdit()
-        self.new_name.setPlaceholderText(f"New {title[:-1].lower()} name…")
+        self.new_name.setPlaceholderText(f"New {(title[:-3] + 'y' if title.lower().endswith('ies') else title[:-1]).lower()} name…")
         self.new_name.returnPressed.connect(self._add)
         add_btn = QPushButton("Add")
         add_btn.clicked.connect(self._add)
@@ -139,7 +139,7 @@ class _Panel(QWidget):
             QMessageBox.information(self, "Select an item", "Please select a row first.")
             return
         count = self.table.item(self.table.currentRow(), 0).data(Qt.UserRole + 2) or 0
-        noun = self.table_key[:-1]
+        noun = (self.table_key[:-3] + 'y' if self.table_key.endswith('ies') else self.table_key[:-1])
         warn = (f"\n\n{count} product(s) currently use it. They will be left with "
                 f"no {noun}.") if count else ""
         confirm = QMessageBox.warning(

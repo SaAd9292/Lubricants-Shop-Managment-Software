@@ -1,4 +1,4 @@
-"""Add / Edit supplier dialog."""
+"""Add / Edit supplier dialog (fast-entry: auto-focus, Enter saves, add-another)."""
 from __future__ import annotations
 
 from typing import Any
@@ -16,11 +16,13 @@ class SupplierEditDialog(QDialog):
         super().__init__()
         self.controller = controller
         self.supplier_id = supplier_id
+        self._saved_any = False
         self.setWindowTitle("Edit Supplier" if supplier_id else "Add Supplier")
         self.setMinimumWidth(420)
         self._build_ui()
         if supplier_id:
             self._load()
+        self.name.setFocus()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -40,13 +42,19 @@ class SupplierEditDialog(QDialog):
         root.addLayout(form)
 
         actions = QHBoxLayout()
-        actions.addStretch(1)
         cancel = QPushButton("Cancel")
         cancel.setObjectName("Secondary")
-        cancel.clicked.connect(self.reject)
-        save = QPushButton("Save")
-        save.clicked.connect(self._save)
+        cancel.clicked.connect(self._close)
         actions.addWidget(cancel)
+        actions.addStretch(1)
+        if self.supplier_id is None:
+            add_more = QPushButton("Save && add another")
+            add_more.setObjectName("Secondary")
+            add_more.clicked.connect(lambda: self._save(add_another=True))
+            actions.addWidget(add_more)
+        save = QPushButton("Save")
+        save.setDefault(True)
+        save.clicked.connect(lambda: self._save())
         actions.addWidget(save)
         root.addLayout(actions)
 
@@ -57,7 +65,7 @@ class SupplierEditDialog(QDialog):
         self.address.setPlainText(s.get("address") or "")
         self.notes.setPlainText(s.get("notes") or "")
 
-    def _save(self) -> None:
+    def _save(self, add_another: bool = False) -> None:
         if not self.name.text().strip():
             QMessageBox.warning(self, "Required", "Supplier name is required.")
             return
@@ -68,7 +76,18 @@ class SupplierEditDialog(QDialog):
             "notes": self.notes.toPlainText().strip(),
         }
         ok, msg, _ = self.controller.save(form, self.supplier_id)
-        if ok:
-            self.accept()
-        else:
+        if not ok:
             QMessageBox.warning(self, "Could not save", msg)
+            return
+        if add_another:
+            self._saved_any = True
+            self.name.clear()
+            self.phone.clear()
+            self.address.clear()
+            self.notes.clear()
+            self.name.setFocus()
+        else:
+            self.accept()
+
+    def _close(self) -> None:
+        self.accept() if self._saved_any else self.reject()

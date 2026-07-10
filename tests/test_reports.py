@@ -61,17 +61,29 @@ def main() -> int:
     expenses.create({"expense_date": today + " 00:00:00", "category": "Rent",
                      "amount_minor": 500000, "description": "rent"}, user_id=1)
 
-    print("\n[report] daily sales")
+    print("\n[report] daily sales (day close)")
     d = rs.daily_sales(today)
+    check(d.get("layout") == "day_close", "daily report uses day-close layout")
     sm = {s["label"]: s["value"] for s in d["summary"]}
-    check(sm["Number of sales"] == 1, "1 sale today")
-    check(sm["Subtotal"] == 87000 and sm["Tax"] == 14790 and sm["Grand Total"] == 101790,
-          "daily totals correct")
+    check(sm["Invoices"] == 1 and sm["Gross sales"] == 101790 and sm["Tax collected"] == 14790,
+          "day-close summary totals")
+    secs = {s["name"]: s for s in d["sections"]}
+    check(secs["Sales"]["total"] == 87000, "sales lines subtotal 87000")
+    check(len(secs["Sales"]["rows"]) == 2 and "invoice" in secs["Sales"]["rows"][0],
+          "DSR lists each sale line separately with invoice no")
+    check(secs["Money received"]["total"] == 101790, "money received total 101790")
+    check(secs["Expenses"]["total"] == 500000, "expenses section total 500000")
 
-    print("\n[report] monthly sales")
+    print("\n[report] monthly sales (by day + by product)")
     m = rs.monthly_sales(int(today[:4]), int(today[5:7]))
+    check(m.get("layout") == "sections", "monthly report uses sections layout")
     msm = {s["label"]: s["value"] for s in m["summary"]}
     check(msm["Grand Total"] == 101790, "monthly grand total matches")
+    msec = {s["name"]: s for s in m["sections"]}
+    check(msec["By day"]["total"] == 101790, "monthly by-day total 101790")
+    check(msec["By product"]["total"] == 87000
+          and any(r["product"] == "Prod A" for r in msec["By product"]["rows"]),
+          "monthly by-product breakdown includes product names")
 
     print("\n[report] profit")
     p = rs.profit(today, today)
@@ -88,7 +100,12 @@ def main() -> int:
     print("\n[report] purchases")
     pr = rs.purchases(today, today)
     prsm = {s["label"]: s["value"] for s in pr["summary"]}
-    check(prsm["Purchases"] == 1 and prsm["Total purchased"] == 10 * 24000, "purchase totals")
+    check(prsm["Line items"] == 1 and prsm["Total qty purchased"] == 10
+          and prsm["Total purchased"] == 10 * 24000, "purchase totals")
+    prow = pr["rows"][0]
+    check(prow["qty"] == 10 and prow["unit_cost"] == 24000
+          and prow["line_total"] == 10 * 24000 and prow["product"],
+          "purchase report is itemized (product + unit cost + line total)")
 
     print("\n[report] expenses")
     e = rs.expenses(today, today)
@@ -113,9 +130,9 @@ def main() -> int:
     ws = wb.active
     found = None
     for row in ws.iter_rows(values_only=True):
-        if row and row[0] == "Grand Total":
+        if row and row[0] == "Gross sales":
             found = row[1]
-    check(abs((found or 0) - 1017.90) < 0.001, "XLSX summary Grand Total == 1017.90 (major units)")
+    check(abs((found or 0) - 1017.90) < 0.001, "XLSX day-close Gross sales == 1017.90 (major units)")
 
     ctx.shutdown()
     n = sum(_r)

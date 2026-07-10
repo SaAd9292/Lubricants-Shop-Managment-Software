@@ -12,9 +12,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -74,8 +74,18 @@ class POSView(QWidget):
         self.cart.verticalHeader().setVisible(False)
         self.cart.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.cart.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.cart.horizontalHeader().setStretchLastSection(False)
-        self.cart.setColumnWidth(0, 280)
+        # Product column stretches to fill the width as the window grows;
+        # the numeric columns stay a fixed, comfortable size. Without this the
+        # table widens on maximize but the columns don't, leaving blank space.
+        hdr = self.cart.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(2, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.cart.setColumnWidth(1, 80)
+        self.cart.setColumnWidth(2, 150)
+        self.cart.setColumnWidth(3, 130)
         left.addWidget(self.cart, 1)
 
         cart_actions = QHBoxLayout()
@@ -175,9 +185,16 @@ class POSView(QWidget):
         self.barcode.setFocus()
 
     def _add_product(self, p: dict) -> None:
+        available = int(p.get("stock_qty") or 0)
+        if available <= 0:
+            self._flash(f"{p['name']} is out of stock.", error=True)
+            return
         row = self._find_row(p["id"])
         if row is not None:
             qty_w = self.cart.cellWidget(row, 1)
+            if qty_w.value() >= qty_w.maximum():   # already at available stock
+                self._flash(f"Only {qty_w.maximum()} of '{p['name']}' in stock.", error=True)
+                return
             qty_w.setValue(qty_w.value() + 1)
             self._flash(f"{p['name']}  (qty {qty_w.value()})")
             return
@@ -187,7 +204,8 @@ class POSView(QWidget):
         name_item.setData(Qt.UserRole, p["id"])
         self.cart.setItem(row, 0, name_item)
 
-        qty = QSpinBox(); qty.setRange(1, 1_000_000); qty.setValue(1)
+        # cap the quantity at what's actually in stock (belt to the backend check)
+        qty = QSpinBox(); qty.setRange(1, available); qty.setValue(1)
         qty.valueChanged.connect(self._recompute)
         self.cart.setCellWidget(row, 1, qty)
 
@@ -201,7 +219,7 @@ class POSView(QWidget):
         total.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.cart.setItem(row, 3, total)
         self._recompute()
-        self._flash(f"Added {p['name']}")
+        self._flash(f"Added {p['name']}  ({available} in stock)")
 
     def _find_row(self, pid: int):
         for r in range(self.cart.rowCount()):

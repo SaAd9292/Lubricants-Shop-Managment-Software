@@ -17,6 +17,7 @@ from typing import Any
 
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.logging_config import get_logger
+from ..core.money import apply_markup
 from ..database.connection import Database
 from .audit_service import AuditService
 
@@ -44,16 +45,26 @@ class PurchaseService:
         total = sum(line["line_total_minor"] for line in norm)
 
         with self.db.transaction() as conn:
+            # Currency minor units drive the rounding step for auto-repricing
+            # (round to the nearest whole currency unit).
+            mu_row = conn.execute(
+                "SELECT currency_minor_units FROM company_settings WHERE id = 1"
+            ).fetchone()
+            minor_units = mu_row["currency_minor_units"] if mu_row else 100
+
             # validate products exist & are active (inside txn for consistency)
+            # and remember each product's markup for the auto-reprice below.
+            markups: dict[int, int] = {}
             for line in norm:
                 row = conn.execute(
-                    "SELECT id, is_active FROM products WHERE id = ?",
+                    "SELECT id, is_active, markup_bps FROM products WHERE id = ?",
                     (line["product_id"],),
                 ).fetchone()
                 if row is None:
                     raise NotFoundError(f"Product {line['product_id']} not found")
                 if not row["is_active"]:
                     raise ValidationError("Cannot purchase an inactive product.")
+                markups[line["product_id"]] = row["markup_bps"] or 0
 
             cur = conn.execute(
                 "INSERT INTO purchases (supplier_id, supplier_invoice_no, "
@@ -75,11 +86,27 @@ class PurchaseService:
                 # change ONLY this UPDATE to blend by quantity, e.g.:
                 #   new_avg = (old_qty*old_cost + qty*unit_cost) / (old_qty + qty)
                 # No schema change or data migration required.
-                conn.execute(
-                    "UPDATE products SET stock_qty = stock_qty + ?, "
-                    "purchase_price_minor = ? WHERE id = ?",
-                    (line["qty"], line["unit_cost_minor"], line["product_id"]),
-                )
+                #
+                # MARKUP PRICING: if the product carries a markup (> 0), the sale
+                # price is auto-derived from the new cost (cost * (1 + markup)),
+                # rounded to the nearest whole currency unit. markup 0 means the
+                # sale price is manual and left untouched.
+                markup = markups.get(line["product_id"], 0)
+                if markup > 0:
+                    new_sale = apply_markup(
+                        line["unit_cost_minor"], markup, round_to_minor=minor_units)
+                    conn.execute(
+                        "UPDATE products SET stock_qty = stock_qty + ?, "
+                        "purchase_price_minor = ?, sale_price_minor = ? WHERE id = ?",
+                        (line["qty"], line["unit_cost_minor"], new_sale,
+                         line["product_id"]),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE products SET stock_qty = stock_qty + ?, "
+                        "purchase_price_minor = ? WHERE id = ?",
+                        (line["qty"], line["unit_cost_minor"], line["product_id"]),
+                    )
 
         self.audit.record(action="PURCHASE", user_id=user_id, entity_type="purchase",
                           entity_id=purchase_id,

@@ -2,7 +2,7 @@
 
 Search and sort run server-side (in SQLite) so they stay correct across
 pages and fast on large catalogs. Low-stock rows are tinted. Double-click a
-row to edit; the toolbar adds / edits / removes (soft delete) / restores.
+row to edit; the toolbar adds / edits / adjusts stock / removes / restores.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from ..app_context import AppContext
 from ..ui.widgets import DataTable
 from ..controllers.product_controller import ProductController
 from .product_edit_dialog import ProductEditDialog
+from .stock_adjust_dialog import StockAdjustDialog
 
 PAGE_SIZE = 25
 
@@ -72,8 +73,9 @@ class ProductsView(QWidget):
         # filter bar
         filters = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search by name or barcode…")
+        self.search.setPlaceholderText("Search or scan a barcode…")
         self.search.textChanged.connect(lambda: self._debounce.start())
+        self.search.returnPressed.connect(self._on_scan)
         self.search.setClearButtonEnabled(True)
 
         self.f_category = QComboBox()
@@ -87,6 +89,7 @@ class ProductsView(QWidget):
         self.f_low.stateChanged.connect(self._reset_and_reload)
         self.f_inactive = QCheckBox("Show inactive")
         self.f_inactive.stateChanged.connect(self._reset_and_reload)
+        self.f_inactive.stateChanged.connect(self._sync_action_label)
 
         filters.addWidget(self.search, 2)
         filters.addWidget(self.f_category, 1)
@@ -113,10 +116,14 @@ class ProductsView(QWidget):
         edit_btn = QPushButton("Edit")
         edit_btn.setObjectName("Secondary")
         edit_btn.clicked.connect(self._edit_selected)
-        self.del_btn = QPushButton("Remove")
+        adjust_btn = QPushButton("Adjust stock")
+        adjust_btn.setObjectName("Secondary")
+        adjust_btn.clicked.connect(self._adjust_selected)
+        self.del_btn = QPushButton("Deactivate")
         self.del_btn.setObjectName("Secondary")
         self.del_btn.clicked.connect(self._delete_selected)
         footer.addWidget(edit_btn)
+        footer.addWidget(adjust_btn)
         footer.addWidget(self.del_btn)
         footer.addStretch(1)
 
@@ -232,6 +239,26 @@ class ProductsView(QWidget):
         if dlg.exec():
             self._refresh_filters_and_reload()
 
+    def _on_scan(self) -> None:
+        """Enter/scan in the search box: if the barcode is a known product just
+        select it; if it's new, offer to add it with the barcode pre-filled."""
+        term = self.search.text().strip()
+        if not term:
+            return
+        if self.controller.find_by_barcode(term):
+            if self.table.rowCount() > 0:  # filter already narrowed to it
+                self.table.selectRow(0)
+            return
+        ask = QMessageBox.question(
+            self, "Add new product",
+            f"No product has barcode '{term}'.\nAdd it as a new product?")
+        if ask != QMessageBox.Yes:
+            return
+        dlg = ProductEditDialog(self.controller, prefill_barcode=term)
+        if dlg.exec():
+            self.search.clear()
+            self._refresh_filters_and_reload()
+
     def _edit_selected(self) -> None:
         pid = self._selected_id()
         if pid is None:
@@ -239,6 +266,14 @@ class ProductsView(QWidget):
             return
         dlg = ProductEditDialog(self.controller, product_id=pid)
         if dlg.exec():
+            self._reload()
+
+    def _adjust_selected(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            QMessageBox.information(self, "Select a product", "Please select a row first.")
+            return
+        if StockAdjustDialog(self.controller, pid).exec():
             self._reload()
 
     def _delete_selected(self) -> None:
@@ -251,8 +286,11 @@ class ProductsView(QWidget):
             ok, msg, _ = self.controller.reactivate(pid)
         else:
             confirm = QMessageBox.question(
-                self, "Remove product",
-                "Remove this product? It will be hidden but kept for sales history.",
+                self, "Deactivate product",
+                "Deactivate this product? It will be hidden from the product "
+                "list, search, and the POS, but its details and past sales "
+                "history are kept. You can reactivate it anytime by ticking "
+                "'Show inactive'.",
             )
             if confirm != QMessageBox.Yes:
                 return
@@ -261,6 +299,11 @@ class ProductsView(QWidget):
             self._reload()
         else:
             QMessageBox.warning(self, "Action failed", msg)
+
+    def _sync_action_label(self) -> None:
+        """The deactivate button doubles as 'Activate' while viewing inactive
+        products, so its label follows the 'Show inactive' toggle."""
+        self.del_btn.setText("Activate" if self.f_inactive.isChecked() else "Deactivate")
 
     def _refresh_filters_and_reload(self) -> None:
         # a newly added product may introduce a new brand/category

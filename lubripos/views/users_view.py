@@ -56,6 +56,10 @@ class UsersView(QWidget):
             b.setObjectName("Secondary")
             b.clicked.connect(slot)
             footer.addWidget(b)
+        self.delete_btn = QPushButton("Delete")
+        self.delete_btn.setObjectName("Danger")
+        self.delete_btn.clicked.connect(self._delete)
+        footer.addWidget(self.delete_btn)
         footer.addStretch(1)
         root.addLayout(footer)
 
@@ -125,3 +129,25 @@ class UsersView(QWidget):
             self._reload()
         else:
             QMessageBox.warning(self, "Action failed", msg)
+
+    def _delete(self) -> None:
+        uid, _ = self._need_selection()
+        if uid is None:
+            return
+        row = self.table.currentRow()
+        username = self.table.item(row, 0).text() if row >= 0 else "this user"
+        confirm = QMessageBox.warning(
+            self, "Delete user",
+            f"Permanently delete '{username}'?\n\n"
+            "Invoice history is kept (each sale stores the cashier's name), but "
+            "the account is removed for good and cannot be recovered.\n\n"
+            "Tip: if you only want to stop this person signing in, use "
+            "Activate / Deactivate instead.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if confirm != QMessageBox.Yes:
+            return
+        success, msg, _ = self.controller.delete(uid)
+        if success:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not delete", msg)
