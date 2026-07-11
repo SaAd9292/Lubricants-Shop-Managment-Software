@@ -15,6 +15,7 @@ a = Analysis(
     datas=[
         ('lubripos/database/schema.sql', 'lubripos/database'),
         ('assets/penguix.ico', 'assets'),
+        ('assets/penguix.png', 'assets'),
     ],
     hiddenimports=[],
     hookspath=[],
