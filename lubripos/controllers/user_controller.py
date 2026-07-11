@@ -23,14 +23,16 @@ class UserController:
     def get(self, user_id: int) -> dict[str, Any]:
         return self.users.get(user_id)
 
-    def create(self, *, username, password, role, full_name="", must_change_pw=True):
+    def create(self, *, username, password, role, full_name="", must_change_pw=True,
+               permissions=None):
         return self._guarded(lambda uid: self.users.create_user(
             username=username, password=password, role=role, full_name=full_name,
-            must_change_pw=must_change_pw, actor_id=uid))
+            must_change_pw=must_change_pw, permissions=permissions, actor_id=uid))
 
-    def update(self, user_id, *, full_name=None, role=None):
+    def update(self, user_id, *, full_name=None, role=None, permissions=None):
         return self._guarded(lambda uid: self.users.update_user(
-            user_id, full_name=full_name, role=role, actor_id=uid) or user_id)
+            user_id, full_name=full_name, role=role, permissions=permissions,
+            actor_id=uid) or user_id)
 
     def reset_password(self, user_id, new_password, force_change=True):
         return self._guarded(lambda uid: self.users.reset_password(

@@ -49,12 +49,25 @@ class ReportService:
                ORDER BY amount_minor DESC""", (like,))]
         expense_total = sum(r["amount"] for r in exp_rows)
 
-        # -- section 3: money received by payment method --
+        # -- section 3: money received. pay_rows aggregates by METHOD (for the
+        #    cards); pay_detail_rows breaks it down by the named account. --
         pay_rows = [dict(r) for r in self.db.query(
             """SELECT payment_method AS method, COUNT(*) AS sales,
                   SUM(grand_total_minor) AS amount
                FROM sales WHERE status='completed' AND sale_date LIKE ?
                GROUP BY payment_method ORDER BY amount DESC""", (like,))]
+        pay_detail_rows = []
+        for r in self.db.query(
+            """SELECT payment_method AS method,
+                  COALESCE(payment_account_name, '') AS account,
+                  COUNT(*) AS sales, SUM(grand_total_minor) AS amount
+               FROM sales WHERE status='completed' AND sale_date LIKE ?
+               GROUP BY payment_method, payment_account_name
+               ORDER BY amount DESC""", (like,)):
+            r = dict(r)
+            label = f"{r['method']} - {r['account']}" if r["account"] else r["method"]
+            pay_detail_rows.append(
+                {"method": label, "sales": r["sales"], "amount": r["amount"]})
 
         # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
@@ -94,9 +107,9 @@ class ReportService:
                  "rows": exp_rows,
                  "total_label": "Total expenses", "total": expense_total},
                 {"name": "Money received",
-                 "columns": [_col("method", "Method"), _col("sales", "Sales", "right"),
+                 "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],
-                 "rows": pay_rows,
+                 "rows": pay_detail_rows,
                  "total_label": "Total received", "total": gross},
             ],
             "payments": by_method,

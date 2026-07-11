@@ -47,7 +47,8 @@ class SaleController:
 
     # -- checkout -----------------------------------------------------
     def checkout(self, *, lines: list[dict[str, Any]], discount: float = 0,
-                 payment_method: str = "cash", amount_paid: float = 0):
+                 payment_method: str = "cash", payment_account_id: int | None = None,
+                 amount_paid: float = 0):
         """lines: [{product_id, qty, unit_price (decimal)}]. Returns (ok, msg, summary)."""
         _, mu = self.currency()
         items: list[dict[str, Any]] = []
@@ -64,9 +65,12 @@ class SaleController:
 
         try:
             user = current_session.require_authenticated()
+            if discount_minor > 0 and not current_session.can("sale.discount"):
+                return False, "You do not have permission to give discounts.", None
             summary = self.sales.create_sale(
                 items=items, cashier_id=user.id, cashier_name=user.full_name or user.username,
                 discount_minor=discount_minor, payment_method=payment_method,
+                payment_account_id=payment_account_id,
                 amount_paid_minor=amount_paid_minor, user_id=user.id,
             )
             return True, "ok", summary
@@ -94,7 +98,7 @@ class SaleController:
 
     def void(self, sale_id: int):
         try:
-            user = current_session.require_role("admin")
+            user = current_session.require_permission("sale.void")
             self.sales.void_sale(sale_id, user_id=user.id)
             return True, "ok", sale_id
         except LubriPosError as exc:

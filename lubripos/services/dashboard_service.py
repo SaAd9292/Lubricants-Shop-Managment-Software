@@ -46,6 +46,9 @@ class DashboardService:
         product_count = self.db.query_one(
             "SELECT COUNT(*) AS n FROM products WHERE is_active=1"
         )
+        inactive_count = self.db.query_one(
+            "SELECT COUNT(*) AS n FROM products WHERE is_active=0"
+        )
 
         return {
             "today_sales_minor": sales["total"],
@@ -55,6 +58,7 @@ class DashboardService:
             "stock_value_minor": stock_value["val"],
             "low_stock_count": low_stock["n"],
             "product_count": product_count["n"],
+            "inactive_product_count": inactive_count["n"],
         }
 
     def recent_sales(self, limit: int = 6) -> list[dict]:

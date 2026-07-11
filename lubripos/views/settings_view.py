@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..app_context import AppContext
 from ..core.session import current_session
+from .payment_accounts_dialog import PaymentAccountsDialog
 
 
 class SettingsView(QWidget):
@@ -98,6 +99,25 @@ class SettingsView(QWidget):
         tax_form.addRow("Tax rate", self.tax_rate)
         tax_form.addRow("", self.tax_inclusive)
         col.addWidget(tax_box)
+
+        # --- Payment accounts ---
+        pay_box = QGroupBox("Payment Accounts")
+        pay_lay = QVBoxLayout(pay_box)
+        pay_hint = QLabel(
+            "Manage the shop's Bank / EasyPaisa / JazzCash accounts. The cashier "
+            "picks one at checkout, and the day-close report totals money received "
+            "per account.")
+        pay_hint.setWordWrap(True)
+        pay_hint.setObjectName("Muted")
+        pay_lay.addWidget(pay_hint)
+        pay_row = QHBoxLayout()
+        manage_btn = QPushButton("Manage payment accounts…")
+        manage_btn.setObjectName("Secondary")
+        manage_btn.clicked.connect(self._manage_payment_accounts)
+        pay_row.addWidget(manage_btn)
+        pay_row.addStretch(1)
+        pay_lay.addLayout(pay_row)
+        col.addWidget(pay_box)
 
         # --- Danger zone ---
         danger = QGroupBox("Danger Zone")
@@ -185,6 +205,9 @@ class SettingsView(QWidget):
         QMessageBox.information(self, "Saved", "Settings updated.")
         if self._on_saved:
             self._on_saved()
+
+    def _manage_payment_accounts(self) -> None:
+        PaymentAccountsDialog(self.ctx, self).exec()
 
     # -- danger zone --------------------------------------------------
     def _flush(self) -> None:

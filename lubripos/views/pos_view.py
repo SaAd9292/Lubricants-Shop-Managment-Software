@@ -12,14 +12,16 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDoubleSpinBox, QFrame,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
 from ..controllers.sale_controller import SaleController
+from ..controllers.payment_account_controller import PaymentAccountController
 from ..core import money
+from ..core.session import current_session
 from .product_picker_dialog import ProductPickerDialog
 from .sale_receipt_dialog import SaleReceiptDialog
 
@@ -29,6 +31,7 @@ class POSView(QWidget):
         super().__init__()
         self.ctx = ctx
         self.controller = SaleController(ctx)
+        self.pay_ctl = PaymentAccountController(ctx)
         self._symbol, self._minor_units = self.controller.currency()
         self._decimals = max(0, len(str(self._minor_units)) - 1)
         self._status_timer = QTimer(self)
@@ -119,11 +122,23 @@ class POSView(QWidget):
         self.discount.setDecimals(self._decimals)
         self.discount.setGroupSeparatorShown(True)
         self.discount.valueChanged.connect(self._recompute)
+        if not current_session.can("sale.discount"):
+            self.discount.setEnabled(False)
+            self.discount.setToolTip("You do not have the discount privilege")
         disc_row.addStretch(1)
         disc_row.addWidget(self.discount)
         pl.addLayout(disc_row)
 
-        self.lbl_tax = self._kv(pl, "Tax")
+        self.tax_row = QWidget()
+        _trow = QHBoxLayout(self.tax_row)
+        _trow.setContentsMargins(0, 0, 0, 0)
+        _tk = QLabel("Tax")
+        self.lbl_tax = QLabel("—")
+        self.lbl_tax.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        _trow.addWidget(_tk)
+        _trow.addStretch(1)
+        _trow.addWidget(self.lbl_tax)
+        pl.addWidget(self.tax_row)
         line = QFrame(); line.setFrameShape(QFrame.HLine); pl.addWidget(line)
         self.lbl_total = self._kv(pl, "Grand Total", big=True)
 
@@ -135,6 +150,16 @@ class POSView(QWidget):
         pay_row.addStretch(1)
         pay_row.addWidget(self.method)
         pl.addLayout(pay_row)
+
+        acct_row = QHBoxLayout()
+        self.account_label = QLabel("Account")
+        self.account = QComboBox()
+        acct_row.addWidget(self.account_label)
+        acct_row.addStretch(1)
+        acct_row.addWidget(self.account)
+        pl.addLayout(acct_row)
+        self.method.currentTextChanged.connect(self._reload_accounts)
+        self._reload_accounts()
 
         pl.addStretch(1)
 
@@ -213,6 +238,9 @@ class POSView(QWidget):
         price.setDecimals(self._decimals); price.setGroupSeparatorShown(True)
         price.setValue(float(p["sale_price_minor"]) / self._minor_units)
         price.valueChanged.connect(self._recompute)
+        if not current_session.can("sale.edit_price"):
+            price.setReadOnly(True)
+            price.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.cart.setCellWidget(row, 2, price)
 
         total = QTableWidgetItem("")
@@ -239,6 +267,27 @@ class POSView(QWidget):
         self._recompute()
         self.barcode.setFocus()
 
+    def _reload_accounts(self) -> None:
+        """Populate the account dropdown for the chosen method. Cash has no
+        account; a method with none configured shows a hint and the sale then
+        records just the method."""
+        method = self.method.currentText()
+        self.account.clear()
+        if method == "Cash":
+            self.account_label.setEnabled(False)
+            self.account.setEnabled(False)
+            return
+        self.account_label.setEnabled(True)
+        accounts = self.pay_ctl.list(method=method, active_only=True)
+        if not accounts:
+            self.account.addItem("(no accounts - add in Settings)", None)
+            self.account.setEnabled(False)
+            return
+        self.account.setEnabled(True)
+        for a in accounts:
+            label = a["name"] + (f"  -  {a['account_no']}" if a.get("account_no") else "")
+            self.account.addItem(label, a["id"])
+
     # -- totals -------------------------------------------------------
     def _recompute(self) -> None:
         subtotal = 0
@@ -259,7 +308,8 @@ class POSView(QWidget):
         tax = self.controller.tax_info()
         tax_minor = 0
         tax_text = "—"
-        if tax.get("tax_enabled") and tax.get("tax_rate_bps", 0) > 0:
+        tax_on = bool(tax.get("tax_enabled") and tax.get("tax_rate_bps", 0) > 0)
+        if tax_on:
             rate = tax["tax_rate_bps"]
             inclusive = bool(tax.get("tax_inclusive"))
             _, tax_minor = money.apply_tax(net, rate, inclusive=inclusive)
@@ -271,6 +321,8 @@ class POSView(QWidget):
         else:
             grand = net
 
+        # GST/tax off in Settings -> hide the tax line entirely.
+        self.tax_row.setVisible(tax_on)
         self.lbl_subtotal.setText(money.format_money(subtotal, self._symbol, self._minor_units))
         self.lbl_tax.setText(tax_text)
         self.lbl_total.setText(money.format_money(grand, self._symbol, self._minor_units))
@@ -289,7 +341,8 @@ class POSView(QWidget):
             })
         ok, msg, summary = self.controller.checkout(
             lines=lines, discount=self.discount.value(),
-            payment_method=self.method.currentText(), amount_paid=0,
+            payment_method=self.method.currentText(),
+            payment_account_id=self.account.currentData(), amount_paid=0,
         )
         if not ok:
             QMessageBox.warning(self, "Sale not completed", msg)

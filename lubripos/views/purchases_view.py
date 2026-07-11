@@ -1,10 +1,11 @@
 """Purchases page: purchase history + create new purchase + view details."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QHBoxLayout,
+    QHeaderView, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from ..app_context import AppContext
@@ -49,6 +50,21 @@ class PurchasesView(QWidget):
             self.f_supplier.addItem(s["name"], s["id"])
         self.f_supplier.currentIndexChanged.connect(self._reset_and_reload)
         filters.addWidget(self.f_supplier)
+
+        self.f_bydate = QCheckBox("By date")
+        self.f_bydate.stateChanged.connect(self._on_date_toggle)
+        self.f_from = QDateEdit(QDate.currentDate().addMonths(-1))
+        self.f_to = QDateEdit(QDate.currentDate())
+        for de in (self.f_from, self.f_to):
+            de.setCalendarPopup(True)
+            de.setDisplayFormat("yyyy-MM-dd")
+            de.setEnabled(False)
+            de.dateChanged.connect(self._reset_and_reload)
+        filters.addWidget(self.f_bydate)
+        filters.addWidget(QLabel("From:"))
+        filters.addWidget(self.f_from)
+        filters.addWidget(QLabel("To:"))
+        filters.addWidget(self.f_to)
         filters.addStretch(1)
         root.addLayout(filters)
 
@@ -83,13 +99,25 @@ class PurchasesView(QWidget):
         root.addLayout(footer)
 
     # -- data ---------------------------------------------------------
+    def _on_date_toggle(self) -> None:
+        on = self.f_bydate.isChecked()
+        self.f_from.setEnabled(on)
+        self.f_to.setEnabled(on)
+        self._reset_and_reload()
+
     def _reset_and_reload(self) -> None:
         self._page = 0
         self._reload()
 
     def _reload(self) -> None:
+        date_from = date_to = None
+        if self.f_bydate.isChecked():
+            date_from = self.f_from.date().toString("yyyy-MM-dd")
+            date_to = self.f_to.date().toString("yyyy-MM-dd")
         result = self.controller.list(
             supplier_id=self.f_supplier.currentData(),
+            date_from=date_from,
+            date_to=date_to,
             limit=PAGE_SIZE,
             offset=self._page * PAGE_SIZE,
         )

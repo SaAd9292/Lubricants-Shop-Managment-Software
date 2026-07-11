@@ -44,6 +44,7 @@ class SaleService:
         cashier_name: str | None,
         discount_minor: int = 0,
         payment_method: str = "cash",
+        payment_account_id: int | None = None,
         amount_paid_minor: int = 0,
         user_id: int | None = None,
     ) -> dict[str, Any]:
@@ -85,14 +86,26 @@ class SaleService:
 
             invoice_no = self._next_invoice_no(conn)
 
+            # Snapshot the receiving account's NAME so the invoice/reports survive
+            # the account later being renamed or deleted.
+            account_name = None
+            if payment_account_id:
+                acc = conn.execute(
+                    "SELECT name FROM payment_accounts WHERE id = ?",
+                    (payment_account_id,)).fetchone()
+                if acc is None:
+                    raise ValidationError("Selected payment account not found.")
+                account_name = acc["name"]
+
             cur = conn.execute(
                 "INSERT INTO sales (invoice_no, cashier_id, cashier_name, "
                 "subtotal_minor, discount_minor, tax_label, tax_rate_bps, tax_minor, "
-                "grand_total_minor, payment_method, amount_paid_minor, status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'completed')",
+                "grand_total_minor, payment_method, payment_account_id, "
+                "payment_account_name, amount_paid_minor, status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
                 (invoice_no, cashier_id, cashier_name, subtotal, discount_minor,
                  tax_label, tax_rate_bps, tax_minor, grand_total, payment_method,
-                 amount_paid_minor),
+                 payment_account_id, account_name, amount_paid_minor),
             )
             sale_id = cur.lastrowid
 

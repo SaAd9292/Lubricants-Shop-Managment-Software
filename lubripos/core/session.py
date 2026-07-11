@@ -17,6 +17,7 @@ class CurrentUser:
     username: str
     full_name: str | None
     role: str  # 'admin' | 'cashier'
+    permissions: frozenset[str] = frozenset()
 
 
 class Session:
@@ -53,6 +54,20 @@ class Session:
                 f"Action requires role(s) {roles}; current role is '{user.role}'"
             )
         return user
+
+    def can(self, permission: str) -> bool:
+        """Admins can do anything; others need the explicit grant."""
+        if self._user is None:
+            return False
+        if self._user.role == "admin":
+            return True
+        return permission in self._user.permissions
+
+    def require_permission(self, permission: str) -> CurrentUser:
+        user = self.require_authenticated()
+        if user.role == "admin" or permission in user.permissions:
+            return user
+        raise PermissionDenied(f"You do not have the '{permission}' privilege.")
 
 
 # App-wide session instance.

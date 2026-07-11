@@ -12,13 +12,15 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 4
+CURRENT_VERSION = 6
 
 
 def run_migrations(db: Database) -> None:
     _migration_2_drop_product_image(db)
     _migration_3_relax_backup_type(db)
     _migration_4_add_product_markup(db)
+    _migration_5_payment_accounts(db)
+    _migration_6_user_permissions(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -95,3 +97,43 @@ def _migration_4_add_product_markup(db: Database) -> None:
         ") AS INTEGER) "
         "WHERE purchase_price_minor > 0 AND sale_price_minor > purchase_price_minor")
     log.info("Migration: added products.markup_bps and back-filled implied markup")
+
+
+
+def _migration_5_payment_accounts(db: Database) -> None:
+    """v5: named payment accounts (multiple Bank/EasyPaisa/JazzCash) + link the
+    sale to the account that received the money (name snapshot survives delete)."""
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS payment_accounts (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            method       TEXT    NOT NULL CHECK (method IN ('Bank','EasyPaisa','JazzCash')),
+            name         TEXT    NOT NULL,
+            account_no   TEXT,
+            is_active    INTEGER NOT NULL DEFAULT 1,
+            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_payacct_method ON payment_accounts(method);
+        """
+    )
+    if not _column_exists(db, "sales", "payment_account_id"):
+        db.execute("ALTER TABLE sales ADD COLUMN payment_account_id INTEGER "
+                   "REFERENCES payment_accounts(id) ON DELETE SET NULL")
+    if not _column_exists(db, "sales", "payment_account_name"):
+        db.execute("ALTER TABLE sales ADD COLUMN payment_account_name TEXT")
+    log.info("Migration: added payment_accounts table + sales account link")
+
+
+
+def _migration_6_user_permissions(db: Database) -> None:
+    """v6: per-user privileges (users.permissions = JSON grant list). Existing
+    non-admin accounts are backfilled with the legacy cashier screens so they
+    keep working; admins ignore the column entirely."""
+    from ..core import permissions as perms
+    if not _column_exists(db, "users", "permissions"):
+        db.execute("ALTER TABLE users ADD COLUMN permissions TEXT")
+    db.execute(
+        "UPDATE users SET permissions = ? "
+        "WHERE role != 'admin' AND (permissions IS NULL OR permissions = '')",
+        (perms.serialize(perms.DEFAULT_CASHIER),))
+    log.info("Migration: added users.permissions + backfilled non-admin defaults")

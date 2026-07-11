@@ -81,14 +81,20 @@ class _ListCard(QFrame):
             self._rows_box.addWidget(lbl)
             return
         for left, right in rows:
-            row = QHBoxLayout()
+            # Wrap each row in a QWidget so set_rows()'s widget-based clear
+            # actually deletes it. Adding bare nested layouts leaks the labels
+            # (item.widget() is None for a layout), which left stale rows drawn
+            # on top of new ones on every refresh.
+            rw = QWidget()
+            row = QHBoxLayout(rw)
+            row.setContentsMargins(0, 0, 0, 0)
             l = QLabel(left)
             r = QLabel(right)
             r.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             r.setStyleSheet("font-weight: 600;")
             row.addWidget(l, 1)
             row.addWidget(r)
-            self._rows_box.addLayout(row)
+            self._rows_box.addWidget(rw)
 
 
 class DashboardView(QWidget):
@@ -124,7 +130,7 @@ class DashboardView(QWidget):
         self.card_expenses = _Card("Today's Expenses", "expenses", nav)
         self.card_stock = _Card("Total Stock Value", "products", nav)
         self.card_low = _Card("Low Stock Alerts", "products", nav)
-        self.card_products = _Card("Active Products", "products", nav)
+        self.card_products = _Card("Inactive Products", "products", nav)
         cards = [self.card_sales, self.card_profit, self.card_expenses,
                  self.card_stock, self.card_low, self.card_products]
         for i, c in enumerate(cards):
@@ -156,7 +162,7 @@ class DashboardView(QWidget):
         low_n = s["low_stock_count"]
         self.card_low.set_value(str(low_n), "at/below minimum",
                                 color="#b45309" if low_n else None)
-        self.card_products.set_value(str(s["product_count"]), "active")
+        self.card_products.set_value(str(s["inactive_product_count"]), "inactive")
 
         sales = self.svc.recent_sales(6)
         self.recent_card.set_rows(

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS users (
     role          TEXT    NOT NULL CHECK (role IN ('admin','cashier')),
     must_change_pw INTEGER NOT NULL DEFAULT 0 CHECK (must_change_pw IN (0,1)),
     is_active     INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    permissions   TEXT,                       -- JSON array of granted keys (non-admins)
     last_login_at TEXT,
     created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     updated_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
@@ -149,6 +150,17 @@ CREATE TABLE IF NOT EXISTS purchase_items (
 CREATE INDEX IF NOT EXISTS idx_pitems_purchase ON purchase_items(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_pitems_product  ON purchase_items(product_id);
 
+-- ---------- Payment accounts (named Bank / EasyPaisa / JazzCash) -----
+CREATE TABLE IF NOT EXISTS payment_accounts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    method       TEXT    NOT NULL CHECK (method IN ('Bank','EasyPaisa','JazzCash')),
+    name         TEXT    NOT NULL,
+    account_no   TEXT,
+    is_active    INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_payacct_method ON payment_accounts(method);
+
 -- ---------- Sales (stock out / invoices) -----------------------------
 CREATE TABLE IF NOT EXISTS sales (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -163,6 +175,8 @@ CREATE TABLE IF NOT EXISTS sales (
     tax_minor        INTEGER NOT NULL DEFAULT 0 CHECK (tax_minor >= 0),
     grand_total_minor INTEGER NOT NULL DEFAULT 0 CHECK (grand_total_minor >= 0),
     payment_method   TEXT    NOT NULL DEFAULT 'cash',
+    payment_account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,
+    payment_account_name TEXT,                       -- snapshot (survives account delete)
     amount_paid_minor INTEGER NOT NULL DEFAULT 0,
     status           TEXT    NOT NULL DEFAULT 'completed'
                          CHECK (status IN ('completed','void')),

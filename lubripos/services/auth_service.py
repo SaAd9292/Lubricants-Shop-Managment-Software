@@ -12,6 +12,7 @@ from __future__ import annotations
 from ..core import security
 from ..core.exceptions import AuthError, ValidationError
 from ..core.logging_config import get_logger
+from ..core import permissions as perms
 from ..core.session import CurrentUser
 from ..database.connection import Database
 from .audit_service import AuditService
@@ -54,9 +55,11 @@ class AuthService:
         )
         self.audit.record(action="LOGIN", user_id=row["id"], username=username)
         log.info("User '%s' (role=%s) logged in", username, row["role"])
+        perm_raw = row["permissions"] if "permissions" in row.keys() else None
         return CurrentUser(
             id=row["id"], username=row["username"],
             full_name=row["full_name"], role=row["role"],
+            permissions=frozenset(perms.parse(perm_raw)),
         )
 
     def must_change_password(self, user_id: int) -> bool:

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..core import permissions as perms
 from ..core import security
 from ..core.exceptions import NotFoundError, ValidationError
 from ..core.logging_config import get_logger
@@ -53,10 +54,12 @@ class UserService:
     def get(self, user_id: int) -> dict[str, Any]:
         row = self.db.query_one(
             "SELECT id, username, full_name, role, is_active, must_change_pw, "
-            "last_login_at, created_at FROM users WHERE id = ?", (user_id,))
+            "last_login_at, created_at, permissions FROM users WHERE id = ?", (user_id,))
         if not row:
             raise NotFoundError(f"User {user_id} not found")
-        return dict(row)
+        d = dict(row)
+        d["permissions"] = sorted(perms.parse(d.get("permissions")))
+        return d
 
     def _active_admin_count(self, exclude_id: int | None = None) -> int:
         if exclude_id:
@@ -71,6 +74,7 @@ class UserService:
     # -- writes -------------------------------------------------------
     def create_user(self, *, username: str, password: str, role: str,
                     full_name: str = "", must_change_pw: bool = True,
+                    permissions: list[str] | None = None,
                     actor_id: int | None = None) -> int:
         username = (username or "").strip()
         if not username:
@@ -82,18 +86,21 @@ class UserService:
         if self.db.query_one("SELECT 1 FROM users WHERE username = ? COLLATE NOCASE", (username,)):
             raise ValidationError(f"Username '{username}' already exists.")
         pwd_hash, salt, iters = security.hash_password(password)
+        perm_json = perms.serialize(
+            permissions if permissions is not None else perms.DEFAULT_CASHIER)
         cur = self.db.execute(
             "INSERT INTO users (username, full_name, password_hash, password_salt, "
-            "pwd_iterations, role, must_change_pw) VALUES (?,?,?,?,?,?,?)",
+            "pwd_iterations, role, must_change_pw, permissions) VALUES (?,?,?,?,?,?,?,?)",
             (username, full_name.strip(), pwd_hash, salt, iters, role,
-             1 if must_change_pw else 0))
+             1 if must_change_pw else 0, perm_json))
         self.audit.record(action="CREATE", user_id=actor_id, entity_type="user",
                           entity_id=cur.lastrowid, details={"username": username, "role": role})
         log.info("Created user '%s' (role=%s)", username, role)
         return cur.lastrowid
 
     def update_user(self, user_id: int, *, full_name: str | None = None,
-                    role: str | None = None, actor_id: int | None = None) -> None:
+                    role: str | None = None, permissions: list[str] | None = None,
+                    actor_id: int | None = None) -> None:
         user = self.get(user_id)
         fields: dict[str, Any] = {}
         if full_name is not None:
@@ -106,6 +113,8 @@ class UserService:
                     and user["is_active"] and self._active_admin_count(exclude_id=user_id) == 0:
                 raise ValidationError("Cannot change role: this is the last active admin.")
             fields["role"] = role
+        if permissions is not None:
+            fields["permissions"] = perms.serialize(permissions)
         if not fields:
             return
         set_clause = ", ".join(f"{k} = ?" for k in fields)

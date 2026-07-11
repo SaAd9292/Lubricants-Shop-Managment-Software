@@ -5,7 +5,7 @@ grid instead of a single flat table:
 
   * KPI cards       - Gross sales, Expenses, Net, Invoices
   * payment cards   - Cash / Bank / EasyPaisa / JazzCash amounts received
-  * two grids       - "Sales by product" (left) and, in the right column,
+  * two grids       - "Sales" (left, one row per sale line) and, in the
                       "Expenses" and "Money received"
 
 It is a pure view: it takes the report dict built by ReportService.daily_sales
@@ -57,7 +57,7 @@ class DayCloseWidget(QWidget):
         body.setSpacing(16)
 
         left = QVBoxLayout()
-        left.addWidget(self._h("Sales by product"))
+        left.addWidget(self._h("Sales"))
         self.sales_tbl = self._table("No sales recorded for this day.")
         left.addWidget(self.sales_tbl, 1)
         self.sales_total = self._total_label()

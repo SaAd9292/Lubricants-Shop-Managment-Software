@@ -98,9 +98,9 @@ class SalesView(QWidget):
         self.void_btn = QPushButton("Void sale")
         self.void_btn.setObjectName("Secondary")
         self.void_btn.clicked.connect(self._void)
-        self.void_btn.setEnabled(current_session.is_admin)
-        if not current_session.is_admin:
-            self.void_btn.setToolTip("Admin only")
+        self.void_btn.setEnabled(current_session.can("sale.void"))
+        if not current_session.can("sale.void"):
+            self.void_btn.setToolTip("You do not have the void privilege")
         footer.addWidget(self.void_btn)
         footer.addStretch(1)
         self.prev_btn = QPushButton("‹ Prev")

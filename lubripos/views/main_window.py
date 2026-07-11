@@ -41,17 +41,18 @@ from .users_view import UsersView
 
 log = get_logger(__name__)
 
-# (label, key, admin_only)
+# (label, key, admin_only). admin_only=True -> sensitive, admins only and never
+# grantable. admin_only=False -> a non-admin sees it only if granted the key.
 NAV_ITEMS = [
     ("Dashboard", "dashboard", False),
     ("Sale", "pos", False),
     ("Sales History", "sales", False),
-    ("Products", "products", True),
-    ("Categories & Brands", "taxonomy", True),
-    ("Suppliers", "suppliers", True),
-    ("Purchases", "purchases", True),
-    ("Expenses", "expenses", True),
-    ("Reports", "reports", True),
+    ("Products", "products", False),
+    ("Categories & Brands", "taxonomy", False),
+    ("Suppliers", "suppliers", False),
+    ("Purchases", "purchases", False),
+    ("Expenses", "expenses", False),
+    ("Reports", "reports", False),
     ("Users", "users", True),
     ("Audit Log", "audit", True),
     ("Backup & Restore", "backup", True),
@@ -142,8 +143,11 @@ class MainWindow(QMainWindow):
 
         is_admin = current_session.is_admin
         for label, key, admin_only in NAV_ITEMS:
-            if admin_only and not is_admin:
-                continue
+            if admin_only:
+                if not is_admin:          # sensitive screens: admins only
+                    continue
+            elif not (is_admin or current_session.can(key)):
+                continue                  # grantable screen the user lacks
             btn = QPushButton(label)
             btn.setCheckable(True)
             page = self._make_page(key, label)
