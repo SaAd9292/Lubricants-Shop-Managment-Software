@@ -1,4 +1,10 @@
-"""Backup & Restore page (admin)."""
+"""Backup & Restore page (admin).
+
+Lists every backup (auto/manual/pre-restore) with its size and location, and
+lets the admin: take a manual backup now, change the backup folder (e.g. to a
+USB stick or synced cloud drive), restore a selected backup, or restore from an
+arbitrary file. Restores are destructive, so the service takes a safety backup
+first. All heavy lifting lives in BackupService; this is just the UI."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt

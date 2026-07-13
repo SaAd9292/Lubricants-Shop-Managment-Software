@@ -1,4 +1,9 @@
-"""Headless tests for backup & restore."""
+"""Headless tests for backup & restore.
+
+Exercises BackupService end-to-end without a GUI: creating consistent snapshots
+via the SQLite online-backup API, validating a candidate file (integrity check +
+required tables), rejecting invalid databases, the daily auto-backup running
+once per day, and pruning old auto-backups to the retention limit."""
 from __future__ import annotations
 
 import sqlite3

@@ -1,4 +1,10 @@
-"""User Management page (admin)."""
+"""User Management page (admin).
+
+Lists all user accounts (username, name, role, active status, last login) and
+provides Add, Edit, Reset Password, Activate/Deactivate and Delete. Add/Edit
+opens UserEditDialog where privileges are assigned to cashiers. Guards against
+locking yourself out (cannot delete/deactivate the last active admin) are
+enforced in UserService; this view only surfaces the actions and errors."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt

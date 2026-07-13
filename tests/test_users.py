@@ -1,4 +1,9 @@
-"""Headless tests for user management."""
+"""Headless tests for user management.
+
+Exercises UserService without a GUI: create + login, must-change-password flag,
+validation (duplicate username, short password, invalid role), password reset,
+activate/deactivate blocking login, the last-active-admin lockout guards, and
+the guarded hard-delete."""
 from __future__ import annotations
 
 import sys
