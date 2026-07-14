@@ -5,7 +5,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-    QVBoxLayout, QWidget,
+    QScrollArea, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -26,6 +26,7 @@ class _Card(QFrame):
         self.on_click = on_click
         if nav_key and on_click:
             self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(96)  # never let the tile collapse onto its text
         lay = QVBoxLayout(self)
         lay.setContentsMargins(18, 16, 18, 16)
         lay.setSpacing(4)
@@ -33,8 +34,14 @@ class _Card(QFrame):
         self._title.setObjectName("Muted")
         self._value = QLabel("—")
         self._default_color = ACCENT if accent else "palette(text)"
-        self._value.setStyleSheet(
-            f"font-size: 24px; font-weight: 800; color: {self._default_color};")
+        # Set the big-number font via QFont (not stylesheet) so the layout
+        # measures its full height — a stylesheet font-size at heavy weight
+        # under-reports height and clips the bottom of the digits.
+        vf = QFont()
+        vf.setPixelSize(24)
+        vf.setWeight(QFont.Bold)
+        self._value.setFont(vf)
+        self._value.setStyleSheet(f"color: {self._default_color};")
         self._hint = QLabel("")
         self._hint.setObjectName("Muted")
         self._hint.setStyleSheet("font-size: 11px;")
@@ -46,7 +53,7 @@ class _Card(QFrame):
         self._value.setText(text)
         self._hint.setText(hint)
         c = color or self._default_color
-        self._value.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {c};")
+        self._value.setStyleSheet(f"color: {c};")
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if self.nav_key and self.on_click and e.button() == Qt.LeftButton:
@@ -148,7 +155,17 @@ class DashboardView(QWidget):
         self.refresh()
 
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(28, 28, 28, 28)
         root.setSpacing(18)
 
