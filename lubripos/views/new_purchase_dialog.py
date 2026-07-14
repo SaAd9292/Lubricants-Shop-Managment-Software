@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from ..controllers.purchase_controller import PurchaseController
@@ -24,6 +25,8 @@ class NewPurchaseDialog(QDialog):
         self._symbol, self._minor_units = controller.currency()
         self._decimals = max(0, len(str(self._minor_units)) - 1)
         self._updating = False
+        self._paid_touched = False   # has the user manually edited "amount paid"?
+        self._grand_minor = 0
         self.setWindowTitle("New Purchase")
         self.setMinimumSize(680, 540)
         self._build_ui()
@@ -56,6 +59,28 @@ class NewPurchaseDialog(QDialog):
         form.addRow("Date", self.date)
         form.addRow("Supplier invoice #", self.invoice_no)
         form.addRow("Notes", self.notes)
+
+        # amount paid now -> the remainder becomes a payable owed to the supplier
+        self.paid = QDoubleSpinBox()
+        self.paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.paid.setDecimals(self._decimals)
+        self.paid.setGroupSeparatorShown(True)
+        self.paid.setRange(0, 1_000_000_000)
+        self.paid.valueChanged.connect(self._on_paid_changed)
+        pay_full = QPushButton("Full")
+        pay_full.setObjectName("Secondary")
+        pay_full.setFixedWidth(64)
+        pay_full.clicked.connect(self._pay_full)
+        paid_row = QHBoxLayout()
+        paid_row.setContentsMargins(0, 0, 0, 0)
+        paid_row.addWidget(self.paid, 1)
+        paid_row.addWidget(pay_full)
+        paid_container = QWidget()
+        paid_container.setLayout(paid_row)
+        form.addRow(f"Amount paid now ({self._symbol})", paid_container)
+        self.credit_lbl = QLabel("")
+        self.credit_lbl.setObjectName("Muted")
+        form.addRow("", self.credit_lbl)
         root.addLayout(form)
 
         # line items table
@@ -151,7 +176,35 @@ class NewPurchaseDialog(QDialog):
             self.table.item(row, 3).setText(
                 money.format_money(line_minor, self._symbol, self._minor_units)
             )
+        self._grand_minor = grand
+        if not self._paid_touched:
+            self._updating = True
+            self.paid.setValue(grand / self._minor_units)
+            self._updating = False
         self.total_label.setText(self._fmt_total(grand))
+        self._update_credit()
+
+    def _on_paid_changed(self) -> None:
+        if self._updating:
+            return
+        self._paid_touched = True
+        self._update_credit()
+
+    def _pay_full(self) -> None:
+        self._paid_touched = False
+        self._recompute()
+
+    def _update_credit(self) -> None:
+        paid_minor = money.to_minor(self.paid.value(), self._minor_units)
+        credit = self._grand_minor - paid_minor
+        if credit > 0:
+            self.credit_lbl.setText(
+                "On credit (payable to supplier):  "
+                + money.format_money(credit, self._symbol, self._minor_units))
+        elif credit < 0:
+            self.credit_lbl.setText("Amount paid exceeds the total.")
+        else:
+            self.credit_lbl.setText("Paid in full.")
 
     def _fmt_total(self, minor: int) -> str:
         return "Total:  " + money.format_money(minor, self._symbol, self._minor_units)
@@ -179,6 +232,7 @@ class NewPurchaseDialog(QDialog):
             purchase_date=self.date.date().toString("yyyy-MM-dd") + " 00:00:00",
             supplier_invoice_no=self.invoice_no.text().strip() or None,
             notes=self.notes.text().strip() or None,
+            amount_paid=self.paid.value(),
         )
         if ok:
             QMessageBox.information(self, "Saved", "Purchase recorded and stock updated.")

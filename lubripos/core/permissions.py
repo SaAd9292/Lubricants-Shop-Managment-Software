@@ -20,6 +20,7 @@ SCREEN_PERMISSIONS = [
     ("taxonomy", "Categories & Brands"),
     ("suppliers", "Suppliers"),
     ("purchases", "Purchases"),
+    ("payables", "Supplier Payables"),
     ("expenses", "Expenses"),
     ("reports", "Reports"),
 ]

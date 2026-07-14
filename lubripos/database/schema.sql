@@ -132,12 +132,31 @@ CREATE TABLE IF NOT EXISTS purchases (
     supplier_invoice_no TEXT,                 -- supplier's own reference
     purchase_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     total_minor   INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),
+    -- how much of `total_minor` was paid at purchase time; the remainder is a
+    -- payable owed to the supplier. Later payments live in supplier_payments.
+    amount_paid_minor INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_minor >= 0),
     notes         TEXT,
     created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_purchases_date     ON purchases(purchase_date);
 CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases(supplier_id);
+
+-- Payments made to a supplier AFTER the purchase (settling payables). The
+-- supplier balance = SUM(purchases.total - amount_paid) - SUM(these payments).
+CREATE TABLE IF NOT EXISTS supplier_payments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+    purchase_id  INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
+    amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+    method       TEXT,
+    notes        TEXT,
+    payment_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_suppay_supplier ON supplier_payments(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_suppay_date     ON supplier_payments(payment_date);
 
 CREATE TABLE IF NOT EXISTS purchase_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

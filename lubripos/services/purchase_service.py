@@ -38,11 +38,27 @@ class PurchaseService:
         purchase_date: str | None = None,
         supplier_invoice_no: str | None = None,
         notes: str | None = None,
+        amount_paid_minor: int | None = None,
         user_id: int | None = None,
     ) -> int:
-        """items: list of {product_id, qty, unit_cost_minor}."""
+        """items: list of {product_id, qty, unit_cost_minor}.
+
+        amount_paid_minor = how much is paid to the supplier at purchase time.
+        None means paid in full (no payable). A partial payment (< total) needs
+        a supplier so the remaining balance can be attributed to someone."""
         norm = self._validate_items(items)
         total = sum(line["line_total_minor"] for line in norm)
+        if amount_paid_minor is None:
+            amount_paid_minor = total
+        amount_paid_minor = int(amount_paid_minor)
+        if amount_paid_minor < 0:
+            raise ValidationError("Amount paid cannot be negative.")
+        if amount_paid_minor > total:
+            raise ValidationError("Amount paid cannot exceed the purchase total.")
+        if amount_paid_minor < total and supplier_id is None:
+            raise ValidationError(
+                "Select a supplier for a credit purchase (a payable must be "
+                "owed to someone).")
 
         with self.db.transaction() as conn:
             # Currency minor units drive the rounding step for auto-repricing
@@ -68,9 +84,10 @@ class PurchaseService:
 
             cur = conn.execute(
                 "INSERT INTO purchases (supplier_id, supplier_invoice_no, "
-                "purchase_date, total_minor, notes, created_by) "
-                "VALUES (?,?,COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')),?,?,?)",
-                (supplier_id, supplier_invoice_no, purchase_date, total, notes, user_id),
+                "purchase_date, total_minor, amount_paid_minor, notes, created_by) "
+                "VALUES (?,?,COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')),?,?,?,?)",
+                (supplier_id, supplier_invoice_no, purchase_date, total,
+                 amount_paid_minor, notes, user_id),
             )
             purchase_id = cur.lastrowid
 

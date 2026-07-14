@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 7
+CURRENT_VERSION = 8
 
 
 def run_migrations(db: Database) -> None:
@@ -22,6 +22,7 @@ def run_migrations(db: Database) -> None:
     _migration_5_payment_accounts(db)
     _migration_6_user_permissions(db)
     _migration_7_partial_returns(db)
+    _migration_8_supplier_payables(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -174,3 +175,32 @@ def _migration_7_partial_returns(db: Database) -> None:
         """
     )
     log.info("Migration: added partial-return ledger (sale_returns + items)")
+
+
+def _migration_8_supplier_payables(db: Database) -> None:
+    """v8: supplier payables. Adds purchases.amount_paid_minor (BACK-FILLED to
+    the full total, so existing purchases are treated as already paid and no
+    phantom debt appears on upgrade) plus the supplier_payments ledger."""
+    if not _column_exists(db, "purchases", "amount_paid_minor"):
+        db.execute("ALTER TABLE purchases ADD COLUMN amount_paid_minor "
+                   "INTEGER NOT NULL DEFAULT 0")
+        # legacy purchases: assume settled so upgrading never invents payables
+        db.execute("UPDATE purchases SET amount_paid_minor = total_minor")
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS supplier_payments (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            supplier_id  INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+            purchase_id  INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
+            amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+            method       TEXT,
+            notes        TEXT,
+            payment_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+            created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_suppay_supplier ON supplier_payments(supplier_id);
+        CREATE INDEX IF NOT EXISTS idx_suppay_date     ON supplier_payments(payment_date);
+        """
+    )
+    log.info("Migration: added supplier payables (amount_paid + supplier_payments)")
