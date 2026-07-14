@@ -41,6 +41,12 @@ _BODIES = {
               '<path d="M5 12 V18 C5 19.7 8 21 12 21 C16 21 19 19.7 19 18 V12"/>',
     "settings": '<line x1="4" y1="8" x2="20" y2="8"/><circle cx="9" cy="8" r="2"/>'
                 '<line x1="4" y1="16" x2="20" y2="16"/><circle cx="15" cy="16" r="2"/>',
+    "trash": '<path d="M4 7 H20"/>'
+             '<path d="M9 7 V5 A1 1 0 0 1 10 4 H14 A1 1 0 0 1 15 5 V7"/>'
+             '<path d="M6 7 V20 A1 1 0 0 0 7 21 H17 A1 1 0 0 0 18 20 V7"/>'
+             '<path d="M10 11 V17"/><path d="M14 11 V17"/>',
+    "returns": '<path d="M9 5 L4 10 L9 15"/>'
+               '<path d="M4 10 H15 A5 5 0 0 1 15 20 H8"/>',
 }
 
 _TPL = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" '

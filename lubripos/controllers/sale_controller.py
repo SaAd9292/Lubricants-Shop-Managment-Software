@@ -15,6 +15,7 @@ from ..core.session import current_session
 from ..services.product_service import ProductService
 from ..services.invoice_service import InvoiceService
 from ..services.sale_service import SaleService
+from ..services.taxonomy_service import TaxonomyService
 
 log = get_logger(__name__)
 
@@ -25,6 +26,7 @@ class SaleController:
         self.sales = SaleService(ctx.db, ctx.audit)
         self.products = ProductService(ctx.db, ctx.audit)
         self.invoices = InvoiceService(ctx)
+        self.taxonomy = TaxonomyService(ctx.db)
 
     # -- currency / tax ----------------------------------------------
     def currency(self) -> tuple[str, int]:
@@ -42,8 +44,16 @@ class SaleController:
     def find_by_barcode(self, barcode: str) -> dict | None:
         return self.products.find_by_barcode(barcode.strip())
 
-    def search_products(self, term: str, limit: int = 50) -> list[dict]:
-        return self.products.list_products(search=term, limit=limit)["rows"]
+    def search_products(self, term: str, category_id: int | None = None,
+                        limit: int = 50) -> list[dict]:
+        return self.products.list_products(
+            search=term, category_id=category_id, limit=limit)["rows"]
+
+    def categories(self) -> list[dict]:
+        return self.taxonomy.list_categories()
+
+    def find_by_invoice(self, invoice_no: str) -> dict | None:
+        return self.sales.get_by_invoice(invoice_no)
 
     # -- checkout -----------------------------------------------------
     def checkout(self, *, lines: list[dict[str, Any]], discount: float = 0,
@@ -95,6 +105,18 @@ class SaleController:
         except Exception as exc:  # pragma: no cover
             log.exception("PDF generation failed")
             return False, f"Could not create PDF: {exc}", None
+
+    def create_return(self, sale_id, lines, notes=""):
+        """lines: [{sale_item_id, qty}]. Returns (ok, msg, {return_id, refund_minor})."""
+        try:
+            user = current_session.require_permission("sale.void")
+            data = self.sales.create_return(sale_id, lines, user_id=user.id, notes=notes)
+            return True, "ok", data
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("Return failed")
+            return False, f"Unexpected error: {exc}", None
 
     def void(self, sale_id: int):
         try:

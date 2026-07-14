@@ -73,6 +73,41 @@ QPushButton#Secondary:disabled {{ background: #f5f6f8; color: #b8bcc4; border-co
 QPushButton#Danger {{ background: #b91c1c; color: #ffffff; }}
 QPushButton#Danger:hover {{ background: #991b1b; }}
 QPushButton#Danger:pressed {{ background: #7f1616; }}
+/* success (green confirm) */
+QPushButton#Success {{ background: #16a34a; color: #ffffff; }}
+QPushButton#Success:hover {{ background: #15803d; }}
+QPushButton#Success:pressed {{ background: #166534; }}
+QPushButton#Success:disabled {{ background: #c9ced6; color: #f2f4f7; }}
+/* success OUTLINE (green text, green border, light fill) */
+QPushButton#SuccessOutline {{
+    background: #ffffff; color: #16a34a; border: 1px solid #16a34a; font-weight: 600;
+}}
+QPushButton#SuccessOutline:hover {{ background: #f0fdf4; }}
+QPushButton#SuccessOutline:pressed {{ background: #dcfce7; }}
+/* selectable payment chip */
+QPushButton#Chip {{
+    background: #ffffff; color: #1f1f1f; border: 1px solid #cfd3d9;
+    border-radius: 14px; padding: 5px 12px; font-weight: 500;
+}}
+QPushButton#Chip:hover {{ background: #f0f2f5; }}
+QPushButton#Chip:checked {{
+    background: {ACCENT_SOFT}; color: {ACCENT}; border-color: {ACCENT}; font-weight: 600;
+}}
+/* small qty +/- stepper buttons (no global padding so the glyph shows) */
+QPushButton#StepBtn {{
+    background: #f3f4f6; color: #111827; border: 1px solid #cfd3d9;
+    border-radius: 6px; font-size: 16px; font-weight: 700; padding: 0;
+}}
+QPushButton#StepBtn:hover {{ background: #e5e7eb; }}
+QPushButton#StepBtn:pressed {{ background: #d1d5db; }}
+QPushButton#StepBtn:disabled {{ color: #b8bcc4; background: #f6f7f9; }}
+/* soft red remove button with a visible x */
+QPushButton#RemoveBtn {{
+    background: #fdecec; color: #dc2626; border: 1px solid #f3b4b4;
+    border-radius: 6px; font-size: 15px; font-weight: 700; padding: 0;
+}}
+QPushButton#RemoveBtn:hover {{ background: #fbdada; }}
+QPushButton#RemoveBtn:pressed {{ background: #f7c5c5; }}
 """
 
 

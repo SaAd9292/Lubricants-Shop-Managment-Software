@@ -1,4 +1,6 @@
-"""Sales History: list, filter, view invoice, and (admin) void sales."""
+"""Sales History: list and filter sales, view/reprint an invoice. Returning a
+sale is done from the dedicated Returns page; a returned sale shows here with
+the status "Returned"."""
 from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt, QTimer, QUrl
@@ -12,7 +14,6 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..ui.widgets import DataTable
 from ..controllers.sale_controller import SaleController
-from ..core.session import current_session
 from .sale_receipt_dialog import SaleReceiptDialog
 
 PAGE_SIZE = 25
@@ -50,7 +51,7 @@ class SalesView(QWidget):
         self.f_status = QComboBox()
         self.f_status.addItem("All", None)
         self.f_status.addItem("Completed", "completed")
-        self.f_status.addItem("Void", "void")
+        self.f_status.addItem("Returned", "void")
         self.f_status.currentIndexChanged.connect(self._reset_and_reload)
 
         # Optional date-range filter. Off by default (shows all sales); when
@@ -95,13 +96,6 @@ class SalesView(QWidget):
         pdf_btn.setObjectName("Secondary")
         pdf_btn.clicked.connect(self._print)
         footer.addWidget(pdf_btn)
-        self.void_btn = QPushButton("Void sale")
-        self.void_btn.setObjectName("Secondary")
-        self.void_btn.clicked.connect(self._void)
-        self.void_btn.setEnabled(current_session.can("sale.void"))
-        if not current_session.can("sale.void"):
-            self.void_btn.setToolTip("You do not have the void privilege")
-        footer.addWidget(self.void_btn)
         footer.addStretch(1)
         self.prev_btn = QPushButton("‹ Prev")
         self.prev_btn.setObjectName("Secondary")
@@ -150,7 +144,8 @@ class SalesView(QWidget):
             values = [
                 s["invoice_no"], (s.get("sale_date") or "")[:16],
                 s.get("cashier_name") or "—", str(s.get("line_count", 0)),
-                self.controller.fmt(s["grand_total_minor"]), s["status"],
+                self.controller.fmt(s["grand_total_minor"]),
+                "Returned" if s["status"] == "void" else "Completed",
             ]
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
@@ -204,20 +199,3 @@ class SalesView(QWidget):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(out))
 
-    def _void(self) -> None:
-        sid = self._selected_id()
-        if sid is None:
-            QMessageBox.information(self, "Select a sale", "Please select a row first.")
-            return
-        confirm = QMessageBox.question(
-            self, "Void sale",
-            "Void this sale? Stock will be restored and the sale marked void. "
-            "This cannot be undone.",
-        )
-        if confirm != QMessageBox.Yes:
-            return
-        ok, msg, _ = self.controller.void(sid)
-        if ok:
-            self._reload()
-        else:
-            QMessageBox.warning(self, "Could not void", msg)

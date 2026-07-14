@@ -17,7 +17,8 @@ from decimal import Decimal
 from typing import Any
 
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout, QInputDialog,
+    QAbstractSpinBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QInputDialog,
     QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -144,6 +145,7 @@ class ProductEditDialog(QDialog):
         spin.setRange(0, 1_000_000_000)
         spin.setDecimals(self._decimals)
         spin.setGroupSeparatorShown(True)
+        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         return spin
 
     def _recompute_sale(self) -> None:

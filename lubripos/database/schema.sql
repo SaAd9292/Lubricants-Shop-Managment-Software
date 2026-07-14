@@ -195,10 +195,41 @@ CREATE TABLE IF NOT EXISTS sale_items (
     qty              INTEGER NOT NULL CHECK (qty > 0),
     unit_price_minor INTEGER NOT NULL CHECK (unit_price_minor >= 0),
     unit_cost_minor  INTEGER NOT NULL DEFAULT 0,       -- snapshot cost for profit calc
+    returned_qty     INTEGER NOT NULL DEFAULT 0 CHECK (returned_qty >= 0),  -- partial returns
     line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)
 );
 CREATE INDEX IF NOT EXISTS idx_sitems_sale    ON sale_items(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sitems_product ON sale_items(product_id);
+
+-- ---------- Returns / refunds ledger (partial or full) ---------------
+-- Each return records which invoice, which items and quantities came back,
+-- and the refunded amount. Stock is restored and sale_items.returned_qty is
+-- bumped so a line can never be over-returned. Sales stay 'completed'; reports
+-- net returns out via this ledger (Net = gross sales - refunds).
+CREATE TABLE IF NOT EXISTS sale_returns (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    sale_id      INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    return_date  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    refund_minor INTEGER NOT NULL DEFAULT 0 CHECK (refund_minor >= 0),
+    notes        TEXT,
+    created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_returns_sale ON sale_returns(sale_id);
+CREATE INDEX IF NOT EXISTS idx_returns_date ON sale_returns(return_date);
+
+CREATE TABLE IF NOT EXISTS sale_return_items (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_id        INTEGER NOT NULL REFERENCES sale_returns(id) ON DELETE CASCADE,
+    sale_item_id     INTEGER REFERENCES sale_items(id),
+    product_id       INTEGER REFERENCES products(id),
+    product_name     TEXT    NOT NULL,                 -- snapshot
+    qty              INTEGER NOT NULL CHECK (qty > 0),
+    unit_price_minor INTEGER NOT NULL,
+    unit_cost_minor  INTEGER NOT NULL DEFAULT 0,       -- snapshot for profit netting
+    line_total_minor INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ritems_return ON sale_return_items(return_id);
 
 -- ---------- Expenses --------------------------------------------------
 CREATE TABLE IF NOT EXISTS expense_categories (

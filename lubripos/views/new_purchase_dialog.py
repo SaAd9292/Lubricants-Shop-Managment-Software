@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QDialog, QDoubleSpinBox,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
@@ -116,6 +116,7 @@ class NewPurchaseDialog(QDialog):
 
         cost = QDoubleSpinBox()
         cost.setRange(0, 1_000_000_000)
+        cost.setButtonSymbols(QAbstractSpinBox.NoButtons)
         cost.setDecimals(self._decimals)
         cost.setGroupSeparatorShown(True)
         cost.setValue(float(p["purchase_price_minor"]) / self._minor_units)

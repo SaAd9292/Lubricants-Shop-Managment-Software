@@ -1,9 +1,11 @@
 """Dashboard: clickable KPI cards + recent sales + low-stock lists."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
+    QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -97,12 +99,51 @@ class _ListCard(QFrame):
             self._rows_box.addWidget(rw)
 
 
+class _SalesChart(QWidget):
+    """Tiny dependency-free bar chart of daily sales (values in minor units)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._series: list[dict] = []
+        self.setMinimumHeight(150)
+
+    def set_series(self, series) -> None:
+        self._series = series or []
+        self.update()
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        if not self._series:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        pad_l, pad_t, pad_b = 8, 12, 26
+        n = len(self._series)
+        maxv = max((x["total"] for x in self._series), default=0) or 1
+        avail_w = w - pad_l - 8
+        avail_h = h - pad_t - pad_b
+        gap = 12
+        bar_w = max(6.0, (avail_w - gap * (n - 1)) / n)
+        bar_col = QColor(ACCENT)
+        label_col = QColor("#6b7280")
+        fnt = QFont(); fnt.setPointSize(8); painter.setFont(fnt)
+        for i, x in enumerate(self._series):
+            bx = pad_l + i * (bar_w + gap)
+            bh = (x["total"] / maxv) * avail_h
+            painter.fillRect(QRectF(bx, pad_t + (avail_h - bh), bar_w, bh), bar_col)
+            painter.setPen(label_col)
+            painter.drawText(QRectF(bx - gap / 2, h - pad_b + 3, bar_w + gap, pad_b),
+                             Qt.AlignHCenter | Qt.AlignTop, x["label"])
+        painter.end()
+
+
 class DashboardView(QWidget):
     def __init__(self, ctx: AppContext, navigate=None) -> None:
         super().__init__()
         self.ctx = ctx
         self.navigate = navigate
         self.svc = DashboardService(ctx.db)
+        self._period = "today"
         self._build_ui()
         self.refresh()
 
@@ -116,6 +157,19 @@ class DashboardView(QWidget):
         title.setObjectName("PageTitle")
         header.addWidget(title)
         header.addStretch(1)
+        self._period_group = QButtonGroup(self)
+        self._period_group.setExclusive(True)
+        for _key, _lbl in (("today", "Today"), ("week", "Week"), ("month", "Month")):
+            chip = QPushButton(_lbl)
+            chip.setObjectName("Chip")
+            chip.setCheckable(True)
+            chip.setProperty("period", _key)
+            if _key == self._period:
+                chip.setChecked(True)
+            self._period_group.addButton(chip)
+            header.addWidget(chip)
+        self._period_group.buttonClicked.connect(self._on_period)
+        header.addSpacing(10)
         refresh = QPushButton("Refresh")
         refresh.setObjectName("Secondary")
         refresh.clicked.connect(self.refresh)
@@ -125,9 +179,9 @@ class DashboardView(QWidget):
         nav = self.navigate
         grid = QGridLayout()
         grid.setSpacing(16)
-        self.card_sales = _Card("Today's Sales", "sales", nav)
-        self.card_profit = _Card("Today's Profit", "reports", nav)
-        self.card_expenses = _Card("Today's Expenses", "expenses", nav)
+        self.card_sales = _Card("Sales", "sales", nav)
+        self.card_profit = _Card("Profit", "reports", nav)
+        self.card_expenses = _Card("Expenses", "expenses", nav)
         self.card_stock = _Card("Total Stock Value", "products", nav)
         self.card_low = _Card("Low Stock Alerts", "products", nav)
         self.card_products = _Card("Inactive Products", "products", nav)
@@ -137,6 +191,18 @@ class DashboardView(QWidget):
             grid.addWidget(c, i // 3, i % 3)
         root.addLayout(grid)
 
+        chart_card = QFrame()
+        chart_card.setObjectName("Card")
+        cl = QVBoxLayout(chart_card)
+        cl.setContentsMargins(18, 14, 18, 14)
+        cl.setSpacing(6)
+        ct = QLabel("Sales — last 7 days")
+        ct.setStyleSheet("font-size: 15px; font-weight: 700;")
+        cl.addWidget(ct)
+        self.chart = _SalesChart()
+        cl.addWidget(self.chart)
+        root.addWidget(chart_card)
+
         lists = QHBoxLayout()
         lists.setSpacing(16)
         self.recent_card = _ListCard("Recent Sales")
@@ -144,6 +210,10 @@ class DashboardView(QWidget):
         lists.addWidget(self.recent_card, 1)
         lists.addWidget(self.low_card, 1)
         root.addLayout(lists, 1)
+
+    def _on_period(self, btn) -> None:
+        self._period = btn.property("period")
+        self.refresh()
 
     def refresh(self) -> None:
         c = self.ctx.company.get_company()
@@ -153,11 +223,13 @@ class DashboardView(QWidget):
         def m(v):
             return format_money(v, sym, mu)
 
-        s = self.svc.summary()
+        s = self.svc.summary(self._period)
+        plabel = {"today": "today", "week": "last 7 days",
+                  "month": "this month"}.get(self._period, "today")
         self.card_sales.set_value(m(s["today_sales_minor"]),
-                                  f"{s['today_sales_count']} sale(s) today")
-        self.card_profit.set_value(m(s["today_profit_minor"]), "gross, today")
-        self.card_expenses.set_value(m(s["today_expenses_minor"]), "today")
+                                  f"{s['today_sales_count']} sale(s) {plabel}")
+        self.card_profit.set_value(m(s["today_profit_minor"]), f"gross, {plabel}")
+        self.card_expenses.set_value(m(s["today_expenses_minor"]), plabel)
         self.card_stock.set_value(m(s["stock_value_minor"]), "at cost")
         low_n = s["low_stock_count"]
         self.card_low.set_value(str(low_n), "at/below minimum",
@@ -174,3 +246,5 @@ class DashboardView(QWidget):
         self.low_card.set_rows(
             [(r["name"], f"{r['stock_qty']} / {r['min_stock_level']}") for r in low],
             "Nothing low on stock. ")
+
+        self.chart.set_series(self.svc.sales_series(7))

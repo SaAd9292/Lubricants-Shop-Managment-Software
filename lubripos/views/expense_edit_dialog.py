@@ -6,7 +6,8 @@ from typing import Any
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
-    QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QAbstractSpinBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox, QFormLayout,
+    QHBoxLayout,
     QInputDialog, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -55,6 +56,7 @@ class ExpenseEditDialog(QDialog):
         self.amount.setRange(0, 1_000_000_000)
         self.amount.setDecimals(self._decimals)
         self.amount.setGroupSeparatorShown(True)
+        self.amount.setButtonSymbols(QAbstractSpinBox.NoButtons)
 
         self.description = QLineEdit()
 

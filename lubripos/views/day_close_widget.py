@@ -73,6 +73,11 @@ class DayCloseWidget(QWidget):
         right.addWidget(self._h("Money received"))
         self.pay_tbl = self._table("No payments recorded.")
         right.addWidget(self.pay_tbl, 1)
+        right.addWidget(self._h("Returns"))
+        self.returns_tbl = self._table("No returns for this day.")
+        right.addWidget(self.returns_tbl, 1)
+        self.returns_total = self._total_label()
+        right.addWidget(self.returns_total)
         body.addLayout(right, 1)
 
         root.addLayout(body, 1)
@@ -103,8 +108,9 @@ class DayCloseWidget(QWidget):
 
         self._fill_cards(self.kpi_row, [
             ("Gross sales", fmt(summ.get("Gross sales", 0)), _ACCENT),
+            ("Refunds", fmt(summ.get("Refunds", 0)), _RED),
             ("Expenses", fmt(summ.get("Expenses", 0)), _RED),
-            ("Net", fmt(summ.get("Net (sales - expenses)", 0)), _GREEN),
+            ("Net", fmt(summ.get("Net", 0)), _GREEN),
             ("Invoices", str(summ.get("Invoices", 0)), _MUTED),
         ])
 
@@ -116,6 +122,7 @@ class DayCloseWidget(QWidget):
         for name, table, total in (
             ("Sales", self.sales_tbl, self.sales_total),
             ("Expenses", self.exp_tbl, self.exp_total),
+            ("Returns", self.returns_tbl, self.returns_total),
         ):
             sec = secs.get(name)
             if sec:

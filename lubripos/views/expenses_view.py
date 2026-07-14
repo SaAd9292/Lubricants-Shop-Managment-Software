@@ -11,10 +11,11 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..ui.widgets import DataTable
 from ..controllers.expense_controller import ExpenseController
+from ..ui.icons import make_icon
 from .expense_edit_dialog import ExpenseEditDialog
 
 PAGE_SIZE = 25
-COLUMNS = ["Date", "Category", "Amount", "Description", "By"]
+COLUMNS = ["Date", "Category", "Amount", "Description", "By", "Actions"]
 
 
 class ExpensesView(QWidget):
@@ -81,19 +82,14 @@ class ExpensesView(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        _hdr = self.table.horizontalHeader()
+        _hdr.setSectionResizeMode(3, QHeaderView.Stretch)       # Description fills the row
+        _hdr.setSectionResizeMode(5, QHeaderView.Fixed)         # Actions stays compact
+        self.table.setColumnWidth(5, 104)
         self.table.doubleClicked.connect(lambda: self._edit_selected())
         root.addWidget(self.table, 1)
 
         footer = QHBoxLayout()
-        edit_btn = QPushButton("Edit")
-        edit_btn.setObjectName("Secondary")
-        edit_btn.clicked.connect(self._edit_selected)
-        del_btn = QPushButton("Delete")
-        del_btn.setObjectName("Secondary")
-        del_btn.clicked.connect(self._delete_selected)
-        footer.addWidget(edit_btn)
-        footer.addWidget(del_btn)
         self.sum_label = QLabel("")
         self.sum_label.setStyleSheet("font-weight:700;")
         footer.addSpacing(16)
@@ -147,6 +143,8 @@ class ExpensesView(QWidget):
         self._update_pagination()
 
     def _populate(self, rows: list[dict]) -> None:
+        # reset first so per-row action widgets from a previous render are freed
+        self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, e in enumerate(rows):
             values = [
@@ -161,6 +159,27 @@ class ExpensesView(QWidget):
                 if c == 0:
                     item.setData(Qt.UserRole, e["id"])
                 self.table.setItem(r, c, item)
+            self._add_row_actions(r, e["id"])
+
+    def _add_row_actions(self, r: int, eid: int) -> None:
+        cell = QWidget()
+        lay = QHBoxLayout(cell)
+        lay.setContentsMargins(4, 2, 4, 2)
+        lay.setSpacing(6)
+        edit = QPushButton("Edit")
+        edit.setObjectName("SuccessOutline")
+        edit.setFixedHeight(26)
+        edit.clicked.connect(lambda _=False, i=eid: self._edit_row(i))
+        dele = QPushButton()
+        dele.setObjectName("RemoveBtn")
+        dele.setIcon(make_icon("trash", "#dc2626", 16))
+        dele.setFixedSize(30, 26)
+        dele.setToolTip("Delete expense")
+        dele.clicked.connect(lambda _=False, i=eid: self._delete_row(i))
+        lay.addWidget(edit)
+        lay.addWidget(dele)
+        lay.addStretch(1)
+        self.table.setCellWidget(r, 5, cell)
 
     def _update_pagination(self) -> None:
         pages = max(1, (self._total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -194,14 +213,13 @@ class ExpensesView(QWidget):
         if eid is None:
             QMessageBox.information(self, "Select an expense", "Please select a row first.")
             return
+        self._edit_row(eid)
+
+    def _edit_row(self, eid) -> None:
         if ExpenseEditDialog(self.controller, expense_id=eid).exec():
             self._reload()
 
-    def _delete_selected(self) -> None:
-        eid = self._selected_id()
-        if eid is None:
-            QMessageBox.information(self, "Select an expense", "Please select a row first.")
-            return
+    def _delete_row(self, eid) -> None:
         confirm = QMessageBox.question(self, "Delete expense", "Delete this expense permanently?")
         if confirm != QMessageBox.Yes:
             return

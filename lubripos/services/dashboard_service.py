@@ -5,7 +5,7 @@ to use the existing indexes (sale_date, expense_date, is_active).
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..database.connection import Database
@@ -15,25 +15,34 @@ class DashboardService:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def summary(self) -> dict[str, Any]:
-        today = date.today().isoformat()
-        like_today = f"{today}%"
+    @staticmethod
+    def _period_start(period: str) -> str:
+        """Inclusive start timestamp for 'today' | 'week' (last 7 days) |
+        'month' (calendar month to date)."""
+        today = date.today()
+        if period == "week":
+            d = today - timedelta(days=6)
+        elif period == "month":
+            d = today.replace(day=1)
+        else:
+            d = today
+        return d.isoformat() + " 00:00:00"
+
+    def summary(self, period: str = "today") -> dict[str, Any]:
+        start = self._period_start(period)
 
         sales = self.db.query_one(
             "SELECT COALESCE(SUM(grand_total_minor),0) AS total, COUNT(*) AS n "
-            "FROM sales WHERE status='completed' AND sale_date LIKE ?",
-            (like_today,),
+            "FROM sales WHERE status='completed' AND sale_date >= ?", (start,),
         )
         profit = self.db.query_one(
             "SELECT COALESCE(SUM((si.unit_price_minor - si.unit_cost_minor) * si.qty),0) AS profit "
             "FROM sale_items si JOIN sales s ON s.id = si.sale_id "
-            "WHERE s.status='completed' AND s.sale_date LIKE ?",
-            (like_today,),
+            "WHERE s.status='completed' AND s.sale_date >= ?", (start,),
         )
         expenses = self.db.query_one(
             "SELECT COALESCE(SUM(amount_minor),0) AS total FROM expenses "
-            "WHERE expense_date LIKE ?",
-            (like_today,),
+            "WHERE expense_date >= ?", (start,),
         )
         stock_value = self.db.query_one(
             "SELECT COALESCE(SUM(stock_qty * purchase_price_minor),0) AS val "
@@ -59,7 +68,26 @@ class DashboardService:
             "low_stock_count": low_stock["n"],
             "product_count": product_count["n"],
             "inactive_product_count": inactive_count["n"],
+            "period": period,
         }
+
+    def sales_series(self, days: int = 7) -> list[dict[str, Any]]:
+        """Daily completed-sales totals for the last `days` days (gaps -> 0),
+        oldest first, for the dashboard bar chart."""
+        today = date.today()
+        start = today - timedelta(days=days - 1)
+        rows = self.db.query(
+            "SELECT substr(sale_date,1,10) AS day, COALESCE(SUM(grand_total_minor),0) AS total "
+            "FROM sales WHERE status='completed' AND sale_date >= ? GROUP BY day",
+            (start.isoformat() + " 00:00:00",),
+        )
+        by = {r["day"]: r["total"] for r in rows}
+        out = []
+        for i in range(days):
+            d = start + timedelta(days=i)
+            out.append({"date": d.isoformat(), "label": d.strftime("%a"),
+                        "total": by.get(d.isoformat(), 0)})
+        return out
 
     def recent_sales(self, limit: int = 6) -> list[dict]:
         rows = self.db.query(

@@ -49,6 +49,15 @@ class ReportService:
                ORDER BY amount_minor DESC""", (like,))]
         expense_total = sum(r["amount"] for r in exp_rows)
 
+        # -- returns / refunds for the day --
+        ret_rows = [dict(r) for r in self.db.query(
+            """SELECT sri.product_name AS product, sri.qty AS qty,
+                  sri.line_total_minor AS amount
+               FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+               WHERE sr.return_date LIKE ?
+               ORDER BY sr.id DESC, sri.id""", (like,))]
+        refunds_total = sum(r["amount"] for r in ret_rows)
+
         # -- section 3: money received. pay_rows aggregates by METHOD (for the
         #    cards); pay_detail_rows breaks it down by the named account. --
         pay_rows = [dict(r) for r in self.db.query(
@@ -76,7 +85,7 @@ class ReportService:
                   COALESCE(SUM(grand_total_minor),0) total
                FROM sales WHERE status='completed' AND sale_date LIKE ?""", (like,))
         gross = agg["total"]
-        net = gross - expense_total
+        net = gross - refunds_total - expense_total
 
         # per-method map so the UI can show a card per channel even at zero
         by_method = {r["method"]: r["amount"] for r in pay_rows}
@@ -106,6 +115,11 @@ class ReportService:
                              _col("amount", "Amount", "right", True)],
                  "rows": exp_rows,
                  "total_label": "Total expenses", "total": expense_total},
+                {"name": "Returns",
+                 "columns": [_col("product", "Product"), _col("qty", "Qty", "right"),
+                             _col("amount", "Refund", "right", True)],
+                 "rows": ret_rows,
+                 "total_label": "Total refunds", "total": refunds_total},
                 {"name": "Money received",
                  "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],
@@ -119,7 +133,8 @@ class ReportService:
                 {"label": "Discounts", "value": agg["disc"], "money": True},
                 {"label": "Tax collected", "value": agg["tax"], "money": True},
                 {"label": "Expenses", "value": expense_total, "money": True},
-                {"label": "Net (sales - expenses)", "value": net, "money": True},
+                {"label": "Refunds", "value": refunds_total, "money": True},
+                {"label": "Net", "value": net, "money": True},
             ],
         }
 
@@ -215,8 +230,17 @@ class ReportService:
         cost = totals["cost"]
         gross = revenue - cost
         discounts = sales_agg["disc"]
-        net = gross - discounts
-        margin = (net / revenue * 100) if revenue else 0
+        # Returns in the range reduce both revenue and its COGS, so the profit
+        # impact is the returned MARGIN. Net profit and margin are shown net of it.
+        ret = self.db.query_one(
+            """SELECT COALESCE(SUM(sri.line_total_minor),0) AS rev,
+                  COALESCE(SUM(sri.unit_cost_minor * sri.qty),0) AS cost
+               FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+               WHERE sr.return_date BETWEEN ? AND ?""", (lo, hi))
+        ret_rev, ret_cost = ret["rev"], ret["cost"]
+        net = gross - discounts - (ret_rev - ret_cost)
+        rev_after = revenue - ret_rev
+        margin = (net / rev_after * 100) if rev_after else 0
         return {
             "key": "profit", "title": "Profit Report", "subtitle": f"{date_from} to {date_to}",
             "columns": [
@@ -230,7 +254,8 @@ class ReportService:
                 {"label": "Cost of goods sold", "value": cost, "money": True},
                 {"label": "Gross profit", "value": gross, "money": True},
                 {"label": "Discounts given", "value": discounts, "money": True},
-                {"label": "Net profit", "value": net, "money": True},
+                {"label": "Refunds (returns)", "value": ret_rev, "money": True},
+                {"label": "Net profit (after returns)", "value": net, "money": True},
                 {"label": "Tax collected (pass-through)", "value": sales_agg["tax"], "money": True},
                 {"label": "Net margin %", "value": f"{margin:.1f}%", "money": False},
             ],

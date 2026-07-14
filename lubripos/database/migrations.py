@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 6
+CURRENT_VERSION = 7
 
 
 def run_migrations(db: Database) -> None:
@@ -21,6 +21,7 @@ def run_migrations(db: Database) -> None:
     _migration_4_add_product_markup(db)
     _migration_5_payment_accounts(db)
     _migration_6_user_permissions(db)
+    _migration_7_partial_returns(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -137,3 +138,39 @@ def _migration_6_user_permissions(db: Database) -> None:
         "WHERE role != 'admin' AND (permissions IS NULL OR permissions = '')",
         (perms.serialize(perms.DEFAULT_CASHIER),))
     log.info("Migration: added users.permissions + backfilled non-admin defaults")
+
+
+
+def _migration_7_partial_returns(db: Database) -> None:
+    """v7: partial / line-level returns. Adds sale_items.returned_qty plus the
+    sale_returns + sale_return_items ledger tables."""
+    if not _column_exists(db, "sale_items", "returned_qty"):
+        db.execute("ALTER TABLE sale_items ADD COLUMN returned_qty INTEGER NOT NULL DEFAULT 0")
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS sale_returns (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id      INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+            return_date  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+            refund_minor INTEGER NOT NULL DEFAULT 0 CHECK (refund_minor >= 0),
+            notes        TEXT,
+            created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_returns_sale ON sale_returns(sale_id);
+        CREATE INDEX IF NOT EXISTS idx_returns_date ON sale_returns(return_date);
+        CREATE TABLE IF NOT EXISTS sale_return_items (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            return_id        INTEGER NOT NULL REFERENCES sale_returns(id) ON DELETE CASCADE,
+            sale_item_id     INTEGER REFERENCES sale_items(id),
+            product_id       INTEGER REFERENCES products(id),
+            product_name     TEXT    NOT NULL,
+            qty              INTEGER NOT NULL CHECK (qty > 0),
+            unit_price_minor INTEGER NOT NULL,
+            unit_cost_minor  INTEGER NOT NULL DEFAULT 0,
+            line_total_minor INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_ritems_return ON sale_return_items(return_id);
+        """
+    )
+    log.info("Migration: added partial-return ledger (sale_returns + items)")

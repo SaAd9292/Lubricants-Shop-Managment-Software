@@ -9,9 +9,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -31,9 +31,11 @@ COLUMNS = [
     ("Unit", None, False, False),
     ("Purchase", "purchase_price", True, True),
     ("Sale", "sale_price", True, True),
+    ("Margin %", None, False, True),
     ("Stock", "stock", False, True),
     ("Min", None, False, True),
     ("Status", None, False, False),
+    ("", None, False, False),          # per-row Save button (price-edit mode)
 ]
 _LOW_STOCK_TINT = QColor(180, 60, 60, 60)
 
@@ -43,6 +45,9 @@ class ProductsView(QWidget):
         super().__init__()
         self.ctx = ctx
         self.controller = ProductController(ctx)
+        self._symbol, self._minor_units = self.controller.currency()
+        self._decimals = max(0, len(str(self._minor_units)) - 1)
+        self._edit_prices = False
         self._page = 0
         self._total = 0
         self._sort_by = "name"
@@ -65,6 +70,11 @@ class ProductsView(QWidget):
         title.setObjectName("PageTitle")
         header.addWidget(title)
         header.addStretch(1)
+        self.edit_prices_btn = QPushButton("Update prices")
+        self.edit_prices_btn.setObjectName("Secondary")
+        self.edit_prices_btn.setCheckable(True)
+        self.edit_prices_btn.toggled.connect(self._toggle_price_edit)
+        header.addWidget(self.edit_prices_btn)
         add_btn = QPushButton("+ Add Product")
         add_btn.clicked.connect(self._add)
         header.addWidget(add_btn)
@@ -102,6 +112,7 @@ class ProductsView(QWidget):
         self.table = DataTable(0, len(COLUMNS))
         self.table.placeholder = 'No products yet - click "+ Add Product" to begin.'
         self.table.setHorizontalHeaderLabels([c[0] for c in COLUMNS])
+        self.table.setColumnHidden(len(COLUMNS) - 1, True)  # Save col: only in edit mode
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -168,6 +179,9 @@ class ProductsView(QWidget):
         self._update_pagination()
 
     def _populate(self, rows: list[dict]) -> None:
+        # Rebuild from scratch so any edit-mode cell widgets from a previous
+        # render are destroyed with their rows (setItem won't remove a widget).
+        self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, p in enumerate(rows):
             low = p["stock_qty"] <= p["min_stock_level"]
@@ -179,19 +193,91 @@ class ProductsView(QWidget):
                 p.get("unit_type") or "",
                 self.controller.fmt(p["purchase_price_minor"]),
                 self.controller.fmt(p["sale_price_minor"]),
+                f"{(p.get('markup_bps') or 0) / 100:g} %",
                 str(p["stock_qty"]),
                 str(p["min_stock_level"]),
                 "Active" if p["is_active"] else "Inactive",
+                "",  # Save (used only in price-edit mode)
             ]
+            if self._edit_prices:
+                # the spin-box editors replace the Purchase/Sale cells, so blank
+                # the underlying text or it shows faded behind the editor.
+                values[5] = values[6] = values[7] = ""
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
-                if c in (5, 6, 7, 8):
+                if c in (5, 6, 7, 8, 9):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if c == 0:
                     item.setData(Qt.UserRole, p["id"])  # stash product id
                 if low and p["is_active"]:
                     item.setBackground(_LOW_STOCK_TINT)
                 self.table.setItem(r, c, item)
+            if self._edit_prices:
+                self._add_price_editors(r, p)
+
+    # -- inline price editing -----------------------------------------
+    def _toggle_price_edit(self, on: bool) -> None:
+        """'Update prices' mode: swap the Purchase/Sale cells for editable spin
+        boxes and show a per-row Save button (one product saved at a time)."""
+        self._edit_prices = on
+        self.edit_prices_btn.setText("Done editing prices" if on else "Update prices")
+        self.table.setColumnHidden(len(COLUMNS) - 1, not on)
+        self._reload()
+
+    def _price_spin(self, minor: int) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0, 1_000_000_000)
+        spin.setDecimals(self._decimals)
+        spin.setGroupSeparatorShown(True)
+        spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        spin.setValue(int(minor or 0) / self._minor_units)
+        return spin
+
+    def _add_price_editors(self, r: int, p: dict) -> None:
+        ps = self._price_spin(p["purchase_price_minor"])
+        ss = self._price_spin(p["sale_price_minor"])
+        ms = QDoubleSpinBox()
+        ms.setRange(0, 100000)
+        ms.setDecimals(2)
+        ms.setSuffix(" %")
+        ms.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        ms.setValue((p.get("markup_bps") or 0) / 100.0)
+
+        def _apply_margin():
+            # markup > 0 -> derive the sale price from cost (rounded to the
+            # nearest whole unit) and lock it; 0 % = manual sale price.
+            m = ms.value()
+            if m > 0:
+                ss.blockSignals(True)
+                ss.setValue(round(ps.value() * (1 + m / 100.0)))
+                ss.blockSignals(False)
+                ss.setReadOnly(True)
+            else:
+                ss.setReadOnly(False)
+
+        ps.valueChanged.connect(_apply_margin)
+        ms.valueChanged.connect(_apply_margin)
+        _apply_margin()
+
+        self.table.setCellWidget(r, 5, ps)
+        self.table.setCellWidget(r, 6, ss)
+        self.table.setCellWidget(r, 7, ms)
+        btn = QPushButton("Save")
+        btn.setObjectName("SuccessOutline")
+        btn.clicked.connect(
+            lambda _=False, pid=p["id"], a=ps, b=ss, c=ms, bt=btn:
+            self._save_price(pid, a, b, c, bt))
+        self.table.setCellWidget(r, len(COLUMNS) - 1, btn)
+
+    def _save_price(self, pid, pspin, sspin, mspin, btn) -> None:
+        ok, msg, _ = self.controller.save(
+            {"purchase_price": pspin.value(), "sale_price": sspin.value(),
+             "markup": mspin.value()}, pid)
+        if ok:
+            btn.setText("Saved ✓")
+            QTimer.singleShot(1400, lambda: btn.setText("Save"))
+        else:
+            QMessageBox.warning(self, "Could not update price", msg)
 
     def _update_pagination(self) -> None:
         pages = max(1, (self._total + PAGE_SIZE - 1) // PAGE_SIZE)

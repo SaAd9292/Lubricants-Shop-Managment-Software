@@ -162,6 +162,70 @@ class SaleService:
                           entity_id=sale_id, details={"invoice_no": sale["invoice_no"]})
         log.warning("Sale id=%s (%s) voided; stock restored", sale_id, sale["invoice_no"])
 
+    def create_return(self, sale_id: int, lines: list[dict[str, Any]], *,
+                      user_id: int | None = None, notes: str = "") -> dict[str, Any]:
+        """Return specific quantities from a completed sale.
+
+        lines: [{sale_item_id, qty}]. Each returned quantity is restored to
+        product stock and recorded in the returns ledger, capped at what is
+        still returnable (qty - returned_qty). The sale stays 'completed';
+        reports net the refund out via the ledger.
+        """
+        with self.db.transaction() as conn:
+            sale = conn.execute("SELECT * FROM sales WHERE id = ?", (sale_id,)).fetchone()
+            if sale is None:
+                raise NotFoundError(f"Sale {sale_id} not found")
+            if sale["status"] == "void":
+                raise ValidationError("This sale is already fully void.")
+            by_id = {r["id"]: r for r in conn.execute(
+                "SELECT * FROM sale_items WHERE sale_id = ?", (sale_id,)).fetchall()}
+
+            picked = []
+            refund = 0
+            for ln in lines:
+                item = by_id.get(ln.get("sale_item_id"))
+                qty = int(ln.get("qty", 0))
+                if qty <= 0:
+                    continue
+                if item is None:
+                    raise ValidationError("A return line does not belong to this sale.")
+                remaining = item["qty"] - item["returned_qty"]
+                if qty > remaining:
+                    raise ValidationError(
+                        f"Cannot return {qty} of '{item['product_name']}': "
+                        f"only {remaining} still returnable.")
+                picked.append((item, qty))
+                refund += qty * item["unit_price_minor"]
+            if not picked:
+                raise ValidationError("Select at least one quantity to return.")
+
+            cur = conn.execute(
+                "INSERT INTO sale_returns (sale_id, refund_minor, notes, created_by) "
+                "VALUES (?,?,?,?)", (sale_id, refund, (notes or None), user_id))
+            return_id = cur.lastrowid
+            for item, qty in picked:
+                conn.execute(
+                    "INSERT INTO sale_return_items (return_id, sale_item_id, product_id, "
+                    "product_name, qty, unit_price_minor, unit_cost_minor, line_total_minor) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (return_id, item["id"], item["product_id"], item["product_name"], qty,
+                     item["unit_price_minor"], item["unit_cost_minor"],
+                     qty * item["unit_price_minor"]))
+                conn.execute(
+                    "UPDATE sale_items SET returned_qty = returned_qty + ? WHERE id = ?",
+                    (qty, item["id"]))
+                if item["product_id"] is not None:
+                    conn.execute(
+                        "UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?",
+                        (qty, item["product_id"]))
+
+        self.audit.record(action="RETURN", user_id=user_id, entity_type="sale",
+                          entity_id=sale_id,
+                          details={"return_id": return_id, "refund_minor": refund,
+                                   "invoice_no": sale["invoice_no"]})
+        log.info("Return recorded for sale=%s refund_minor=%s", sale_id, refund)
+        return {"return_id": return_id, "refund_minor": refund}
+
     # -- reads --------------------------------------------------------
     def list_sales(
         self,
@@ -203,6 +267,12 @@ class SaleService:
             (*params, int(limit), int(offset)),
         )
         return {"rows": [dict(r) for r in rows], "total": total}
+
+    def get_by_invoice(self, invoice_no: str) -> dict[str, Any] | None:
+        """Look up a full sale (header + items) by its invoice number, or None."""
+        row = self.db.query_one(
+            "SELECT id FROM sales WHERE invoice_no = ?", ((invoice_no or "").strip(),))
+        return self.get_sale(row["id"]) if row else None
 
     def get_sale(self, sale_id: int) -> dict[str, Any]:
         head = self.db.query_one("SELECT * FROM sales WHERE id = ?", (sale_id,))

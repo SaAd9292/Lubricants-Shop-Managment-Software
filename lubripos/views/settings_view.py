@@ -10,9 +10,12 @@ settings and the category/brand lists — with an automatic safety backup first.
 """
 from __future__ import annotations
 
+import os
+
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+    QPushButton,
     QScrollArea, QVBoxLayout, QWidget,
 )
 
@@ -64,6 +67,22 @@ class SettingsView(QWidget):
         shop_form.addRow("Address", self.address)
         shop_form.addRow("NTN number", self.ntn)
         shop_form.addRow("GST number", self.gst)
+        self._logo_path = ""
+        self.logo_lbl = QLabel("(none)")
+        self.logo_lbl.setObjectName("Muted")
+        logo_row = QWidget()
+        lr = QHBoxLayout(logo_row)
+        lr.setContentsMargins(0, 0, 0, 0)
+        choose_logo = QPushButton("Choose…")
+        choose_logo.setObjectName("Secondary")
+        choose_logo.clicked.connect(self._choose_logo)
+        clear_logo = QPushButton("Clear")
+        clear_logo.setObjectName("Secondary")
+        clear_logo.clicked.connect(lambda: self._set_logo(""))
+        lr.addWidget(self.logo_lbl, 1)
+        lr.addWidget(choose_logo)
+        lr.addWidget(clear_logo)
+        shop_form.addRow("Logo (on receipt)", logo_row)
         col.addWidget(shop_box)
 
         # --- Currency & invoice ---
@@ -160,6 +179,7 @@ class SettingsView(QWidget):
         self.address.setPlainText(c.get("address") or "")
         self.ntn.setText(c.get("ntn_number") or "")
         self.gst.setText(c.get("gst_number") or "")
+        self._set_logo(c.get("logo_path") or "")
         self.currency_code.setText(c.get("currency_code") or "PKR")
         self.currency_symbol.setText(c.get("currency_symbol") or "Rs")
         idx = self.minor_units.findData(c.get("currency_minor_units", 100))
@@ -188,6 +208,7 @@ class SettingsView(QWidget):
             "address": self.address.toPlainText().strip(),
             "ntn_number": self.ntn.text().strip(),
             "gst_number": self.gst.text().strip(),
+            "logo_path": self._logo_path,
             "currency_code": self.currency_code.text().strip() or "PKR",
             "currency_symbol": self.currency_symbol.text().strip() or "Rs",
             "currency_minor_units": self.minor_units.currentData(),
@@ -205,6 +226,16 @@ class SettingsView(QWidget):
         QMessageBox.information(self, "Saved", "Settings updated.")
         if self._on_saved:
             self._on_saved()
+
+    def _choose_logo(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose shop logo", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        if path:
+            self._set_logo(path)
+
+    def _set_logo(self, path: str) -> None:
+        self._logo_path = path or ""
+        self.logo_lbl.setText(os.path.basename(path) if path else "(none)")
 
     def _manage_payment_accounts(self) -> None:
         PaymentAccountsDialog(self.ctx, self).exec()

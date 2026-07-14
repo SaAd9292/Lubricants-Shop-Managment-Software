@@ -33,6 +33,32 @@ def _set_windows_app_id() -> None:
             pass
 
 
+def _install_crash_handler(ctx) -> None:
+    """Log any unhandled exception and tell the user where the log is, instead
+    of the app silently dying. The POS keeps running where it can."""
+    from lubripos.core.logging_config import get_logger
+    log = get_logger("crash")
+    log_path = ctx.config.logs_dir / "lubripos.log"
+
+    def _hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        log.critical("Unhandled exception", exc_info=(exc_type, exc, tb))
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                None, "Unexpected error",
+                "Penguix hit an unexpected error and saved the details to a log.\n\n"
+                f"Log file:\n{log_path}\n\n"
+                "Please send this file to support. You can keep working; if the "
+                "app behaves oddly, restart it.")
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+
+
 def main() -> int:
     _set_windows_app_id()
     app = QApplication(sys.argv)
@@ -45,6 +71,7 @@ def main() -> int:
     apply_theme(app)
 
     ctx = AppContext()
+    _install_crash_handler(ctx)
     try:
         while True:
             login = LoginDialog(ctx)

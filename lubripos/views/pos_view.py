@@ -1,9 +1,11 @@
 """Point of Sale screen.
 
 Workflow: scan a barcode (USB scanner acts as a keyboard) -> product is added
-to the cart instantly; or use 'Search product' to add by name. Adjust qty and
-price per line, set discount/payment, then Complete Sale (F2). Completing the
-sale decrements stock and allocates an invoice number atomically.
+to the cart instantly; or use 'Search product' to add by name. Each cart row
+shows the item (with its stock), price, a -/+ quantity stepper, the line total,
+and a remove button. Set a discount and a payment method/account, then press
+Complete Sale (F2). Completing the sale decrements stock and allocates an
+invoice number atomically.
 
 Accessible to both admin and cashier.
 """
@@ -12,9 +14,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QComboBox, QDoubleSpinBox, QFrame,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QButtonGroup, QComboBox, QDoubleSpinBox,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -22,8 +24,56 @@ from ..controllers.sale_controller import SaleController
 from ..controllers.payment_account_controller import PaymentAccountController
 from ..core import money
 from ..core.session import current_session
+from ..ui.icons import make_icon
 from .product_picker_dialog import ProductPickerDialog
 from .sale_receipt_dialog import SaleReceiptDialog
+
+# Cart columns
+C_NUM, C_ITEM, C_PRICE, C_QTY, C_TOTAL, C_ACTION = range(6)
+_METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
+
+
+def _esc(text: str) -> str:
+    return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class _QtyStepper(QWidget):
+    """A '- N +' quantity control. Wraps a QSpinBox (min 1, max = stock) with
+    the native arrows hidden and flanking - / + buttons, so it reads like the
+    counter on a modern POS. Exposes value()/setValue()/maximum()."""
+
+    def __init__(self, value: int, maximum: int, on_change) -> None:
+        super().__init__()
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        self.spin = QSpinBox()
+        self.spin.setRange(1, max(1, maximum))
+        self.spin.setValue(value)
+        self.spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.spin.setAlignment(Qt.AlignCenter)
+        self.spin.setFixedWidth(44)
+        self.spin.valueChanged.connect(on_change)
+        minus = QPushButton("−")
+        minus.setObjectName("StepBtn")
+        minus.setFixedSize(30, 26)
+        plus = QPushButton("+")
+        plus.setObjectName("StepBtn")
+        plus.setFixedSize(30, 26)
+        minus.clicked.connect(lambda: self.spin.setValue(max(self.spin.minimum(), self.spin.value() - 1)))
+        plus.clicked.connect(lambda: self.spin.setValue(min(self.spin.maximum(), self.spin.value() + 1)))
+        lay.addWidget(minus)
+        lay.addWidget(self.spin)
+        lay.addWidget(plus)
+
+    def value(self) -> int:
+        return self.spin.value()
+
+    def setValue(self, v: int) -> None:
+        self.spin.setValue(v)
+
+    def maximum(self) -> int:
+        return self.spin.maximum()
 
 
 class POSView(QWidget):
@@ -56,6 +106,7 @@ class POSView(QWidget):
         scan_row = QHBoxLayout()
         self.barcode = QLineEdit()
         self.barcode.setPlaceholderText("Scan barcode and press Enter…")
+        self.barcode.setMinimumHeight(34)
         self.barcode.returnPressed.connect(self._add_by_barcode)
         search_btn = QPushButton("Search product")
         search_btn.setObjectName("Secondary")
@@ -70,49 +121,44 @@ class POSView(QWidget):
         self.status.setMinimumHeight(18)
         left.addWidget(self.status)
 
-        self.cart = QTableWidget(0, 4)
+        self.cart = QTableWidget(0, 6)
         self.cart.setHorizontalHeaderLabels(
-            ["Product", "Qty", f"Price ({self._symbol})", "Total"]
-        )
+            ["#", "Item", f"Price ({self._symbol})", "Qty", "Line Total", ""])
         self.cart.verticalHeader().setVisible(False)
+        self.cart.verticalHeader().setDefaultSectionSize(50)
         self.cart.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.cart.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        # Product column stretches to fill the width as the window grows;
-        # the numeric columns stay a fixed, comfortable size. Without this the
-        # table widens on maximize but the columns don't, leaving blank space.
         hdr = self.cart.horizontalHeader()
         hdr.setStretchLastSection(False)
-        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
-        hdr.setSectionResizeMode(1, QHeaderView.Fixed)
-        hdr.setSectionResizeMode(2, QHeaderView.Fixed)
-        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
-        self.cart.setColumnWidth(1, 80)
-        self.cart.setColumnWidth(2, 150)
-        self.cart.setColumnWidth(3, 130)
+        hdr.setSectionResizeMode(C_NUM, QHeaderView.Fixed)
+        hdr.setSectionResizeMode(C_ITEM, QHeaderView.Stretch)
+        for c in (C_PRICE, C_QTY, C_TOTAL, C_ACTION):
+            hdr.setSectionResizeMode(c, QHeaderView.Fixed)
+        self.cart.setColumnWidth(C_NUM, 38)
+        self.cart.setColumnWidth(C_PRICE, 120)
+        self.cart.setColumnWidth(C_QTY, 120)
+        self.cart.setColumnWidth(C_TOTAL, 120)
+        self.cart.setColumnWidth(C_ACTION, 46)
         left.addWidget(self.cart, 1)
 
         cart_actions = QHBoxLayout()
-        remove_btn = QPushButton("Remove line")
-        remove_btn.setObjectName("Secondary")
-        remove_btn.clicked.connect(self._remove_line)
         clear_btn = QPushButton("Clear cart")
         clear_btn.setObjectName("Secondary")
         clear_btn.clicked.connect(self._clear_cart)
-        cart_actions.addWidget(remove_btn)
-        cart_actions.addWidget(clear_btn)
         cart_actions.addStretch(1)
+        cart_actions.addWidget(clear_btn)
         left.addLayout(cart_actions)
         root.addLayout(left, 2)
 
-        # ---- right: totals + payment ----
+        # ---- right: bill summary + payment ----
         panel = QFrame()
         panel.setObjectName("Card")
-        panel.setFixedWidth(340)
+        panel.setFixedWidth(360)
         pl = QVBoxLayout(panel)
         pl.setContentsMargins(20, 20, 20, 20)
         pl.setSpacing(12)
 
-        pl.addWidget(self._h2("Summary"))
+        pl.addWidget(self._h2("Bill Summary"))
         self.lbl_subtotal = self._kv(pl, "Subtotal")
 
         disc_row = QHBoxLayout()
@@ -121,6 +167,7 @@ class POSView(QWidget):
         self.discount.setRange(0, 1_000_000_000)
         self.discount.setDecimals(self._decimals)
         self.discount.setGroupSeparatorShown(True)
+        self.discount.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.discount.valueChanged.connect(self._recompute)
         if not current_session.can("sale.discount"):
             self.discount.setEnabled(False)
@@ -132,24 +179,33 @@ class POSView(QWidget):
         self.tax_row = QWidget()
         _trow = QHBoxLayout(self.tax_row)
         _trow.setContentsMargins(0, 0, 0, 0)
-        _tk = QLabel("Tax")
+        _trow.addWidget(QLabel("Tax"))
         self.lbl_tax = QLabel("—")
         self.lbl_tax.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        _trow.addWidget(_tk)
         _trow.addStretch(1)
         _trow.addWidget(self.lbl_tax)
         pl.addWidget(self.tax_row)
+
         line = QFrame(); line.setFrameShape(QFrame.HLine); pl.addWidget(line)
         self.lbl_total = self._kv(pl, "Grand Total", big=True)
 
         pl.addWidget(self._h2("Payment"))
-        pay_row = QHBoxLayout()
-        pay_row.addWidget(QLabel("Method"))
-        self.method = QComboBox()
-        self.method.addItems(["Cash", "Bank", "EasyPaisa", "JazzCash"])
-        pay_row.addStretch(1)
-        pay_row.addWidget(self.method)
-        pl.addLayout(pay_row)
+        # payment method as selectable chips
+        self._method_group = QButtonGroup(self)
+        self._method_group.setExclusive(True)
+        chips = QHBoxLayout()
+        chips.setSpacing(6)
+        for m in _METHODS:
+            chip = QPushButton(m)
+            chip.setObjectName("Chip")
+            chip.setCheckable(True)
+            if m == "Cash":
+                chip.setChecked(True)
+            self._method_group.addButton(chip)
+            chips.addWidget(chip)
+        chips.addStretch(1)
+        pl.addLayout(chips)
+        self._method_group.buttonClicked.connect(lambda _btn: self._reload_accounts())
 
         acct_row = QHBoxLayout()
         self.account_label = QLabel("Account")
@@ -158,12 +214,13 @@ class POSView(QWidget):
         acct_row.addStretch(1)
         acct_row.addWidget(self.account)
         pl.addLayout(acct_row)
-        self.method.currentTextChanged.connect(self._reload_accounts)
         self._reload_accounts()
 
         pl.addStretch(1)
 
         complete = QPushButton("Complete Sale  (F2)")
+        complete.setObjectName("Success")
+        complete.setMinimumHeight(40)
         complete.clicked.connect(self._complete)
         pl.addWidget(complete)
         QShortcut(QKeySequence("F2"), self, self._complete)
@@ -184,12 +241,16 @@ class POSView(QWidget):
         v = QLabel("—")
         v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         if big:
-            v.setStyleSheet("font-weight:700; font-size:20px;")
+            v.setStyleSheet("font-weight:700; font-size:20px; color:#16a34a;")
         row.addWidget(k)
         row.addStretch(1)
         row.addWidget(v)
         layout.addLayout(row)
         return v
+
+    def _selected_method(self) -> str:
+        btn = self._method_group.checkedButton()
+        return btn.text() if btn else "Cash"
 
     # -- cart ops -----------------------------------------------------
     def _add_by_barcode(self) -> None:
@@ -204,7 +265,9 @@ class POSView(QWidget):
         self._add_product(product)
 
     def _add_by_search(self) -> None:
-        picker = ProductPickerDialog(self.controller.search_products, self.controller.fmt)
+        picker = ProductPickerDialog(
+            self.controller.search_products, self.controller.fmt,
+            self.controller.categories())
         if picker.exec() and picker.selected:
             self._add_product(picker.selected)
         self.barcode.setFocus()
@@ -216,49 +279,74 @@ class POSView(QWidget):
             return
         row = self._find_row(p["id"])
         if row is not None:
-            qty_w = self.cart.cellWidget(row, 1)
-            if qty_w.value() >= qty_w.maximum():   # already at available stock
+            qty_w = self.cart.cellWidget(row, C_QTY)
+            if qty_w.value() >= qty_w.maximum():
                 self._flash(f"Only {qty_w.maximum()} of '{p['name']}' in stock.", error=True)
                 return
             qty_w.setValue(qty_w.value() + 1)
             self._flash(f"{p['name']}  (qty {qty_w.value()})")
             return
+
         row = self.cart.rowCount()
         self.cart.insertRow(row)
-        name_item = QTableWidgetItem(p["name"])
-        name_item.setData(Qt.UserRole, p["id"])
-        self.cart.setItem(row, 0, name_item)
 
-        # cap the quantity at what's actually in stock (belt to the backend check)
-        qty = QSpinBox(); qty.setRange(1, available); qty.setValue(1)
-        qty.valueChanged.connect(self._recompute)
-        self.cart.setCellWidget(row, 1, qty)
+        num = QTableWidgetItem(str(row + 1))
+        num.setData(Qt.UserRole, p["id"])  # stash product id
+        num.setTextAlignment(Qt.AlignCenter)
+        self.cart.setItem(row, C_NUM, num)
 
-        price = QDoubleSpinBox(); price.setRange(0, 1_000_000_000)
-        price.setDecimals(self._decimals); price.setGroupSeparatorShown(True)
+        name_lbl = QLabel(
+            f"<b>{_esc(p['name'])}</b><br>"
+            f"<span style='color:#6b7280; font-size:11px;'>Stock: {available}</span>")
+        name_lbl.setContentsMargins(6, 2, 6, 2)
+        self.cart.setCellWidget(row, C_ITEM, name_lbl)
+
+        price = QDoubleSpinBox()
+        price.setRange(0, 1_000_000_000)
+        price.setDecimals(self._decimals)
+        price.setGroupSeparatorShown(True)
+        price.setButtonSymbols(QAbstractSpinBox.NoButtons)
         price.setValue(float(p["sale_price_minor"]) / self._minor_units)
         price.valueChanged.connect(self._recompute)
         if not current_session.can("sale.edit_price"):
             price.setReadOnly(True)
-            price.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        self.cart.setCellWidget(row, 2, price)
+        self.cart.setCellWidget(row, C_PRICE, price)
+
+        qty = _QtyStepper(1, available, self._recompute)
+        self.cart.setCellWidget(row, C_QTY, qty)
 
         total = QTableWidgetItem("")
         total.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.cart.setItem(row, 3, total)
+        self.cart.setItem(row, C_TOTAL, total)
+
+        rm = QPushButton()
+        rm.setObjectName("RemoveBtn")
+        rm.setIcon(make_icon("trash", "#dc2626", 16))
+        rm.setFixedSize(30, 26)
+        rm.setToolTip("Remove item")
+        rm.clicked.connect(lambda _=False, pid=p["id"]: self._remove_product(pid))
+        rm_cell = QWidget()
+        rm_lay = QHBoxLayout(rm_cell)
+        rm_lay.setContentsMargins(0, 0, 0, 0)
+        rm_lay.addStretch(1)
+        rm_lay.addWidget(rm)
+        rm_lay.addStretch(1)
+        self.cart.setCellWidget(row, C_ACTION, rm_cell)
+
         self._recompute()
         self._flash(f"Added {p['name']}  ({available} in stock)")
 
     def _find_row(self, pid: int):
         for r in range(self.cart.rowCount()):
-            if self.cart.item(r, 0).data(Qt.UserRole) == pid:
+            item = self.cart.item(r, C_NUM)
+            if item and item.data(Qt.UserRole) == pid:
                 return r
         return None
 
-    def _remove_line(self) -> None:
-        r = self.cart.currentRow()
-        if r >= 0:
-            self.cart.removeRow(r)
+    def _remove_product(self, pid: int) -> None:
+        row = self._find_row(pid)
+        if row is not None:
+            self.cart.removeRow(row)
             self._recompute()
 
     def _clear_cart(self) -> None:
@@ -271,7 +359,7 @@ class POSView(QWidget):
         """Populate the account dropdown for the chosen method. Cash has no
         account; a method with none configured shows a hint and the sale then
         records just the method."""
-        method = self.method.currentText()
+        method = self._selected_method()
         self.account.clear()
         if method == "Cash":
             self.account_label.setEnabled(False)
@@ -292,14 +380,18 @@ class POSView(QWidget):
     def _recompute(self) -> None:
         subtotal = 0
         for r in range(self.cart.rowCount()):
-            qty_w = self.cart.cellWidget(r, 1)
-            price_w = self.cart.cellWidget(r, 2)
+            num_item = self.cart.item(r, C_NUM)
+            if num_item is not None:
+                num_item.setText(str(r + 1))  # keep row numbers tidy after removals
+            qty_w = self.cart.cellWidget(r, C_QTY)
+            price_w = self.cart.cellWidget(r, C_PRICE)
             if qty_w is None or price_w is None:
                 continue
             unit = money.to_minor(price_w.value(), self._minor_units)
             line = qty_w.value() * unit
             subtotal += line
-            self.cart.item(r, 3).setText(money.format_money(line, self._symbol, self._minor_units))
+            self.cart.item(r, C_TOTAL).setText(
+                money.format_money(line, self._symbol, self._minor_units))
 
         discount = money.to_minor(self.discount.value(), self._minor_units)
         discount = min(discount, subtotal)
@@ -335,13 +427,13 @@ class POSView(QWidget):
         lines = []
         for r in range(self.cart.rowCount()):
             lines.append({
-                "product_id": self.cart.item(r, 0).data(Qt.UserRole),
-                "qty": self.cart.cellWidget(r, 1).value(),
-                "unit_price": self.cart.cellWidget(r, 2).value(),
+                "product_id": self.cart.item(r, C_NUM).data(Qt.UserRole),
+                "qty": self.cart.cellWidget(r, C_QTY).value(),
+                "unit_price": self.cart.cellWidget(r, C_PRICE).value(),
             })
         ok, msg, summary = self.controller.checkout(
             lines=lines, discount=self.discount.value(),
-            payment_method=self.method.currentText(),
+            payment_method=self._selected_method(),
             payment_account_id=self.account.currentData(), amount_paid=0,
         )
         if not ok:
