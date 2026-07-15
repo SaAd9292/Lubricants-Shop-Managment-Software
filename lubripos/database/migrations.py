@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 9
+CURRENT_VERSION = 10
 
 
 def run_migrations(db: Database) -> None:
@@ -24,6 +24,7 @@ def run_migrations(db: Database) -> None:
     _migration_7_partial_returns(db)
     _migration_8_supplier_payables(db)
     _migration_9_customers(db)
+    _migration_10_ui_prefs(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -232,3 +233,15 @@ def _migration_9_customers(db: Database) -> None:
     if not _column_exists(db, "sales", "customer_name"):
         db.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
     log.info("Migration: added customers table + sales.customer link")
+
+
+def _migration_10_ui_prefs(db: Database) -> None:
+    """v10: UI preferences on company_settings — language (en/ur) and touch_mode
+    (on-screen numeric keypad). Both default to the current behaviour."""
+    if not _column_exists(db, "company_settings", "language"):
+        db.execute("ALTER TABLE company_settings ADD COLUMN language TEXT "
+                   "NOT NULL DEFAULT 'en'")
+    if not _column_exists(db, "company_settings", "touch_mode"):
+        db.execute("ALTER TABLE company_settings ADD COLUMN touch_mode INTEGER "
+                   "NOT NULL DEFAULT 0")
+    log.info("Migration: added company_settings.language + touch_mode")

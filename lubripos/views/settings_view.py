@@ -103,6 +103,23 @@ class SettingsView(QWidget):
         cur_form.addRow("Invoice footer", self.invoice_footer)
         col.addWidget(cur_box)
 
+        # --- Display & interface ---
+        disp_box = QGroupBox("Display & Interface")
+        disp_form = QFormLayout(disp_box)
+        self.language = QComboBox()
+        self.language.addItem("English", "en")
+        self.language.addItem("اردو (Urdu)", "ur")
+        self.touch_mode = QCheckBox(
+            "Touchscreen mode (show an on-screen number pad on the Sale screen)")
+        disp_form.addRow("Language", self.language)
+        disp_form.addRow("", self.touch_mode)
+        disp_hint = QLabel("Urdu covers the counter screens (Sale, menu, receipt). "
+                           "A language change applies after you log out and back in.")
+        disp_hint.setWordWrap(True)
+        disp_hint.setObjectName("Muted")
+        disp_form.addRow("", disp_hint)
+        col.addWidget(disp_box)
+
         # --- Tax ---
         tax_box = QGroupBox("Tax")
         tax_form = QFormLayout(tax_box)
@@ -186,6 +203,9 @@ class SettingsView(QWidget):
         self.minor_units.setCurrentIndex(max(0, idx))
         self.invoice_prefix.setText(c.get("invoice_prefix") or "INV")
         self.invoice_footer.setText(c.get("invoice_footer") or "")
+        self._orig_language = c.get("language") or "en"
+        self.language.setCurrentIndex(max(0, self.language.findData(self._orig_language)))
+        self.touch_mode.setChecked(bool(c.get("touch_mode", 0)))
 
         t = self.ctx.company.get_tax()
         self.tax_enabled.setChecked(bool(t.get("tax_enabled", 1)))
@@ -214,6 +234,8 @@ class SettingsView(QWidget):
             "currency_minor_units": self.minor_units.currentData(),
             "invoice_prefix": self.invoice_prefix.text().strip() or "INV",
             "invoice_footer": self.invoice_footer.text().strip(),
+            "language": self.language.currentData(),
+            "touch_mode": 1 if self.touch_mode.isChecked() else 0,
         }, user_id=uid)
 
         self.ctx.company.update_tax({
@@ -223,7 +245,13 @@ class SettingsView(QWidget):
             "tax_inclusive": 1 if self.tax_inclusive.isChecked() else 0,
         }, user_id=uid)
 
-        QMessageBox.information(self, "Saved", "Settings updated.")
+        if self.language.currentData() != getattr(self, "_orig_language", "en"):
+            QMessageBox.information(
+                self, "Saved",
+                "Settings updated. Log out and back in to apply the new language.")
+            self._orig_language = self.language.currentData()
+        else:
+            QMessageBox.information(self, "Saved", "Settings updated.")
         if self._on_saved:
             self._on_saved()
 

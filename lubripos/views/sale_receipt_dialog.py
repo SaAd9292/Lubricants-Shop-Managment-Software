@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
+from ..core.i18n import tr
 from ..controllers.sale_controller import SaleController
 from ..core import money
 from ..services.sale_service import SaleService
@@ -53,13 +54,13 @@ class SaleReceiptDialog(QDialog):
 
         s = self._sale
         cust = s.get("customer_name")
-        cust_html = f"<br><b>Customer:</b> {cust}" if cust else ""
+        cust_html = f"<br><b>{tr('Customer')}:</b> {cust}" if cust else ""
         info = QLabel(
-            f"<b>Invoice:</b> {s['invoice_no']} &nbsp;&nbsp; "
-            f"<b>Status:</b> {s['status']}<br>"
-            f"<b>Date:</b> {(s.get('sale_date') or '')[:16]}<br>"
-            f"<b>Cashier:</b> {s.get('cashier_name') or '-'} &nbsp;&nbsp; "
-            f"<b>Payment:</b> {s.get('payment_method') or '-'}"
+            f"<b>{tr('Invoice')}:</b> {s['invoice_no']} &nbsp;&nbsp; "
+            f"<b>{tr('Status')}:</b> {s['status']}<br>"
+            f"<b>{tr('Date')}:</b> {(s.get('sale_date') or '')[:16]}<br>"
+            f"<b>{tr('Cashier')}:</b> {s.get('cashier_name') or '-'} &nbsp;&nbsp; "
+            f"<b>{tr('Payment')}:</b> {s.get('payment_method') or '-'}"
             f"{cust_html}"
         )
         info.setTextFormat(Qt.RichText)

@@ -23,6 +23,7 @@ from ..app_context import AppContext
 from ..config import resource_path
 from ..core.logging_config import get_logger
 from ..core.session import current_session
+from ..core.i18n import tr
 from ..ui.icons import make_icon
 from .audit_view import AuditView
 from .backup_view import BackupView
@@ -154,7 +155,7 @@ class MainWindow(QMainWindow):
                     continue
             elif not (is_admin or current_session.can(key)):
                 continue                  # grantable screen the user lacks
-            btn = QPushButton(label)
+            btn = QPushButton(tr(label))
             btn.setCheckable(True)
             page = self._make_page(key, label)
             idx = self.stack.addWidget(page)

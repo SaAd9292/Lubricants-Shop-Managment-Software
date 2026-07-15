@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS company_settings (
     currency_minor_units INTEGER NOT NULL DEFAULT 100, -- 100 = 2 decimals
     invoice_prefix TEXT   NOT NULL DEFAULT 'INV',
     invoice_footer TEXT   NOT NULL DEFAULT 'Thank you for your business!',
+    language      TEXT    NOT NULL DEFAULT 'en',      -- UI language: 'en' or 'ur'
+    touch_mode    INTEGER NOT NULL DEFAULT 0 CHECK (touch_mode IN (0,1)),
     created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     updated_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
 );

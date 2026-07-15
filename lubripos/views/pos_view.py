@@ -25,6 +25,8 @@ from ..controllers.sale_controller import SaleController
 from ..controllers.payment_account_controller import PaymentAccountController
 from ..core import money
 from ..core.session import current_session
+from ..core.i18n import tr
+from ..ui.numeric_keypad import NumericKeypad
 from ..ui.icons import make_icon
 from .product_picker_dialog import ProductPickerDialog
 from .sale_receipt_dialog import SaleReceiptDialog
@@ -100,16 +102,16 @@ class POSView(QWidget):
         # ---- left: scan + cart ----
         left = QVBoxLayout()
         left.setSpacing(12)
-        title = QLabel("Sale")
+        title = QLabel(tr("Sale"))
         title.setObjectName("PageTitle")
         left.addWidget(title)
 
         scan_row = QHBoxLayout()
         self.barcode = QLineEdit()
-        self.barcode.setPlaceholderText("Scan barcode and press Enter…")
+        self.barcode.setPlaceholderText(tr("Scan barcode and press Enter…"))
         self.barcode.setMinimumHeight(34)
         self.barcode.returnPressed.connect(self._add_by_barcode)
-        search_btn = QPushButton("Search product")
+        search_btn = QPushButton(tr("Search product"))
         search_btn.setObjectName("Secondary")
         search_btn.clicked.connect(self._add_by_search)
         scan_row.addWidget(self.barcode, 1)
@@ -124,7 +126,7 @@ class POSView(QWidget):
 
         self.cart = QTableWidget(0, 6)
         self.cart.setHorizontalHeaderLabels(
-            ["#", "Item", f"Price ({self._symbol})", "Qty", "Line Total", ""])
+            ["#", tr("Item"), f"{tr('Price')} ({self._symbol})", tr("Qty"), tr("Line Total"), ""])
         self.cart.verticalHeader().setVisible(False)
         self.cart.verticalHeader().setDefaultSectionSize(50)
         self.cart.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -143,7 +145,7 @@ class POSView(QWidget):
         left.addWidget(self.cart, 1)
 
         cart_actions = QHBoxLayout()
-        clear_btn = QPushButton("Clear cart")
+        clear_btn = QPushButton(tr("Clear cart"))
         clear_btn.setObjectName("Secondary")
         clear_btn.clicked.connect(self._clear_cart)
         cart_actions.addStretch(1)
@@ -159,11 +161,11 @@ class POSView(QWidget):
         pl.setContentsMargins(20, 20, 20, 20)
         pl.setSpacing(12)
 
-        pl.addWidget(self._h2("Bill Summary"))
-        self.lbl_subtotal = self._kv(pl, "Subtotal")
+        pl.addWidget(self._h2(tr("Bill Summary")))
+        self.lbl_subtotal = self._kv(pl, tr("Subtotal"))
 
         disc_row = QHBoxLayout()
-        disc_row.addWidget(QLabel("Discount"))
+        disc_row.addWidget(QLabel(tr("Discount")))
         self.discount = QDoubleSpinBox()
         self.discount.setRange(0, 1_000_000_000)
         self.discount.setDecimals(self._decimals)
@@ -180,7 +182,7 @@ class POSView(QWidget):
         self.tax_row = QWidget()
         _trow = QHBoxLayout(self.tax_row)
         _trow.setContentsMargins(0, 0, 0, 0)
-        _trow.addWidget(QLabel("Tax"))
+        _trow.addWidget(QLabel(tr("Tax")))
         self.lbl_tax = QLabel("—")
         self.lbl_tax.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         _trow.addStretch(1)
@@ -188,15 +190,15 @@ class POSView(QWidget):
         pl.addWidget(self.tax_row)
 
         line = QFrame(); line.setFrameShape(QFrame.HLine); pl.addWidget(line)
-        self.lbl_total = self._kv(pl, "Grand Total", big=True)
+        self.lbl_total = self._kv(pl, tr("Grand Total"), big=True)
 
-        pl.addWidget(self._h2("Customer (optional)"))
+        pl.addWidget(self._h2(tr("Customer (optional)")))
         cust_row = QHBoxLayout()
         self.cust_name = QLineEdit()
-        self.cust_name.setPlaceholderText("Name")
+        self.cust_name.setPlaceholderText(tr("Name"))
         self.cust_phone = QLineEdit()
-        self.cust_phone.setPlaceholderText("Phone")
-        find_btn = QPushButton("Find")
+        self.cust_phone.setPlaceholderText(tr("Phone"))
+        find_btn = QPushButton(tr("Find"))
         find_btn.setObjectName("Secondary")
         find_btn.clicked.connect(self._find_customer)
         cust_row.addWidget(self.cust_name, 2)
@@ -210,7 +212,7 @@ class POSView(QWidget):
         self.cust_name.textEdited.connect(lambda _=None: self.cust_hint.clear())
         self.cust_phone.textEdited.connect(lambda _=None: self.cust_hint.clear())
 
-        pl.addWidget(self._h2("Payment"))
+        pl.addWidget(self._h2(tr("Payment")))
         # payment method as selectable chips
         self._method_group = QButtonGroup(self)
         self._method_group.setExclusive(True)
@@ -229,7 +231,7 @@ class POSView(QWidget):
         self._method_group.buttonClicked.connect(lambda _btn: self._reload_accounts())
 
         acct_row = QHBoxLayout()
-        self.account_label = QLabel("Account")
+        self.account_label = QLabel(tr("Account"))
         self.account = QComboBox()
         acct_row.addWidget(self.account_label)
         acct_row.addStretch(1)
@@ -239,12 +241,19 @@ class POSView(QWidget):
 
         pl.addStretch(1)
 
-        complete = QPushButton("Complete Sale  (F2)")
+        complete = QPushButton(tr("Complete Sale  (F2)"))
         complete.setObjectName("Success")
         complete.setMinimumHeight(40)
         complete.clicked.connect(self._complete)
         pl.addWidget(complete)
         QShortcut(QKeySequence("F2"), self, self._complete)
+
+        # touchscreen mode: an on-screen number pad for the Sale screen fields
+        if self.ctx.company.get_company().get("touch_mode"):
+            kp_line = QFrame()
+            kp_line.setFrameShape(QFrame.HLine)
+            pl.addWidget(kp_line)
+            pl.addWidget(NumericKeypad())
 
         root.addWidget(panel)
         self.barcode.setFocus()
@@ -514,7 +523,7 @@ class _CustomerPicker:
         self.dlg.setMinimumWidth(360)
         lay = QVBoxLayout(self.dlg)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search by name or phone…")
+        self.search.setPlaceholderText(tr("Search by name or phone…"))
         self.search.setText(initial)
         self.search.textChanged.connect(self._reload)
         lay.addWidget(self.search)
@@ -556,7 +565,7 @@ class _ReorderDialog:
         self.dlg.setWindowTitle(f"Reorder — {name}")
         self.dlg.resize(480, 440)
         lay = QVBoxLayout(self.dlg)
-        lay.addWidget(QLabel("Tick the products to add to this sale:"))
+        lay.addWidget(QLabel(tr("Tick the products to add to this sale:")))
 
         self.tbl = QTableWidget(len(products), 4)
         self.tbl.setHorizontalHeaderLabels(["", "Product", "Price", "Qty"])
@@ -591,7 +600,7 @@ class _ReorderDialog:
 
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         ok = box.button(QDialogButtonBox.Ok)
-        ok.setText("Add to sale")
+        ok.setText(tr("Add to sale"))
         ok.setObjectName("Success")
         box.accepted.connect(self._accept)
         box.rejected.connect(self.dlg.reject)
