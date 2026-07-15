@@ -14,8 +14,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QButtonGroup, QComboBox, QDoubleSpinBox,
-    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
     QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -189,6 +190,26 @@ class POSView(QWidget):
         line = QFrame(); line.setFrameShape(QFrame.HLine); pl.addWidget(line)
         self.lbl_total = self._kv(pl, "Grand Total", big=True)
 
+        pl.addWidget(self._h2("Customer (optional)"))
+        cust_row = QHBoxLayout()
+        self.cust_name = QLineEdit()
+        self.cust_name.setPlaceholderText("Name")
+        self.cust_phone = QLineEdit()
+        self.cust_phone.setPlaceholderText("Phone")
+        find_btn = QPushButton("Find")
+        find_btn.setObjectName("Secondary")
+        find_btn.clicked.connect(self._find_customer)
+        cust_row.addWidget(self.cust_name, 2)
+        cust_row.addWidget(self.cust_phone, 2)
+        cust_row.addWidget(find_btn)
+        pl.addLayout(cust_row)
+        self.cust_hint = QLabel("")
+        self.cust_hint.setObjectName("Muted")
+        self.cust_hint.setWordWrap(True)
+        pl.addWidget(self.cust_hint)
+        self.cust_name.textEdited.connect(lambda _=None: self.cust_hint.clear())
+        self.cust_phone.textEdited.connect(lambda _=None: self.cust_hint.clear())
+
         pl.addWidget(self._h2("Payment"))
         # payment method as selectable chips
         self._method_group = QButtonGroup(self)
@@ -272,7 +293,7 @@ class POSView(QWidget):
             self._add_product(picker.selected)
         self.barcode.setFocus()
 
-    def _add_product(self, p: dict) -> None:
+    def _add_product(self, p: dict, add_qty: int = 1) -> None:
         available = int(p.get("stock_qty") or 0)
         if available <= 0:
             self._flash(f"{p['name']} is out of stock.", error=True)
@@ -283,7 +304,7 @@ class POSView(QWidget):
             if qty_w.value() >= qty_w.maximum():
                 self._flash(f"Only {qty_w.maximum()} of '{p['name']}' in stock.", error=True)
                 return
-            qty_w.setValue(qty_w.value() + 1)
+            qty_w.setValue(min(qty_w.value() + add_qty, qty_w.maximum()))
             self._flash(f"{p['name']}  (qty {qty_w.value()})")
             return
 
@@ -313,6 +334,8 @@ class POSView(QWidget):
         self.cart.setCellWidget(row, C_PRICE, price)
 
         qty = _QtyStepper(1, available, self._recompute)
+        if add_qty > 1:
+            qty.setValue(min(add_qty, available))
         self.cart.setCellWidget(row, C_QTY, qty)
 
         total = QTableWidgetItem("")
@@ -352,8 +375,34 @@ class POSView(QWidget):
     def _clear_cart(self) -> None:
         self.cart.setRowCount(0)
         self.discount.setValue(0)
+        self.cust_name.clear()
+        self.cust_phone.clear()
+        self.cust_hint.clear()
         self._recompute()
         self.barcode.setFocus()
+
+    # -- customer lookup ----------------------------------------------
+    def _find_customer(self) -> None:
+        term = (self.cust_name.text() or self.cust_phone.text()).strip()
+        picked = _CustomerPicker(self, self.controller, term).run()
+        if not picked:
+            return
+        self.cust_name.setText(picked["name"])
+        self.cust_phone.setText(picked["phone"])
+        self._show_customer_hint(picked["id"])
+        # offer to reorder from their purchase history
+        products = self.controller.customer_products(picked["id"])
+        if products:
+            for prod, qty in _ReorderDialog(self, self.controller,
+                                            picked["name"], products).run():
+                self._add_product(prod, qty)
+
+    def _show_customer_hint(self, customer_id: int) -> None:
+        prods = self.controller.customer_last_products(customer_id)
+        if prods:
+            self.cust_hint.setText("Last bought:  " + ",  ".join(prods))
+        else:
+            self.cust_hint.setText("No previous purchases on record.")
 
     def _reload_accounts(self) -> None:
         """Populate the account dropdown for the chosen method. Cash has no
@@ -435,6 +484,8 @@ class POSView(QWidget):
             lines=lines, discount=self.discount.value(),
             payment_method=self._selected_method(),
             payment_account_id=self.account.currentData(), amount_paid=0,
+            customer_name=self.cust_name.text(),
+            customer_phone=self.cust_phone.text(),
         )
         if not ok:
             QMessageBox.warning(self, "Sale not completed", msg)
@@ -450,3 +501,107 @@ class POSView(QWidget):
         self.status.setText(text)
         self._status_timer.start(2500)
         self.barcode.setFocus()
+
+
+class _CustomerPicker:
+    """Tiny search-and-pick dialog over existing customers (name or phone)."""
+
+    def __init__(self, parent, controller, initial: str = "") -> None:
+        self._picked = None
+        self.controller = controller
+        self.dlg = QDialog(parent)
+        self.dlg.setWindowTitle("Find customer")
+        self.dlg.setMinimumWidth(360)
+        lay = QVBoxLayout(self.dlg)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search by name or phone…")
+        self.search.setText(initial)
+        self.search.textChanged.connect(self._reload)
+        lay.addWidget(self.search)
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _i: self._accept())
+        lay.addWidget(self.list, 1)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self._accept)
+        box.rejected.connect(self.dlg.reject)
+        lay.addWidget(box)
+        self._reload()
+
+    def _reload(self) -> None:
+        self.list.clear()
+        for c in self.controller.search_customers(self.search.text()):
+            label = f"{c['name']}" + (f"  ·  {c['phone']}" if c["phone"] else "")
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, c)
+            self.list.addItem(it)
+
+    def _accept(self) -> None:
+        it = self.list.currentItem()
+        if it:
+            self._picked = it.data(Qt.UserRole)
+        self.dlg.accept()
+
+    def run(self):
+        return self._picked if self.dlg.exec() == QDialog.Accepted else None
+
+
+class _ReorderDialog:
+    """Shows a customer's previously-bought products; the cashier ticks the
+    ones to reorder (with quantity) and they are added to the cart."""
+
+    def __init__(self, parent, controller, name: str, products: list[dict]) -> None:
+        self.products = products
+        self._result: list[tuple] = []
+        self.dlg = QDialog(parent)
+        self.dlg.setWindowTitle(f"Reorder — {name}")
+        self.dlg.resize(480, 440)
+        lay = QVBoxLayout(self.dlg)
+        lay.addWidget(QLabel("Tick the products to add to this sale:"))
+
+        self.tbl = QTableWidget(len(products), 4)
+        self.tbl.setHorizontalHeaderLabels(["", "Product", "Price", "Qty"])
+        self.tbl.verticalHeader().setVisible(False)
+        self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl.setColumnWidth(0, 34)
+        self._checks, self._qtys = [], []
+        for r, p in enumerate(products):
+            stock = int(p.get("stock_qty") or 0)
+            chk = QCheckBox()
+            if stock <= 0:
+                chk.setEnabled(False)
+            wrap = QWidget()
+            wl = QHBoxLayout(wrap)
+            wl.setContentsMargins(0, 0, 0, 0)
+            wl.addStretch(1); wl.addWidget(chk); wl.addStretch(1)
+            self.tbl.setCellWidget(r, 0, wrap)
+            nm = p["name"] + ("" if stock > 0 else "  (out of stock)")
+            self.tbl.setItem(r, 1, QTableWidgetItem(nm))
+            price = QTableWidgetItem(controller.fmt(p["sale_price_minor"]))
+            price.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            self.tbl.setItem(r, 2, price)
+            sp = QSpinBox()
+            sp.setButtonSymbols(QAbstractSpinBox.NoButtons)
+            sp.setRange(1, max(1, stock))
+            sp.setValue(1)
+            sp.setEnabled(stock > 0)
+            self.tbl.setCellWidget(r, 3, sp)
+            self._checks.append(chk); self._qtys.append(sp)
+        lay.addWidget(self.tbl, 1)
+
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        ok = box.button(QDialogButtonBox.Ok)
+        ok.setText("Add to sale")
+        ok.setObjectName("Success")
+        box.accepted.connect(self._accept)
+        box.rejected.connect(self.dlg.reject)
+        lay.addWidget(box)
+
+    def _accept(self) -> None:
+        for p, chk, sp in zip(self.products, self._checks, self._qtys):
+            if chk.isChecked():
+                self._result.append((p, sp.value()))
+        self.dlg.accept()
+
+    def run(self) -> list[tuple]:
+        return self._result if self.dlg.exec() == QDialog.Accepted else []

@@ -46,6 +46,8 @@ class SaleService:
         payment_method: str = "cash",
         payment_account_id: int | None = None,
         amount_paid_minor: int = 0,
+        customer_id: int | None = None,
+        customer_name: str | None = None,
         user_id: int | None = None,
     ) -> dict[str, Any]:
         """items: [{product_id, qty, unit_price_minor?}].
@@ -101,11 +103,13 @@ class SaleService:
                 "INSERT INTO sales (invoice_no, cashier_id, cashier_name, "
                 "subtotal_minor, discount_minor, tax_label, tax_rate_bps, tax_minor, "
                 "grand_total_minor, payment_method, payment_account_id, "
-                "payment_account_name, amount_paid_minor, status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
+                "payment_account_name, amount_paid_minor, customer_id, customer_name, "
+                "status) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
                 (invoice_no, cashier_id, cashier_name, subtotal, discount_minor,
                  tax_label, tax_rate_bps, tax_minor, grand_total, payment_method,
-                 payment_account_id, account_name, amount_paid_minor),
+                 payment_account_id, account_name, amount_paid_minor,
+                 customer_id, (customer_name or None)),
             )
             sale_id = cur.lastrowid
 

@@ -16,6 +16,7 @@ SCREEN_PERMISSIONS = [
     ("pos", "Sale (POS)"),
     ("sales", "Sales History"),
     ("returns", "Returns"),
+    ("customers", "Customers"),
     ("products", "Products"),
     ("taxonomy", "Categories & Brands"),
     ("suppliers", "Suppliers"),

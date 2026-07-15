@@ -181,6 +181,22 @@ CREATE TABLE IF NOT EXISTS payment_accounts (
 CREATE INDEX IF NOT EXISTS idx_payacct_method ON payment_accounts(method);
 
 -- ---------- Sales (stock out / invoices) -----------------------------
+-- Optional customer directory: attach a customer to a sale so their purchase
+-- history (which products/oil they bought) can be looked up on a return visit.
+CREATE TABLE IF NOT EXISTS customers (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL,
+    phone      TEXT    NOT NULL DEFAULT '',          -- normalised digits
+    notes      TEXT,
+    is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+    created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+-- a returning customer is matched on (name, phone); enforce that pairing is unique
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_name_phone
+    ON customers(name COLLATE NOCASE, phone);
+CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+
 CREATE TABLE IF NOT EXISTS sales (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     invoice_no       TEXT    NOT NULL UNIQUE,
@@ -197,6 +213,8 @@ CREATE TABLE IF NOT EXISTS sales (
     payment_account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,
     payment_account_name TEXT,                       -- snapshot (survives account delete)
     amount_paid_minor INTEGER NOT NULL DEFAULT 0,
+    customer_id      INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+    customer_name    TEXT,                           -- snapshot (survives customer delete)
     status           TEXT    NOT NULL DEFAULT 'completed'
                          CHECK (status IN ('completed','void')),
     created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))

@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 8
+CURRENT_VERSION = 9
 
 
 def run_migrations(db: Database) -> None:
@@ -23,6 +23,7 @@ def run_migrations(db: Database) -> None:
     _migration_6_user_permissions(db)
     _migration_7_partial_returns(db)
     _migration_8_supplier_payables(db)
+    _migration_9_customers(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -204,3 +205,30 @@ def _migration_8_supplier_payables(db: Database) -> None:
         """
     )
     log.info("Migration: added supplier payables (amount_paid + supplier_payments)")
+
+
+def _migration_9_customers(db: Database) -> None:
+    """v9: optional customer directory + purchase history. Adds the customers
+    table and links sales to a customer (nullable; walk-in sales stay NULL)."""
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS customers (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT    NOT NULL,
+            phone      TEXT    NOT NULL DEFAULT '',
+            notes      TEXT,
+            is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+            created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+            updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_name_phone
+            ON customers(name COLLATE NOCASE, phone);
+        CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+        """
+    )
+    if not _column_exists(db, "sales", "customer_id"):
+        db.execute("ALTER TABLE sales ADD COLUMN customer_id INTEGER "
+                   "REFERENCES customers(id) ON DELETE SET NULL")
+    if not _column_exists(db, "sales", "customer_name"):
+        db.execute("ALTER TABLE sales ADD COLUMN customer_name TEXT")
+    log.info("Migration: added customers table + sales.customer link")

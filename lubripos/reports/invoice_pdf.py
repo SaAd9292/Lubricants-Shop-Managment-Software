@@ -107,6 +107,8 @@ def generate_invoice_pdf(*, sale: dict[str, Any], company: dict[str, Any],
     story.append(Paragraph(f"<b>Invoice No:</b> {sale.get('invoice_no', '')}", small))
     story.append(Paragraph(f"<b>Date:</b> {(sale.get('sale_date') or '')[:16]}", small))
     story.append(Paragraph(f"<b>Cashier:</b> {sale.get('cashier_name') or '-'}", small))
+    if sale.get("customer_name"):
+        story.append(Paragraph(f"<b>Customer:</b> {sale.get('customer_name')}", small))
     pay_txt = sale.get("payment_method") or "-"
     if sale.get("payment_account_name"):
         pay_txt += f" ({sale['payment_account_name']})"

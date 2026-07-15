@@ -16,6 +16,7 @@ from ..services.product_service import ProductService
 from ..services.invoice_service import InvoiceService
 from ..services.sale_service import SaleService
 from ..services.taxonomy_service import TaxonomyService
+from ..services.customer_service import CustomerService
 
 log = get_logger(__name__)
 
@@ -27,6 +28,7 @@ class SaleController:
         self.products = ProductService(ctx.db, ctx.audit)
         self.invoices = InvoiceService(ctx)
         self.taxonomy = TaxonomyService(ctx.db)
+        self.customers = CustomerService(ctx.db, ctx.audit)
 
     # -- currency / tax ----------------------------------------------
     def currency(self) -> tuple[str, int]:
@@ -55,10 +57,20 @@ class SaleController:
     def find_by_invoice(self, invoice_no: str) -> dict | None:
         return self.sales.get_by_invoice(invoice_no)
 
+    def search_customers(self, term: str) -> list[dict]:
+        return self.customers.search_min(term)
+
+    def customer_last_products(self, customer_id: int) -> list[str]:
+        return self.customers.last_products(customer_id)
+
+    def customer_products(self, customer_id: int) -> list[dict]:
+        return self.customers.purchased_products(customer_id)
+
     # -- checkout -----------------------------------------------------
     def checkout(self, *, lines: list[dict[str, Any]], discount: float = 0,
                  payment_method: str = "cash", payment_account_id: int | None = None,
-                 amount_paid: float = 0):
+                 amount_paid: float = 0, customer_name: str | None = None,
+                 customer_phone: str | None = None):
         """lines: [{product_id, qty, unit_price (decimal)}]. Returns (ok, msg, summary)."""
         _, mu = self.currency()
         items: list[dict[str, Any]] = []
@@ -77,11 +89,18 @@ class SaleController:
             user = current_session.require_authenticated()
             if discount_minor > 0 and not current_session.can("sale.discount"):
                 return False, "You do not have permission to give discounts.", None
+            # optional customer attach (walk-in stays NULL)
+            customer_id = None
+            cust_name = (customer_name or "").strip() or None
+            if cust_name:
+                customer_id = self.customers.find_or_create(
+                    cust_name, customer_phone, user_id=user.id)
             summary = self.sales.create_sale(
                 items=items, cashier_id=user.id, cashier_name=user.full_name or user.username,
                 discount_minor=discount_minor, payment_method=payment_method,
                 payment_account_id=payment_account_id,
-                amount_paid_minor=amount_paid_minor, user_id=user.id,
+                amount_paid_minor=amount_paid_minor,
+                customer_id=customer_id, customer_name=cust_name, user_id=user.id,
             )
             return True, "ok", summary
         except LubriPosError as exc:

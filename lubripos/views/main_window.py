@@ -36,6 +36,7 @@ from .payables_view import PayablesView
 from .reports_view import ReportsView
 from .sales_view import SalesView
 from .returns_view import ReturnsView
+from .customers_view import CustomersView
 from .settings_view import SettingsView
 from .suppliers_view import SuppliersView
 from .taxonomy_view import TaxonomyView
@@ -50,6 +51,7 @@ NAV_ITEMS = [
     ("Sale", "pos", False),
     ("Sales History", "sales", False),
     ("Returns", "returns", False),
+    ("Customers", "customers", False),
     ("Products", "products", False),
     ("Categories & Brands", "taxonomy", False),
     ("Suppliers", "suppliers", False),
@@ -251,6 +253,8 @@ class MainWindow(QMainWindow):
             return SalesView(self.ctx)
         if key == "returns":
             return ReturnsView(self.ctx)
+        if key == "customers":
+            return CustomersView(self.ctx)
         if key == "reports":
             return ReportsView(self.ctx)
         if key == "users":
