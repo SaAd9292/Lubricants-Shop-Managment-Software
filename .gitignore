@@ -51,3 +51,6 @@ desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# --- auto-update signing key (NEVER commit) ---
+keys/

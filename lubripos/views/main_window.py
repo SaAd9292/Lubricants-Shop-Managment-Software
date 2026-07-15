@@ -12,14 +12,16 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QStackedWidget, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
+    QProgressDialog, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from .. import __version__
 from ..app_context import AppContext
+from ..controllers.update_controller import UpdateController
 from ..config import resource_path
 from ..core.logging_config import get_logger
 from ..core.session import current_session
@@ -83,7 +85,18 @@ class MainWindow(QMainWindow):
         self.app = app
         self._pages: dict[str, int] = {}
         self._nav_buttons: dict[str, object] = {}
+        self._update_manual = False
+        self._update_progress = None
         self._build_ui()
+        self._build_menu()
+        self._updater = UpdateController(ctx)
+        self._updater.checked.connect(self._on_update_checked)
+        self._updater.check_failed.connect(self._on_update_check_failed)
+        self._updater.progress.connect(self._on_update_progress)
+        self._updater.downloaded.connect(self._on_update_downloaded)
+        self._updater.download_failed.connect(self._on_update_download_failed)
+        # auto check shortly after startup (throttled to once a day)
+        QTimer.singleShot(2500, self._auto_check_updates)
 
     def _build_ui(self) -> None:
         company = self.ctx.company.get_company()
@@ -305,6 +318,81 @@ class MainWindow(QMainWindow):
     def _navigate_to(self, key: str) -> None:
         """Used by clickable dashboard cards."""
         self._go(key)
+
+    # -- auto-update --------------------------------------------------
+    def _build_menu(self) -> None:
+        help_menu = self.menuBar().addMenu("Help")
+        act_upd = help_menu.addAction("Check for updates…")
+        act_upd.triggered.connect(lambda: self._check_updates(manual=True))
+        act_about = help_menu.addAction("About Penguix")
+        act_about.triggered.connect(self._show_about)
+
+    def _show_about(self) -> None:
+        shop = self.ctx.company.get_company().get("shop_name") or "My Shop"
+        QMessageBox.information(
+            self, "About Penguix",
+            f"Penguix — Lubricant & Auto Parts Management System\n"
+            f"Version {__version__}\n\nLicensed to: {shop}")
+
+    def _auto_check_updates(self) -> None:
+        try:
+            if self._updater.should_check_today():
+                self._check_updates(manual=False)
+        except Exception:  # never let the update check break startup
+            pass
+
+    def _check_updates(self, manual: bool) -> None:
+        self._update_manual = manual
+        self._updater.check_async()
+
+    def _on_update_checked(self, info) -> None:
+        if not info:
+            if self._update_manual:
+                QMessageBox.information(
+                    self, "Up to date",
+                    f"You are running the latest version (v{__version__}).")
+            return
+        notes = ("\n\n" + info["notes"]) if info.get("notes") else ""
+        ans = QMessageBox.question(
+            self, "Update available",
+            f"Version {info['version']} is available "
+            f"(you have {__version__}).{notes}\n\nDownload and install now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+        if ans != QMessageBox.Yes:
+            return
+        self._update_progress = QProgressDialog(
+            "Downloading update…", None, 0, 100, self)
+        self._update_progress.setWindowTitle("Updating Penguix")
+        self._update_progress.setWindowModality(Qt.WindowModal)
+        self._update_progress.setCancelButton(None)
+        self._update_progress.setMinimumDuration(0)
+        self._update_progress.setValue(0)
+        self._updater.download_async(info)
+
+    def _on_update_check_failed(self, msg: str) -> None:
+        if self._update_manual:
+            QMessageBox.warning(self, "Update check failed", msg)
+
+    def _on_update_progress(self, pct: int) -> None:
+        if self._update_progress:
+            self._update_progress.setValue(pct)
+
+    def _on_update_downloaded(self, path: str) -> None:
+        if self._update_progress:
+            self._update_progress.close()
+            self._update_progress = None
+        QMessageBox.information(
+            self, "Ready to install",
+            "The update was downloaded and verified. Penguix will now close and "
+            "the installer will run. It will reopen when finished.")
+        self._updater.launch_installer(path)
+        self.close()  # exit so the installer can replace program files
+
+    def _on_update_download_failed(self, msg: str) -> None:
+        if self._update_progress:
+            self._update_progress.close()
+            self._update_progress = None
+        QMessageBox.warning(self, "Update failed", msg)
 
     def _on_settings_saved(self) -> None:
         """Reflect a shop-name change live (window title + header + status bar)."""
