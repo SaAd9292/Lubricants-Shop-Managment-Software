@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -55,22 +56,32 @@ class UpdateService:
     def __init__(self, ctx=None) -> None:
         self.ctx = ctx
         self._pubkey = bytes.fromhex(UPDATE_PUBLIC_KEY_HEX)
+        # throttle stamp is a FILE, not the DB: the update check runs on a
+        # background thread and SQLite connections are bound to their creating
+        # thread, so DB access here would crash. A file is thread-safe.
+        self._stamp = None
+        if ctx is not None:
+            try:
+                self._stamp = Path(ctx.config.data_root) / "update_last_check.txt"
+            except Exception:
+                self._stamp = None
 
     # -- once-a-day throttle (stored in app_meta) --------------------
     def should_check_today(self) -> bool:
-        if self.ctx is None:
+        if not self._stamp:
             return True
-        row = self.ctx.db.query_one(
-            "SELECT value FROM app_meta WHERE key='last_update_check'")
-        return not row or row["value"] != date.today().isoformat()
+        try:
+            return self._stamp.read_text(encoding="utf-8").strip() != date.today().isoformat()
+        except OSError:
+            return True
 
     def mark_checked(self) -> None:
-        if self.ctx is None:
+        if not self._stamp:
             return
-        self.ctx.db.execute(
-            "INSERT INTO app_meta (key, value) VALUES ('last_update_check', ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (date.today().isoformat(),))
+        try:
+            self._stamp.write_text(date.today().isoformat(), encoding="utf-8")
+        except OSError:
+            pass
 
     # -- manifest ----------------------------------------------------
     def _fetch_manifest(self) -> dict:
@@ -144,10 +155,20 @@ class UpdateService:
 
     def launch_installer(self, installer_path) -> None:
         """Start the installer and let the caller close the app so files can be
-        replaced. The Inno Setup installer relaunches Penguix when done."""
+        replaced. The Inno Setup installer relaunches Penguix when done.
+
+        IMPORTANT: PyInstaller onefile apps export _PYI*/_MEIPASS2 env vars that
+        point at THIS app's temp extraction dir. If they leak into the installer
+        (and on to the relaunched new app), the new onefile instance thinks it is
+        a child process and tries to load its Python DLL from our old, now-deleted
+        temp dir -> "Failed to load Python DLL". Launch with those vars stripped."""
         path = str(installer_path)
+        env = os.environ.copy()
+        for k in list(env):
+            if k.startswith("_PYI") or k.startswith("_MEIPASS") or k == "_MEIPASS2":
+                env.pop(k, None)
         if sys.platform.startswith("win"):
-            subprocess.Popen([path], close_fds=False)
+            subprocess.Popen([path], env=env, close_fds=True)
         else:  # dev/testing on non-Windows
-            subprocess.Popen([path])
+            subprocess.Popen([path], env=env)
         log.info("Launched installer: %s", path)

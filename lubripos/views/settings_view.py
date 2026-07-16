@@ -1,57 +1,63 @@
 """Company & Tax settings page — the white-label control center.
 
-Editing shop_name here changes the app title, login screen, and every
-invoice automatically. Nothing about the shop is hardcoded.
-Admin-only (enforced by the main window's menu and re-checked here).
+Organised as a tabbed screen: Shop, Currency & Invoice, Display, Tax, Payment
+Accounts, Updates, and Danger Zone. Editing shop_name here changes the app
+title, login screen, and every invoice automatically. Admin-only (this screen is
+in ADMIN_ONLY_SCREENS).
 
-The Danger Zone at the bottom flushes all shop data (products, suppliers,
-purchases, sales, expenses, audit log) for a fresh start, keeping users,
-settings and the category/brand lists — with an automatic safety backup first.
+The Danger Zone tab flushes all shop data (products, suppliers, purchases, sales,
+expenses, audit log) for a fresh start, keeping users, settings and the
+category/brand lists — with an automatic safety backup first.
 """
 from __future__ import annotations
 
 import os
 
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton,
-    QScrollArea, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
+from .. import __version__
 from ..app_context import AppContext
 from ..core.session import current_session
 from .payment_accounts_dialog import PaymentAccountsDialog
 
 
 class SettingsView(QWidget):
-    def __init__(self, ctx: AppContext, on_saved=None) -> None:
+    def __init__(self, ctx: AppContext, on_saved=None, on_check_updates=None) -> None:
         super().__init__()
         self.ctx = ctx
         self._on_saved = on_saved
+        self._on_check_updates = on_check_updates
         self._build_ui()
         self._load()
 
     # -- UI -----------------------------------------------------------
+    def _scrolled(self, w: QWidget) -> QScrollArea:
+        """Wrap a tab's content in a scroll area so it stays usable on small
+        windows."""
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QScrollArea.NoFrame)
+        sa.setWidget(w)
+        return sa
+
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(28, 28, 28, 28)
-        title = QLabel("Shop & Tax Settings")
+        outer.setSpacing(14)
+        title = QLabel("Settings")
         title.setObjectName("PageTitle")
         outer.addWidget(title)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        host = QWidget()
-        scroll.setWidget(host)
-        col = QVBoxLayout(host)
-        col.setSpacing(16)
-        outer.addWidget(scroll, 1)
+        self.tabs = QTabWidget()
+        outer.addWidget(self.tabs, 1)
 
-        # --- Shop identity ---
-        shop_box = QGroupBox("Shop Identity")
-        shop_form = QFormLayout(shop_box)
+        # ---- Shop tab ----
+        shop = QWidget()
+        shop_form = QFormLayout(shop)
         self.shop_name = QLineEdit()
         self.owner_name = QLineEdit()
         self.phone = QLineEdit()
@@ -83,11 +89,11 @@ class SettingsView(QWidget):
         lr.addWidget(choose_logo)
         lr.addWidget(clear_logo)
         shop_form.addRow("Logo (on receipt)", logo_row)
-        col.addWidget(shop_box)
+        self.tabs.addTab(self._scrolled(shop), "Shop")
 
-        # --- Currency & invoice ---
-        cur_box = QGroupBox("Currency & Invoice")
-        cur_form = QFormLayout(cur_box)
+        # ---- Currency & Invoice tab ----
+        cur = QWidget()
+        cur_form = QFormLayout(cur)
         self.currency_code = QLineEdit()
         self.currency_symbol = QLineEdit()
         self.minor_units = QComboBox()
@@ -101,11 +107,11 @@ class SettingsView(QWidget):
         cur_form.addRow("Decimal precision", self.minor_units)
         cur_form.addRow("Invoice prefix", self.invoice_prefix)
         cur_form.addRow("Invoice footer", self.invoice_footer)
-        col.addWidget(cur_box)
+        self.tabs.addTab(self._scrolled(cur), "Currency & Invoice")
 
-        # --- Display & interface ---
-        disp_box = QGroupBox("Display & Interface")
-        disp_form = QFormLayout(disp_box)
+        # ---- Display tab ----
+        disp = QWidget()
+        disp_form = QFormLayout(disp)
         self.language = QComboBox()
         self.language.addItem("English", "en")
         self.language.addItem("اردو (Urdu)", "ur")
@@ -118,11 +124,11 @@ class SettingsView(QWidget):
         disp_hint.setWordWrap(True)
         disp_hint.setObjectName("Muted")
         disp_form.addRow("", disp_hint)
-        col.addWidget(disp_box)
+        self.tabs.addTab(self._scrolled(disp), "Display")
 
-        # --- Tax ---
-        tax_box = QGroupBox("Tax")
-        tax_form = QFormLayout(tax_box)
+        # ---- Tax tab ----
+        tax = QWidget()
+        tax_form = QFormLayout(tax)
         self.tax_enabled = QCheckBox("Apply tax on sales")
         self.tax_label = QLineEdit()
         self.tax_rate = QDoubleSpinBox()
@@ -134,11 +140,11 @@ class SettingsView(QWidget):
         tax_form.addRow("Tax label", self.tax_label)
         tax_form.addRow("Tax rate", self.tax_rate)
         tax_form.addRow("", self.tax_inclusive)
-        col.addWidget(tax_box)
+        self.tabs.addTab(self._scrolled(tax), "Tax")
 
-        # --- Payment accounts ---
-        pay_box = QGroupBox("Payment Accounts")
-        pay_lay = QVBoxLayout(pay_box)
+        # ---- Payment Accounts tab ----
+        pay = QWidget()
+        pay_lay = QVBoxLayout(pay)
         pay_hint = QLabel(
             "Manage the shop's Bank / EasyPaisa / JazzCash accounts. The cashier "
             "picks one at checkout, and the day-close report totals money received "
@@ -153,11 +159,31 @@ class SettingsView(QWidget):
         pay_row.addWidget(manage_btn)
         pay_row.addStretch(1)
         pay_lay.addLayout(pay_row)
-        col.addWidget(pay_box)
+        pay_lay.addStretch(1)
+        self.tabs.addTab(self._scrolled(pay), "Payment Accounts")
 
-        # --- Danger zone ---
-        danger = QGroupBox("Danger Zone")
-        d_lay = QVBoxLayout(danger)
+        # ---- Updates tab (admin-only screen) ----
+        upd = QWidget()
+        upd_lay = QVBoxLayout(upd)
+        upd_lay.addWidget(QLabel(f"Penguix version {__version__}"))
+        upd_row = QHBoxLayout()
+        self.check_upd_btn = QPushButton("Check for updates")
+        self.check_upd_btn.setObjectName("Secondary")
+        self.check_upd_btn.clicked.connect(self._check_updates_clicked)
+        upd_row.addWidget(self.check_upd_btn)
+        upd_row.addStretch(1)
+        upd_lay.addLayout(upd_row)
+        upd_hint = QLabel("Only administrators can update the software. Updates are "
+                          "verified before installing and never touch your shop data.")
+        upd_hint.setWordWrap(True)
+        upd_hint.setObjectName("Muted")
+        upd_lay.addWidget(upd_hint)
+        upd_lay.addStretch(1)
+        self.tabs.addTab(self._scrolled(upd), "Updates")
+
+        # ---- Danger Zone tab ----
+        dz = QWidget()
+        dz_lay = QVBoxLayout(dz)
         warn = QLabel(
             "Flush all shop data for a fresh start. Products, suppliers, "
             "purchases, sales, expenses and the audit log are permanently "
@@ -166,22 +192,22 @@ class SettingsView(QWidget):
             "so this can be undone from Backup & Restore.")
         warn.setWordWrap(True)
         warn.setObjectName("Muted")
-        d_lay.addWidget(warn)
+        dz_lay.addWidget(warn)
         flush_row = QHBoxLayout()
         flush_btn = QPushButton("Flush all data…")
         flush_btn.setObjectName("Danger")
         flush_btn.clicked.connect(self._flush)
         flush_row.addWidget(flush_btn)
         flush_row.addStretch(1)
-        d_lay.addLayout(flush_row)
-        col.addWidget(danger)
+        dz_lay.addLayout(flush_row)
+        dz_lay.addStretch(1)
+        self.tabs.addTab(self._scrolled(dz), "Danger Zone")
 
-        col.addStretch(1)
-
-        # --- Actions ---
+        # ---- global save (applies to Shop / Currency / Display / Tax) ----
         actions = QHBoxLayout()
         actions.addStretch(1)
         save = QPushButton("Save settings")
+        save.setObjectName("Success")
         save.clicked.connect(self._save)
         actions.addWidget(save)
         outer.addLayout(actions)
@@ -216,6 +242,7 @@ class SettingsView(QWidget):
     def _save(self) -> None:
         if not self.shop_name.text().strip():
             QMessageBox.warning(self, "Required", "Shop name cannot be empty.")
+            self.tabs.setCurrentIndex(0)
             return
         user = current_session.user
         uid = user.id if user else None
@@ -254,6 +281,10 @@ class SettingsView(QWidget):
             QMessageBox.information(self, "Saved", "Settings updated.")
         if self._on_saved:
             self._on_saved()
+
+    def _check_updates_clicked(self) -> None:
+        if self._on_check_updates:
+            self._on_check_updates()
 
     def _choose_logo(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

@@ -88,7 +88,6 @@ class MainWindow(QMainWindow):
         self._update_manual = False
         self._update_progress = None
         self._build_ui()
-        self._build_menu()
         self._updater = UpdateController(ctx)
         self._updater.checked.connect(self._on_update_checked)
         self._updater.check_failed.connect(self._on_update_check_failed)
@@ -280,7 +279,8 @@ class MainWindow(QMainWindow):
         if key == "taxonomy":
             return TaxonomyView(self.ctx)
         if key == "settings":
-            return SettingsView(self.ctx, on_saved=self._on_settings_saved)
+            return SettingsView(self.ctx, on_saved=self._on_settings_saved,
+                                on_check_updates=self.check_for_updates)
         return PlaceholderView(label)
 
     # -- navigation ---------------------------------------------------
@@ -319,24 +319,19 @@ class MainWindow(QMainWindow):
         """Used by clickable dashboard cards."""
         self._go(key)
 
-    # -- auto-update --------------------------------------------------
-    def _build_menu(self) -> None:
-        help_menu = self.menuBar().addMenu("Help")
-        act_upd = help_menu.addAction("Check for updates…")
-        act_upd.triggered.connect(lambda: self._check_updates(manual=True))
-        act_about = help_menu.addAction("About Penguix")
-        act_about.triggered.connect(self._show_about)
+    # -- auto-update (admin only) -------------------------------------
+    def check_for_updates(self) -> None:
+        """Public entry point used by the admin-only Settings screen."""
+        self._check_updates(manual=True)
 
-    def _show_about(self) -> None:
-        shop = self.ctx.company.get_company().get("shop_name") or "My Shop"
-        QMessageBox.information(
-            self, "About Penguix",
-            f"Penguix — Lubricant & Auto Parts Management System\n"
-            f"Version {__version__}\n\nLicensed to: {shop}")
+    def _is_admin(self) -> bool:
+        u = current_session.user
+        return bool(u and u.role == "admin")
 
     def _auto_check_updates(self) -> None:
         try:
-            if self._updater.should_check_today():
+            # only administrators are ever prompted to update the software
+            if self._is_admin() and self._updater.should_check_today():
                 self._check_updates(manual=False)
         except Exception:  # never let the update check break startup
             pass

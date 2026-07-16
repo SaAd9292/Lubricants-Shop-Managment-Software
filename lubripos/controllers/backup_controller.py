@@ -25,8 +25,10 @@ class BackupController:
     def list(self) -> list[dict[str, Any]]:
         return self.backup.list_backups()
 
-    def create(self):
-        return self._guarded(lambda uid: self.backup.create_backup(backup_type="manual", user_id=uid))
+    def create(self, dest_path: str | None = None):
+        return self._guarded(
+            lambda uid: self.backup.create_backup(
+                backup_type="manual", user_id=uid, dest_path=dest_path))
 
     def restore(self, path: str):
         return self._guarded(lambda uid: self.backup.restore_backup(path, user_id=uid))

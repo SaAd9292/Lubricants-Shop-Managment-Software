@@ -12,7 +12,7 @@
 ; ============================================================
 
 #define AppName       "Penguix"
-#define AppVersion    "0.5.0"
+#define AppVersion    "0.5.9"
 #define AppPublisher  "Penguin Inc"
 #define AppExeName    "Penguix.exe"
 
@@ -58,7 +58,7 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+Filename: "{cmd}"; Parameters: "/C set ""_PYI_PARENT_PROCESS_LEVEL="" & set ""_PYI_APPLICATION_HOME_DIR="" & set ""_PYI_ARCHIVE_FILE="" & set ""_MEIPASS2="" & set ""_MEIPASS="" & start """" ""{app}\{#AppExeName}"""; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent runhidden
 
 ; NOTE: Shop data lives in %APPDATA%\Penguix and is intentionally NOT removed
 ; on uninstall, so reinstalling keeps all products, sales and backups.

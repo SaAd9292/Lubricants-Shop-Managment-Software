@@ -63,11 +63,22 @@ class BackupService:
 
     # -- create -------------------------------------------------------
     def create_backup(self, *, backup_type: str = "manual", user_id: int | None = None,
-                      dest_dir: Path | None = None) -> str:
-        dest_dir = Path(dest_dir) if dest_dir else self.get_backup_dir()
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        path = dest_dir / f"lubripos_{backup_type}_{stamp}.db"
+                      dest_dir: Path | None = None, dest_path: Path | None = None) -> str:
+        """Write a consistent snapshot of the DB to a .db file.
+
+        dest_path -> write to this EXACT file (the user picked it in a Save
+        dialog). Otherwise a timestamped name is generated inside dest_dir (or
+        the configured backup folder)."""
+        if dest_path is not None:
+            path = Path(dest_path)
+            if path.suffix.lower() != ".db":
+                path = path.with_suffix(".db")
+            path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            dest_dir = Path(dest_dir) if dest_dir else self.get_backup_dir()
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            path = dest_dir / f"lubripos_{backup_type}_{stamp}.db"
 
         src = self.db.connect()
         dst = sqlite3.connect(str(path))
@@ -140,8 +151,9 @@ class BackupService:
     # Wiped on flush (children before parents for FK safety). Users,
     # company_settings, tax_settings, categories, brands and
     # expense_categories are intentionally KEPT.
-    _FLUSH_TABLES = ("sale_items", "sales", "purchase_items", "purchases",
-                     "expenses", "suppliers", "products")
+    _FLUSH_TABLES = ("sale_return_items", "sale_returns", "sale_items",
+                     "supplier_payments", "purchase_items", "sales", "purchases",
+                     "expenses", "products", "suppliers", "customers")
 
     def flush_shop_data(self, *, user_id: int | None = None) -> str:
         """Reset the shop to a clean state for a new business, keeping users,
@@ -153,6 +165,9 @@ class BackupService:
         """
         safety = self.create_backup(backup_type="pre_restore", user_id=user_id)
         with self.db.transaction() as conn:
+            # defer FK checks to COMMIT so the delete order can't trip a
+            # constraint; the end state (all shop tables emptied) is consistent.
+            conn.execute("PRAGMA defer_foreign_keys=ON")
             for tbl in self._FLUSH_TABLES:
                 conn.execute(f"DELETE FROM {tbl}")  # names are a fixed constant
             conn.execute("DELETE FROM audit_logs")

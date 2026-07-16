@@ -61,6 +61,14 @@ def main() -> int:
     except us.UpdateError:
         check(True, "check() raises on bad signature")
 
+    print("\n[update] daily throttle uses a file, not the DB (no thread crash)")
+    import tempfile, types
+    ctx = types.SimpleNamespace(config=types.SimpleNamespace(data_root=tempfile.mkdtemp()))
+    svc2 = us.UpdateService(ctx)
+    check(svc2.should_check_today(), "fresh install -> should check")
+    svc2.mark_checked()
+    check(not svc2.should_check_today(), "after marking -> throttled for the day")
+
     n = sum(_r); print(f"\n==== {n}/{len(_r)} checks passed ====")
     return 0 if n == len(_r) else 1
 

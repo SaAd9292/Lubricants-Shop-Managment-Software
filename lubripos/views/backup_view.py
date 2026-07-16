@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
+from pathlib import Path
+
 from ..controllers.backup_controller import BackupController
 
 COLUMNS = ["When", "Type", "Size", "Location"]
@@ -125,7 +127,14 @@ class BackupView(QWidget):
             QMessageBox.warning(self, "Error", msg)
 
     def _backup_now(self) -> None:
-        ok, msg, path = self.controller.create()
+        from datetime import datetime
+        suggested = str(Path(self.folder.text()) /
+                        f"lubripos_manual_{datetime.now():%Y%m%d_%H%M%S}.db")
+        chosen, _ = QFileDialog.getSaveFileName(
+            self, "Save backup as", suggested, "Backup files (*.db)")
+        if not chosen:
+            return   # user cancelled
+        ok, msg, path = self.controller.create(dest_path=chosen)
         if ok:
             QMessageBox.information(self, "Backed up", f"Backup saved to:\n{path}")
             self._reload()

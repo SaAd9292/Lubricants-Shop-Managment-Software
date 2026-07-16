@@ -8,12 +8,21 @@ cd /d "%~dp0"
 if not exist "..\dist\Penguix.exe" goto nodist
 
 set "ISCC="
-if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
-if exist "%ProgramFiles%\Inno Setup 6\ISCC.exe" set "ISCC=%ProgramFiles%\Inno Setup 6\ISCC.exe"
+for %%P in (
+  "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
+  "%ProgramFiles%\Inno Setup 6\ISCC.exe"
+  "%ProgramFiles(x86)%\Inno Setup 5\ISCC.exe"
+  "%ProgramFiles%\Inno Setup 5\ISCC.exe"
+  "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
+) do if not defined ISCC if exist "%%~P" set "ISCC=%%~P"
+REM fall back to PATH, then to the registry install location
+if not defined ISCC for /f "delims=" %%I in ('where ISCC 2^>nul') do if not defined ISCC set "ISCC=%%I"
+if not defined ISCC for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1" /v InstallLocation 2^>nul ^| find "InstallLocation"') do set "ISCC=%%B\ISCC.exe"
 if not defined ISCC goto noiscc
+echo Using Inno Setup: %ISCC%
 
 "%ISCC%" "penguix_installer.iss"
-if exist "output\Penguix-Setup-0.2.0.exe" goto ok
+if exist "output\Penguix-Setup-*.exe" goto ok
 goto maybefail
 
 :nodist
@@ -36,7 +45,7 @@ exit /b 1
 :ok
 echo.
 echo  ============================================
-echo   SUCCESS:  installer\output\Penguix-Setup-0.2.0.exe
+echo   SUCCESS:  installer\output\Penguix-Setup-<version>.exe
 echo   Give THIS file to a shop to install Penguix.
 echo  ============================================
 echo.

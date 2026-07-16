@@ -36,14 +36,30 @@ def main() -> int:
     expenses = ExpenseService(db, ctx.audit)
 
     # create some transactional/catalog data
-    pid = products.create({"name": "Test Oil", "sale_price_minor": 50000, "stock_qty": 10})
-    suppliers.create({"name": "ACME"})
+    pid = products.create({"name": "Test Oil", "sale_price_minor": 50000, "stock_qty": 20})
+    sid = suppliers.create({"name": "ACME"})
     sales.create_sale(items=[{"product_id": pid, "qty": 2}], cashier_id=1,
                       cashier_name="admin", user_id=1)
     expenses.create({"category": "Rent", "amount_minor": 10000}, user_id=1)
 
+    # data in the newer tables (returns / payables / customers) that used to
+    # trip a FOREIGN KEY error in the old flush -- regression guard
+    from lubripos.services.customer_service import CustomerService
+    from lubripos.services.payable_service import PayableService
+    from lubripos.services.purchase_service import PurchaseService
+    cid = CustomerService(db, ctx.audit).find_or_create("Bilal", "0300")
+    s2 = sales.create_sale(items=[{"product_id": pid, "qty": 3}], cashier_id=1,
+                           cashier_name="admin", customer_id=cid,
+                           customer_name="Bilal", user_id=1)
+    item_id = sales.get_sale(s2["id"])["items"][0]["id"]
+    sales.create_return(s2["id"], [{"sale_item_id": item_id, "qty": 1}])
+    PurchaseService(db, ctx.audit).create_purchase(
+        supplier_id=sid, items=[{"product_id": pid, "qty": 5, "unit_cost_minor": 3000}],
+        amount_paid_minor=0)
+    PayableService(db, ctx.audit).record_payment(sid, 5000, method="Cash")
+
     print("\n[flush] before flush there is data")
-    check(count(db, "products") == 1 and count(db, "sales") == 1
+    check(count(db, "products") == 1 and count(db, "sales") == 2
           and count(db, "expenses") == 1, "products/sales/expenses present")
 
     users_before = count(db, "users")
@@ -55,7 +71,8 @@ def main() -> int:
 
     print("\n[flush] wipes transactional/catalog data")
     for tbl in ("products", "suppliers", "sales", "sale_items",
-                "purchases", "purchase_items", "expenses"):
+                "purchases", "purchase_items", "expenses",
+                "sale_returns", "sale_return_items", "supplier_payments", "customers"):
         check(count(db, tbl) == 0, f"{tbl} cleared")
 
     print("\n[flush] keeps users, settings, and lists")
@@ -69,7 +86,6 @@ def main() -> int:
     print("\n[flush] resets invoice counter + audit + safety backup")
     seq = db.query_one("SELECT value FROM app_meta WHERE key='invoice_seq'")
     check(seq is not None and seq["value"] == "0", "invoice counter reset to 0")
-    logs = ctx.audit.list_logs(action="FLUSH_DATA") if hasattr(ctx.audit, "list_logs") else None
     # audit_logs cleared then one FLUSH entry recorded
     check(count(db, "audit_logs") == 1, "audit log has exactly the flush entry")
     check(Path(safety).is_file(), "safety backup file was created")
