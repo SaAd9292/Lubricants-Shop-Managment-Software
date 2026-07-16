@@ -131,6 +131,10 @@ class CustomerService:
         """Full history: the products this customer has bought (with qty, how
         many visits, last date, last price) plus the list of their sales."""
         cust = self.get(customer_id)
+        # One row per product this customer ever bought: total qty, how many
+        # visits it appeared in, and when. The correlated sub-query pulls the
+        # price from that customer's MOST RECENT purchase of the product (a plain
+        # GROUP BY can't pick "the price from the latest row").
         products = [dict(r) for r in self.db.query(
             """SELECT si.product_name AS product, SUM(si.qty) AS qty,
                   COUNT(DISTINCT s.id) AS visits, MAX(s.sale_date) AS last_date,

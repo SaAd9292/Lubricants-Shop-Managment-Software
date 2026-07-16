@@ -3,11 +3,11 @@
 White-label, single-tenant **desktop POS + inventory + accounting** for
 lubricant shops, auto-parts stores, and oil & grease distributors.
 **One installation = one shop.** The shop's identity (name, address, logo,
-currency, tax) comes entirely from the `company_settings` table — nothing is
-hardcoded, so the same build serves any business.
+currency, tax, language) comes entirely from the `company_settings` table —
+nothing is hardcoded, so the same build serves any business.
 
 **Stack:** Python 3.13+ · PySide6 · SQLite (WAL) · ReportLab · OpenPyXL · MVC + service layer
-**Platform:** Windows desktop (light theme). **Version:** 0.2.0
+**Platform:** Windows desktop. **Version:** 0.5.9  ·  **Schema version:** 10
 
 ---
 
@@ -40,35 +40,45 @@ A legacy `LubriPOS` data folder, if present, is migrated automatically on first 
 
 ## Build a Windows installer
 
-```bat
-build_exe.bat                  :: PyInstaller -> dist\Penguix.exe
-installer\build_installer.bat  :: Inno Setup  -> installer\output\Penguix-Setup-x.y.z.exe
+```powershell
+# 1. ALWAYS activate the venv first (else PyInstaller isn't on PATH)
+& .\.venv\Scripts\Activate.ps1
+
+# 2. Build the single-file exe  ->  dist\Penguix.exe
+.\build_exe.bat
+
+# 3. Build the installer  ->  installer\output\Penguix-Setup-x.y.z.exe
+.\installer\build_installer.bat        # or open the .iss in Inno Setup and press F9
 ```
 
-Run both from inside the activated virtualenv so dependencies are bundled.
-Requires PyInstaller and Inno Setup 6 (`ISCC.exe` on PATH).
+`build_exe.bat` now refuses to run if PyInstaller isn't importable and deletes the
+old exe first, so a stale build can never masquerade as a success. Requires
+PyInstaller (bundled dep) and Inno Setup 6.
 
 ---
 
 ## Architecture (MVC + service layer)
 
 ```
-main.py                # entry point: login -> main window loop
+main.py                # entry point: login -> main window loop; installs crash handler
 lubripos/
   config.py            # cross-platform paths (%APPDATA%\Penguix)
   app_context.py       # composition root (wires DB + shared services)
-  core/                # money (integer minor units), security (PBKDF2),
-                       # session/roles, exceptions, logging
-  database/            # connection (WAL, FK on), schema.sql, init/migrate/seed
-  services/            # ALL business logic + SQL (products, sales, reports, ...)
-  controllers/         # mediate views <-> services, enforce roles, convert money
+  core/                # money (integer minor units), security (PBKDF2), session/roles,
+                       # permissions (per-user grants), i18n (Urdu/English), exceptions,
+                       # logging, ed25519 (pure-Python signature verify for updates)
+  database/            # connection (WAL, FK on), schema.sql, init / migrate / seed
+  services/            # ALL business logic + SQL (products, sales, returns, purchases,
+                       # payables, customers, reports, backup, update, company, ...)
+  controllers/         # mediate views <-> services, enforce roles/permissions, convert money
   views/               # PySide6 screens (no SQL, no business logic)
-  ui/                  # light theme (QSS), SVG icons, shared widgets
+  ui/                  # theme (QSS), SVG icons, shared widgets, on-screen numeric keypad
   reports/             # PDF invoices + PDF/Excel report exporters
+tools/                 # keygen.py (Ed25519 update keys) + release.py (sign the update manifest)
+docs/                  # AUTO_UPDATE.md, HOW_PENGUIX_WAS_BUILT.md
 ```
 
 Rule of thumb: **views never touch the database; services never import Qt.**
-A full developer walkthrough lives in the project's Codebase Guide.
 
 ---
 
@@ -77,60 +87,79 @@ A full developer walkthrough lives in the project's Codebase Guide.
 - **Money = INTEGER minor units** (paisa/cents). Never float. Formatted only at
   the UI edge via `core/money.py`.
 - **Tax = INTEGER basis points** (1700 = 17.00%), single source of truth in
-  `tax_settings`; can be enabled/disabled and made inclusive/exclusive per shop.
+  `tax_settings`; enable/disable and inclusive/exclusive per shop.
 - **Passwords:** PBKDF2-HMAC-SHA256, per-user salt, 240k iterations, constant-time verify.
-- **No hard deletes** on products/users/suppliers (soft `is_active`); sale and
-  purchase lines **snapshot** name + price + cost so history never changes when a
-  product is later edited.
-- **Transactions** wrap multi-step writes (e.g. sale + stock decrement) so a crash
-  can't corrupt stock.
-- **Backups** use SQLite's online-backup API (consistent mid-write), with daily
-  auto-backup, manual backup, and restore (writes a safety backup first).
+- **No hard deletes** on products/users/suppliers/customers (soft `is_active`); sale,
+  purchase and return lines **snapshot** name + price + cost so history never changes
+  when a product is later edited.
+- **Transactions** wrap multi-step writes (sale + stock decrement, purchase + stock-in,
+  return + restock) so a crash can't corrupt stock.
+- **Returns are a ledger, net-of-returns:** completed sales stay unchanged; refunds are
+  recorded in `sale_returns`/`sale_return_items` and netted out of the day-close and
+  profit reports. Stock is added back per returned line.
+- **Per-user permissions:** admins have everything; cashiers carry a JSON grant list
+  (`users.permissions`) of screens + actions. Sensitive screens (Users, Settings, Backup,
+  Audit) are admin-only and can never be granted.
+- **Auto-update** is opt-in and **admin-only**, using an **Ed25519-signed manifest** on
+  GitHub Releases; the app verifies the signature and the installer's SHA-256 before
+  installing. See `docs/AUTO_UPDATE.md`.
+- **Backups** use SQLite's online-backup API (a consistent whole-database snapshot —
+  every table), with daily auto-backup, manual backup to a **chosen location**, and
+  restore (writes a safety backup first).
 - **Audit log** is append-only.
 
 ---
 
 ## Features
 
-- **Products** — CRUD, indexed barcode/name search, low-stock highlighting,
-  units (Piece/Bottle/Carton/Litre/Kg).
+- **Products** — CRUD, indexed barcode/name search, inline price + margin editing,
+  low-stock highlighting, units (Piece/Bottle/Carton/Litre/Kg).
 - **Categories & Brands** — dynamic; dedicated management screen + add-inline.
-- **Suppliers + Purchases** — multi-line purchases, atomic auto stock-in, history.
-- **POS / Sales** — barcode scan, cart, configurable GST, transactional stock
-  decrement, multiple payment methods (Cash/Bank/EasyPaisa/JazzCash), void.
-- **Invoices** — black-and-white ReportLab PDF, print, reprint from history.
-- **Expenses** — categorised tracking with filters.
-- **Reports** — 8 reports (daily/monthly sales, profit, stock, low stock,
-  purchases, expenses, tax), each with PDF + Excel export + print, all
-  black-and-white for clean laser printing.
-- **Dashboard** — today's sales/profit/expenses, stock value, low-stock alerts.
-- **Backup & restore** — online-backup API, daily auto-backup, configurable folder.
-- **User management** — admin CRUD, password reset, role/active control.
-- **Roles** — Admin (full control) and Cashier (POS, sales history, dashboard).
+- **Suppliers + Purchases** — multi-line purchases, atomic auto stock-in, history,
+  itemised purchase report, and an optional "amount paid now" (credit purchases).
+- **Supplier Payables** — track what the shop owes each supplier, record payments,
+  per-supplier ledger. (Kept out of the P&L — buying stock isn't an expense.)
+- **POS / Sales** — barcode scan, category-filtered product search, cart, configurable
+  GST, transactional stock decrement, named payment accounts (Cash/Bank/EasyPaisa/JazzCash),
+  optional customer attach + "reorder from history".
+- **Returns** — partial / line-level returns by invoice: pick quantities, refund, restock.
+- **Customers** — optional directory keyed on (name, phone); per-customer purchase history
+  ("which oil did they buy?") and one-click reorder into the cart.
+- **Invoices / receipt** — 80 mm thermal receipt + A4 ReportLab PDF, print, reprint;
+  shop logo + configurable footer.
+- **Expenses** — categorised tracking with date filters and per-row edit/delete.
+- **Reports** — 8 reports (daily day-close, monthly, profit, stock, low stock, purchases,
+  expenses, tax), each with PDF + Excel export + print; profit/day-close are net of returns.
+- **Dashboard** — today/week/month toggle, sales trend chart, sales/profit/expenses,
+  stock value, low-stock + inactive-product alerts.
+- **Settings (tabbed, admin-only)** — Shop · Currency & Invoice · Display (language +
+  touchscreen) · Tax · Payment Accounts · Updates · Danger Zone (flush).
+- **Localization** — English / Urdu toggle (counter screens, LTR); optional on-screen
+  numeric keypad for touchscreens.
+- **Backup & restore** — whole-database online backup, daily auto-backup, restore,
+  choose-save-location, configurable auto-backup folder.
+- **Users & roles** — admin CRUD, password reset, active control, per-user privileges.
 
 ---
 
 ## Tests
 
-Nine headless test suites cover every service (142 checks total):
+19 headless suites run against an isolated temp database (`LUBRIPOS_HOME`), and run
+automatically in CI on every push (`.github/workflows/tests.yml`):
 
 ```bash
-python tests/test_foundation.py
-python tests/test_products.py
-python tests/test_purchases.py
-python tests/test_sales.py
-python tests/test_invoice.py
-python tests/test_expenses.py
-python tests/test_reports.py
-python tests/test_backup.py
-python tests/test_users.py
+for t in tests/test_*.py; do python "$t"; done
 ```
 
-Each runs against an isolated temp database via `LUBRIPOS_HOME`.
+`test_foundation · products · purchases · sales · invoice · expenses · reports · backup ·
+users · pricing · stock_adjust · payment_accounts · permissions · returns · payables ·
+customers · i18n · update · flush`
 
 ---
 
 ## Roadmap
 
-- Licensing / activation (offline signed keys, perpetual per major version,
+- **Authenticode code-signing** of the installer (removes the SmartScreen "unknown
+  publisher" warning) — separate from the update system, added when distributing widely.
+- **Licensing / activation** (offline Ed25519-signed keys, perpetual per major version,
   node-locked) — designed, to be added before commercial distribution.

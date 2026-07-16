@@ -349,6 +349,79 @@ service/controller layers where tests can reach them; migrations upgrade real
 databases safely; and every change is proven by the headless test suite before
 it ships.
 
+## 14. Beyond 0.4.0 — the 0.5.x line
+
+After the first packaged release the app kept growing. Each addition followed the
+same discipline (services own the logic and the SQL, controllers guard access,
+views stay thin, and a headless test proves it), and each shipped through the new
+auto-update pipeline. Schema is now at **version 10**.
+
+### 14.1 Partial / line-level returns
+The early "return" simply voided a whole invoice. That was replaced by a proper
+**returns ledger**. Two tables, `sale_returns` and `sale_return_items`, record who
+returned what, how much was refunded, and which invoice it came from;
+`sale_items.returned_qty` caps how much of each line can still be returned. The
+original sale is left **completed** — nothing is rewritten. Reports are computed
+**net of returns**: the day-close shows a Refunds line and a Net that subtracts
+them, and the profit report backs out the returned items' margin. Returning a line
+adds its quantity back to stock.
+
+### 14.2 Supplier payables
+Purchases gained an optional "amount paid now" field, turning them into credit
+purchases when it is less than the total. A `supplier_payments` ledger records
+later payments, and a Payables screen shows, per supplier, what was purchased, what
+was paid, and the balance owed — with a per-supplier ledger dialog. Deliberately,
+payables are **kept out of the P&L**: buying stock is not an expense (it becomes
+cost of goods sold when the item sells), and paying a supplier is a cash movement,
+not a cost.
+
+### 14.3 Customer directory + purchase history
+Sales can optionally be attached to a customer (name + phone; walk-ins stay
+anonymous). A returning customer is matched on (name, phone) with the phone
+normalised to digits. The Customers screen shows each person's history — which
+products they bought, how many visits, last price and date — so a cashier can
+answer "which oil did I use last time?". At the POS, picking a customer opens a
+**reorder dialog** listing their previously-bought products (current price/stock);
+ticked items drop straight into the cart through the normal add-to-cart path.
+
+### 14.4 Localization and touchscreens
+A lightweight in-house translation layer (`core/i18n.py`, a plain dict plus a
+`tr()` helper) adds an **English/Urdu** toggle covering the counter screens and the
+receipt; Urdu is shown left-to-right to avoid re-flowing every layout. A
+**touchscreen mode** adds an on-screen numeric keypad to the Sale screen whose keys
+never steal focus, so one shared pad drives every numeric field. Both are admin
+settings.
+
+### 14.5 Auto-update (the biggest addition)
+Penguix updates itself from **GitHub Releases** using an **Ed25519-signed manifest**.
+A tiny `latest.json` — `{data:{version,url,sha256,notes}, sig}` — is published with
+each release. The app fetches it, verifies the signature against a public key baked
+into the binary, compares versions, downloads the installer, checks its SHA-256, and
+(with the admin's consent) runs it and exits so the installer can replace the files.
+Because the manifest is signed, a tampered installer **or** a tampered manifest is
+rejected even if the hosting is compromised — the attacker lacks the private key.
+The crypto is a self-contained pure-Python RFC 8032 implementation (`core/ed25519.py`),
+validated byte-for-byte against the reference `cryptography` library, so there is no
+new runtime dependency. Update controls are **admin-only** (Settings → Updates); the
+database lives in AppData, so updates never touch shop data and migrations run on the
+next launch. Releases are cut with `tools/release.py`, which stamps, hashes and signs
+the manifest; `tools/keygen.py` created the keypair (private seed git-ignored).
+
+Two subtle bugs surfaced while testing it and were fixed: the daily "already checked"
+marker moved from the database to a file (the check runs on a background thread and
+SQLite connections are thread-bound), and the installer now clears PyInstaller's
+`_PYI*` environment variables before relaunching (otherwise the new one-file exe tried
+to load its Python DLL from the old, deleted temp folder).
+
+### 14.6 Settings, backups, and a flush fix
+Settings became a **tabbed** screen (Shop, Currency & Invoice, Display, Tax, Payment
+Accounts, Updates, Danger Zone) instead of one long scroll. Manual backup gained a
+**"choose where to save"** dialog; the backup itself is a whole-database snapshot via
+SQLite's online-backup API, so it always includes every table (verified table-by-table
+against a live database). Finally, the Danger-Zone "flush all data" was updated to clear
+the new returns/payables/customers tables in the right order (with deferred foreign-key
+checks) after it started failing with a foreign-key error once those tables held data.
+
 ---
 
-*Document generated for the Penguix (LubriPOS) project — version 0.4.0.*
+*Document generated for the Penguix (LubriPOS) project — version 0.5.9.*
