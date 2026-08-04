@@ -59,6 +59,8 @@ class ReportController:
             return rs.expenses(date_from, date_to)
         if key == "tax":
             return rs.tax(date_from, date_to)
+        if key == "product_list":
+            return rs.product_list(brand_id=brand_id, as_of=date_from)
         raise ValueError(f"Unknown report key: {key}")
 
     # -- export -------------------------------------------------------

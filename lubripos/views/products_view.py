@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidgetItem,
+    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -24,11 +24,11 @@ PAGE_SIZE = 25
 
 # (header label, sort key, is_money, is_numeric)
 COLUMNS = [
+    ("Order", "sort_order", False, True),   # manual display order (editable)
     ("Barcode", "barcode", False, False),
     ("Name", "name", False, False),
     ("Brand", "brand", False, False),
     ("Category", "category", False, False),
-    ("Unit", None, False, False),
     ("Purchase", "purchase_price", True, True),
     ("Sale", "sale_price", True, True),
     ("Margin %", None, False, True),
@@ -50,7 +50,7 @@ class ProductsView(QWidget):
         self._edit_prices = False
         self._page = 0
         self._total = 0
-        self._sort_by = "name"
+        self._sort_by = "sort_order"   # products default to the shop's custom order
         self._sort_dir = "asc"
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -94,6 +94,11 @@ class ProductsView(QWidget):
         self._fill_filter(self.f_brand, "All brands", self.controller.brands())
         self.f_category.currentIndexChanged.connect(self._reset_and_reload)
         self.f_brand.currentIndexChanged.connect(self._reset_and_reload)
+        self.f_barcode = QComboBox()
+        self.f_barcode.addItem("All products", None)
+        self.f_barcode.addItem("With barcode", "with")
+        self.f_barcode.addItem("Without barcode", "without")
+        self.f_barcode.currentIndexChanged.connect(self._reset_and_reload)
 
         self.f_low = QCheckBox("Low stock only")
         self.f_low.stateChanged.connect(self._reset_and_reload)
@@ -104,6 +109,7 @@ class ProductsView(QWidget):
         filters.addWidget(self.search, 2)
         filters.addWidget(self.f_category, 1)
         filters.addWidget(self.f_brand, 1)
+        filters.addWidget(self.f_barcode, 1)
         filters.addWidget(self.f_low)
         filters.addWidget(self.f_inactive)
         root.addLayout(filters)
@@ -117,8 +123,14 @@ class ProductsView(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        self.table.horizontalHeader().sectionClicked.connect(self._on_sort)
+        hdr = self.table.horizontalHeader()
+        hdr.setSectionResizeMode(2, QHeaderView.Stretch)   # Name takes the space
+        for _c in (1, 3, 4):                               # Barcode, Brand, Category
+            hdr.setSectionResizeMode(_c, QHeaderView.Interactive)
+        self.table.setColumnWidth(1, 120)
+        self.table.setColumnWidth(3, 110)
+        self.table.setColumnWidth(4, 120)
+        hdr.sectionClicked.connect(self._on_sort)
         self.table.doubleClicked.connect(lambda: self._edit_selected())
         root.addWidget(self.table, 1)
 
@@ -169,6 +181,7 @@ class ProductsView(QWidget):
             brand_id=self.f_brand.currentData(),
             only_active=not self.f_inactive.isChecked(),
             low_stock_only=self.f_low.isChecked(),
+            has_barcode=self.f_barcode.currentData(),
             sort_by=self._sort_by,
             sort_dir=self._sort_dir,
             limit=PAGE_SIZE,
@@ -186,11 +199,11 @@ class ProductsView(QWidget):
         for r, p in enumerate(rows):
             low = p["stock_qty"] <= p["min_stock_level"]
             values = [
+                str(p.get("sort_order") or 0),
                 p.get("barcode") or "",
                 p["name"],
                 p.get("brand_name") or "",
                 p.get("category_name") or "",
-                p.get("unit_type") or "",
                 self.controller.fmt(p["purchase_price_minor"]),
                 self.controller.fmt(p["sale_price_minor"]),
                 f"{(p.get('markup_bps') or 0) / 100:g} %",
@@ -200,12 +213,12 @@ class ProductsView(QWidget):
                 "",  # Save (used only in price-edit mode)
             ]
             if self._edit_prices:
-                # the spin-box editors replace the Purchase/Sale cells, so blank
+                # editors replace the Order/Purchase/Sale/Margin cells, so blank
                 # the underlying text or it shows faded behind the editor.
-                values[5] = values[6] = values[7] = ""
+                values[0] = values[5] = values[6] = values[7] = ""
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
-                if c in (5, 6, 7, 8, 9):
+                if c in (0, 5, 6, 7, 8, 9):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if c == 0:
                     item.setData(Qt.UserRole, p["id"])  # stash product id
@@ -234,6 +247,14 @@ class ProductsView(QWidget):
         return spin
 
     def _add_price_editors(self, r: int, p: dict) -> None:
+        # editable Order # so the owner can renumber a row to match the price
+        # sheet during the same pass they update prices
+        order = QSpinBox()
+        order.setRange(0, 1_000_000_000)
+        order.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        order.setValue(int(p.get("sort_order") or 0))
+        self.table.setCellWidget(r, 0, order)
+
         ps = self._price_spin(p["purchase_price_minor"])
         ss = self._price_spin(p["sale_price_minor"])
         ms = QDoubleSpinBox()
@@ -265,14 +286,14 @@ class ProductsView(QWidget):
         btn = QPushButton("Save")
         btn.setObjectName("SuccessOutline")
         btn.clicked.connect(
-            lambda _=False, pid=p["id"], a=ps, b=ss, c=ms, bt=btn:
-            self._save_price(pid, a, b, c, bt))
+            lambda _=False, pid=p["id"], o=order, a=ps, b=ss, c=ms, bt=btn:
+            self._save_price(pid, o, a, b, c, bt))
         self.table.setCellWidget(r, len(COLUMNS) - 1, btn)
 
-    def _save_price(self, pid, pspin, sspin, mspin, btn) -> None:
+    def _save_price(self, pid, ospin, pspin, sspin, mspin, btn) -> None:
         ok, msg, _ = self.controller.save(
-            {"purchase_price": pspin.value(), "sale_price": sspin.value(),
-             "markup": mspin.value()}, pid)
+            {"sort_order": int(ospin.value()), "purchase_price": pspin.value(),
+             "sale_price": sspin.value(), "markup": mspin.value()}, pid)
         if ok:
             btn.setText("Saved ✓")
             QTimer.singleShot(1400, lambda: btn.setText("Save"))

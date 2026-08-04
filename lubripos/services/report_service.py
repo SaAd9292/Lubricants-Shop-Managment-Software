@@ -58,25 +58,66 @@ class ReportService:
                ORDER BY sr.id DESC, sri.id""", (like,))]
         refunds_total = sum(r["amount"] for r in ret_rows)
 
-        # -- section 3: money received. pay_rows aggregates by METHOD (for the
-        #    cards); pay_detail_rows breaks it down by the named account. --
-        pay_rows = [dict(r) for r in self.db.query(
-            """SELECT payment_method AS method, COUNT(*) AS sales,
-                  SUM(grand_total_minor) AS amount
-               FROM sales WHERE status='completed' AND sale_date LIKE ?
-               GROUP BY payment_method ORDER BY amount DESC""", (like,))]
-        pay_detail_rows = []
+        # -- section 3: money received (real cash/bank IN today) --
+        # Money IN = non-Debt SALES + debt REPAYMENTS, grouped by method and by
+        # the SPECIFIC account it landed in. Debt sales are not money in (they go
+        # on the customer's tab). This gives the owner the total, the cash-vs-bank
+        # split, and exactly how much reached each bank / EasyPaisa / JazzCash
+        # account.
+        _order = {"Cash": 0, "Bank": 1, "EasyPaisa": 2, "JazzCash": 3}
+        buckets: dict[tuple[str, str], dict[str, int]] = {}
+
+        def _add(method, account, amount, count):
+            key = (method or "Other", account or "")
+            b = buckets.setdefault(key, {"amount": 0, "count": 0})
+            b["amount"] += int(amount or 0)
+            b["count"] += int(count or 0)
+
         for r in self.db.query(
             """SELECT payment_method AS method,
                   COALESCE(payment_account_name, '') AS account,
-                  COUNT(*) AS sales, SUM(grand_total_minor) AS amount
+                  COUNT(*) AS n, SUM(grand_total_minor) AS amount
                FROM sales WHERE status='completed' AND sale_date LIKE ?
-               GROUP BY payment_method, payment_account_name
-               ORDER BY amount DESC""", (like,)):
-            r = dict(r)
-            label = f"{r['method']} - {r['account']}" if r["account"] else r["method"]
-            pay_detail_rows.append(
-                {"method": label, "sales": r["sales"], "amount": r["amount"]})
+                 AND payment_method != 'Debt'
+               GROUP BY payment_method, payment_account_name""", (like,)):
+            r = dict(r); _add(r["method"], r["account"], r["amount"], r["n"])
+        for r in self.db.query(
+            """SELECT COALESCE(method,'Cash') AS method,
+                  COALESCE(account_name, '') AS account,
+                  COUNT(*) AS n, SUM(amount_minor) AS amount
+               FROM customer_payments WHERE payment_date LIKE ?
+               GROUP BY method, account_name""", (like,)):
+            r = dict(r); _add(r["method"], r["account"], r["amount"], r["n"])
+
+        # per-method totals (for the cards + the cash/bank split)
+        method_totals: dict[str, int] = {}
+        for (method, _a), b in buckets.items():
+            method_totals[method] = method_totals.get(method, 0) + b["amount"]
+        total_received = sum(method_totals.values())
+
+        # detail rows: each method, its per-account lines, and a method subtotal
+        # when that method has more than one account.
+        pay_detail_rows = []
+        for method in sorted({m for m, _ in buckets},
+                             key=lambda m: (_order.get(m, 9), m)):
+            accts = sorted([(a, b) for (m, a), b in buckets.items() if m == method],
+                           key=lambda x: -x[1]["amount"])
+            for account, b in accts:
+                label = f"{method} — {account}" if account else method
+                pay_detail_rows.append(
+                    {"method": label, "sales": b["count"], "amount": b["amount"]})
+            if len(accts) > 1:
+                pay_detail_rows.append(
+                    {"method": f"{method} — total", "sales": "",
+                     "amount": method_totals[method]})
+
+        debt_today = self.db.query_one(
+            "SELECT COALESCE(SUM(grand_total_minor),0) v FROM sales "
+            "WHERE status='completed' AND sale_date LIKE ? "
+            "AND payment_method='Debt'", (like,))["v"]
+        repay_today = self.db.query_one(
+            "SELECT COALESCE(SUM(amount_minor),0) v FROM customer_payments "
+            "WHERE payment_date LIKE ?", (like,))["v"]
 
         # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
@@ -88,7 +129,7 @@ class ReportService:
         net = gross - refunds_total - expense_total
 
         # per-method map so the UI can show a card per channel even at zero
-        by_method = {r["method"]: r["amount"] for r in pay_rows}
+        by_method = method_totals
 
         return {
             "key": "daily_sales", "title": "Daily Sales Report (Day Close)",
@@ -124,7 +165,7 @@ class ReportService:
                  "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],
                  "rows": pay_detail_rows,
-                 "total_label": "Total received", "total": gross},
+                 "total_label": "Total received", "total": total_received},
             ],
             "payments": by_method,
             "summary": [
@@ -134,6 +175,9 @@ class ReportService:
                 {"label": "Tax collected", "value": agg["tax"], "money": True},
                 {"label": "Expenses", "value": expense_total, "money": True},
                 {"label": "Refunds", "value": refunds_total, "money": True},
+                {"label": "Money received", "value": total_received, "money": True},
+                {"label": "On credit (unpaid)", "value": debt_today, "money": True},
+                {"label": "Debt repayments", "value": repay_today, "money": True},
                 {"label": "Net", "value": net, "money": True},
             ],
         }
@@ -422,4 +466,80 @@ class ReportService:
                 {"label": "Total tax collected", "value": agg["tax"], "money": True},
                 {"label": f"{label} rate", "value": rate_txt, "money": False},
             ],
+        }
+
+
+    # ---- 9. Product / Price List (per-brand, printable) ------------
+    def product_list(self, brand_id: int | None = None,
+                     as_of: str | None = None) -> dict[str, Any]:
+        """Printable product/price list. Products are grouped by brand and each
+        brand is numbered INDEPENDENTLY from 1, following the shop's custom order
+        (products.sort_order). Optionally filtered to a single brand.
+
+        as_of (yyyy-mm-dd): show the purchase/sale prices that were in effect on
+        that date, reconstructed from product_price_history. None = live prices."""
+        clauses, params = ["p.is_active = 1"], []
+        subtitle = "All brands"
+        if brand_id:
+            clauses.append("p.brand_id = ?")
+            params.append(brand_id)
+            row = self.db.query_one("SELECT name FROM brands WHERE id = ?", (brand_id,))
+            subtitle = row["name"] if row else "Brand"
+
+        if as_of:
+            bound = f"{as_of} 23:59:59"
+            # historical price = the most recent history row on/before `bound`
+            pp = ("(SELECT h.purchase_price_minor FROM product_price_history h "
+                  "WHERE h.product_id = p.id AND h.changed_at <= ? "
+                  "ORDER BY h.changed_at DESC, h.id DESC LIMIT 1)")
+            sp = ("(SELECT h.sale_price_minor FROM product_price_history h "
+                  "WHERE h.product_id = p.id AND h.changed_at <= ? "
+                  "ORDER BY h.changed_at DESC, h.id DESC LIMIT 1)")
+            select_params = [bound, bound]
+            # only products that already existed on that date
+            clauses.append("EXISTS (SELECT 1 FROM product_price_history h2 "
+                           "WHERE h2.product_id = p.id AND h2.changed_at <= ?)")
+            params.append(bound)
+            subtitle += f"  ·  prices as of {as_of}"
+        else:
+            pp, sp = "p.purchase_price_minor", "p.sale_price_minor"
+            select_params = []
+
+        where = "WHERE " + " AND ".join(clauses)
+        raw = self.db.query(
+            f"""SELECT COALESCE(b.name, '(no brand)') AS brand, p.name AS name,
+                   COALESCE(p.barcode, '') AS barcode,
+                   COALESCE(c.name, '') AS category,
+                   {pp} AS purchase_price_minor, {sp} AS sale_price_minor, p.stock_qty
+               FROM products p
+               LEFT JOIN brands b     ON b.id = p.brand_id
+               LEFT JOIN categories c ON c.id = p.category_id
+               {where}
+               ORDER BY b.name, p.sort_order, p.id""",
+            tuple(select_params + params))
+        rows = []
+        cur_brand, n = None, 0
+        for r in raw:
+            r = dict(r)
+            if r["brand"] != cur_brand:   # restart numbering at each new brand
+                cur_brand, n = r["brand"], 0
+            n += 1
+            r["num"] = n
+            rows.append(r)
+        return {
+            "key": "product_list",
+            "title": "Product Price List",
+            "subtitle": subtitle,
+            "columns": [
+                _col("num", "#", "right"),
+                _col("brand", "Brand"),
+                _col("name", "Product"),
+                _col("barcode", "Barcode"),
+                _col("category", "Category"),
+                _col("purchase_price_minor", "Purchase", "right", True),
+                _col("sale_price_minor", "Sale", "right", True),
+                _col("stock_qty", "Stock", "right"),
+            ],
+            "rows": rows,
+            "summary": [{"label": "Products", "value": len(rows), "money": False}],
         }

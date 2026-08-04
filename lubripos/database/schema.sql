@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS products (
     markup_bps          INTEGER NOT NULL DEFAULT 0 CHECK (markup_bps >= 0),
     stock_qty           INTEGER NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
     min_stock_level     INTEGER NOT NULL DEFAULT 0 CHECK (min_stock_level >= 0),
+    sort_order    INTEGER NOT NULL DEFAULT 0,   -- manual display order (match a paper price list)
     is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     updated_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
@@ -112,6 +113,19 @@ CREATE INDEX IF NOT EXISTS idx_products_barcode  ON products(barcode);
 CREATE INDEX IF NOT EXISTS idx_products_name     ON products(name);
 CREATE INDEX IF NOT EXISTS idx_products_brand    ON products(brand_id);
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category_id);
+
+-- Every product price change (purchase + sale) is logged here so the shop can
+-- reconstruct the price list "as of" any past date. One row = the prices that
+-- became effective at changed_at.
+CREATE TABLE IF NOT EXISTS product_price_history (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id           INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    purchase_price_minor INTEGER NOT NULL DEFAULT 0,
+    sale_price_minor     INTEGER NOT NULL DEFAULT 0,
+    changed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    changed_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pph_product ON product_price_history(product_id, changed_at);
 CREATE INDEX IF NOT EXISTS idx_products_active   ON products(is_active);
 
 -- ---------- Suppliers -------------------------------------------------
@@ -152,6 +166,8 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
     purchase_id  INTEGER REFERENCES purchases(id) ON DELETE SET NULL,
     amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
     method       TEXT,
+    account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,
+    account_name TEXT,
     notes        TEXT,
     payment_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -198,6 +214,23 @@ CREATE TABLE IF NOT EXISTS customers (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_name_phone
     ON customers(name COLLATE NOCASE, phone);
 CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+
+-- Customer credit / "udhaar": a sale with payment_method='Debt' is unpaid and
+-- goes on the customer's tab; repayments are recorded here. A customer's balance
+-- owed = SUM(their Debt sales) - SUM(these payments).
+CREATE TABLE IF NOT EXISTS customer_payments (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id  INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    sale_id      INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+    amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+    method       TEXT,
+    notes        TEXT,
+    payment_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_custpay_customer ON customer_payments(customer_id);
+CREATE INDEX IF NOT EXISTS idx_custpay_date     ON customer_payments(payment_date);
 
 CREATE TABLE IF NOT EXISTS sales (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,

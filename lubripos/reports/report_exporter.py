@@ -71,16 +71,28 @@ def _multi_pdf(story, report, symbol, mu, cell, with_cards):
             val = money(s["value"]) if s.get("money") else str(s["value"])
             kpi_cells.append(Paragraph(f"<b>{s['label']}</b><br/>{val}", cell))
         if kpi_cells:
-            kt = Table([kpi_cells], hAlign="LEFT")
+            # wrap into rows of 4 so the summary reads as a clean grid instead of
+            # one cramped strip of many narrow columns.
+            per_row = 4
+            grid = [kpi_cells[i:i + per_row]
+                    for i in range(0, len(kpi_cells), per_row)]
+            if grid and len(grid[-1]) < per_row:
+                grid[-1] += [Paragraph("", cell)] * (per_row - len(grid[-1]))
+            kt = Table(grid, hAlign="LEFT")
             kt.setStyle(_box_style())
             story.append(kt)
             story.append(Spacer(1, 6))
 
+        # cash-vs-digital split (only channels that actually took money)
         pays = report.get("payments", {})
-        pcells = [Paragraph(f"<b>{m}</b><br/>{money(pays.get(m, 0))}", cell) for m in _METHODS]
-        pt = Table([pcells], hAlign="LEFT")
-        pt.setStyle(_box_style())
-        story.append(pt)
+        pcells = [Paragraph(f"<b>{m}</b><br/>{money(pays.get(m, 0))}", cell)
+                  for m in _METHODS if pays.get(m)]
+        if pcells:
+            if len(pcells) < 4:
+                pcells += [Paragraph("", cell)] * (4 - len(pcells))
+            pt = Table([pcells], hAlign="LEFT")
+            pt.setStyle(_box_style())
+            story.append(pt)
         story.append(Spacer(1, 10))
 
     for sec in report.get("sections", []):

@@ -34,6 +34,7 @@ def make_db(tmp: Path) -> Database:
 def run(db: Database) -> None:
     tax = TaxonomyService(db)
     svc = ProductService(db)
+    tax = TaxonomyService(db)
 
     print("\n[taxonomy] add + idempotency")
     zic = next(b["id"] for b in tax.list_brands() if b["name"] == "ZIC")
@@ -111,6 +112,34 @@ def run(db: Database) -> None:
         check(False, "missing product should raise")
     except NotFoundError:
         check(True, "missing product raises NotFoundError")
+
+    print("\n[order] per-brand custom order (match a supplier price sheet)")
+    br = tax.add_brand("OrderBrand")
+
+    def brand_order():
+        return [r["id"] for r in svc.list_products(
+            brand_id=br, sort_by="sort_order", sort_dir="asc", limit=1000)["rows"]]
+
+    p1 = svc.create({"name": "OB One", "brand_id": br, "sale_price_minor": 100})
+    p2 = svc.create({"name": "OB Two", "brand_id": br, "sale_price_minor": 100})
+    p3 = svc.create({"name": "OB Three", "brand_id": br, "sale_price_minor": 100})
+    check(svc.get(p1)["sort_order"] == 1, "first product of a brand starts at 1")
+    check(brand_order() == [p1, p2, p3], "new products append within their brand, in order")
+    svc.update(p3, {"sort_order": 0})          # push P3 to the top of THIS brand
+    check(brand_order()[0] == p3, "renumbered product moves to the top of its brand list")
+    p4 = svc.create({"name": "OB Four", "brand_id": br, "sale_price_minor": 100})
+    check(brand_order()[-1] == p4, "brand-new product appends to the end of its brand list")
+
+    print("\n[filter] with / without barcode")
+    base_with = svc.list_products(has_barcode="with")["total"]
+    base_without = svc.list_products(has_barcode="without")["total"]
+    svc.create({"name": "Has Barcode", "barcode": "9990001112223", "sale_price_minor": 100})
+    svc.create({"name": "No Barcode", "sale_price_minor": 100})          # NULL barcode
+    svc.create({"name": "Blank Barcode", "barcode": "", "sale_price_minor": 100})
+    check(svc.list_products(has_barcode="with")["total"] == base_with + 1,
+          "'with barcode' counts only real barcodes")
+    check(svc.list_products(has_barcode="without")["total"] == base_without + 2,
+          "'without barcode' includes NULL and blank barcodes")
 
     print("\n[security] sort key whitelist (injection-proof)")
     # a bogus sort key must fall back to a safe default, not break/inject

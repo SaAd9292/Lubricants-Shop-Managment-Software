@@ -3,9 +3,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
+from datetime import datetime
+from pathlib import Path
+
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QHBoxLayout, QHeaderView, QLabel,
-    QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QHeaderView,
+    QLabel, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -24,6 +27,7 @@ REPORTS = [
     ("Purchases", "purchases", "range"),
     ("Expenses", "expenses", "range"),
     ("GST / Tax", "tax", "range"),
+    ("Product Price List", "product_list", "day"),
 ]
 
 
@@ -153,9 +157,12 @@ class ReportsView(QWidget):
         self.date_from.setVisible(show_from)
         self.lbl_to.setVisible(show_to)
         self.date_to.setVisible(show_to)
-        show_stock = key == "stock"
-        for w in (self.lbl_brand, self.f_brand, self.lbl_product, self.f_product):
-            w.setVisible(show_stock)
+        show_brand = key in ("stock", "product_list")
+        show_product = key == "stock"
+        self.lbl_brand.setVisible(show_brand)
+        self.f_brand.setVisible(show_brand)
+        self.lbl_product.setVisible(show_product)
+        self.f_product.setVisible(show_product)
         hints = {
             "day": "Uses the 'From' date as the report day.",
             "month": "Uses the month/year of the 'From' date.",
@@ -163,8 +170,14 @@ class ReportsView(QWidget):
             "none": "This report is a current snapshot; dates are ignored.",
         }
         self.lbl_from.setText("Month:" if mode == "month" else "Date:" if mode == "day" else "From:")
-        self.hint.setText("Filter by brand and/or product (optional)." if show_stock
-                          else hints.get(mode, ""))
+        if key == "product_list":
+            self.lbl_from.setText("Price as of:")
+        if key == "stock":
+            self.hint.setText("Filter by brand and/or product (optional).")
+        elif key == "product_list":
+            self.hint.setText("Pick a brand to print just that brand's list, or All brands.")
+        else:
+            self.hint.setText(hints.get(mode, ""))
 
     # -- generate -----------------------------------------------------
     def _generate(self) -> None:
@@ -174,7 +187,7 @@ class ReportsView(QWidget):
         if self._mode() == "range" and d_to < d_from:
             QMessageBox.warning(self, "Invalid range", "'To' date is before 'From' date.")
             return
-        brand_id = self.f_brand.currentData() if key == "stock" else None
+        brand_id = self.f_brand.currentData() if key in ("stock", "product_list") else None
         product_id = self.f_product.currentData() if key == "stock" else None
         try:
             self._report = self.controller.build(key, d_from, d_to,
@@ -240,7 +253,14 @@ class ReportsView(QWidget):
     def _export(self, fmt: str) -> None:
         if not self._report:
             return
-        ok, msg, path = self.controller.export(self._report, fmt)
+        ext = "pdf" if fmt == "pdf" else "xlsx"
+        flt = "PDF files (*.pdf)" if fmt == "pdf" else "Excel files (*.xlsx)"
+        suggested = str(Path.home() /
+                        f"{self._report['key']}_{datetime.now():%Y%m%d_%H%M%S}.{ext}")
+        chosen, _ = QFileDialog.getSaveFileName(self, "Save report as", suggested, flt)
+        if not chosen:
+            return   # user cancelled
+        ok, msg, path = self.controller.export(self._report, fmt, dest=chosen)
         if ok:
             QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))

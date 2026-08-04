@@ -134,6 +134,40 @@ def main() -> int:
             found = row[1]
     check(abs((found or 0) - 1017.90) < 0.001, "XLSX day-close Gross sales == 1017.90 (major units)")
 
+    print("\n[product_list] per-brand price list + shape")
+    from lubripos.services.taxonomy_service import TaxonomyService
+    tax = TaxonomyService(db)
+    shell = tax.add_brand("Shell"); kixx = tax.add_brand("Kixx")
+    products.create({"name": "Shell A", "brand_id": shell, "sale_price_minor": 1000})
+    products.create({"name": "Shell B", "brand_id": shell, "sale_price_minor": 1000})
+    products.create({"name": "Kixx A", "brand_id": kixx, "sale_price_minor": 1200})
+    pl = rs.product_list()
+    by_brand = {}
+    for r in pl["rows"]:
+        by_brand.setdefault(r["brand"], []).append(r["num"])
+    check(by_brand.get("Shell") == [1, 2] and by_brand.get("Kixx") == [1],
+          "each brand numbered independently from 1")
+    one = rs.product_list(brand_id=kixx)
+    check(one["subtitle"] == "Kixx" and [r["num"] for r in one["rows"]] == [1],
+          "single-brand list filters + numbers from 1")
+    check(pl["key"] == "product_list" and any(c["money"] for c in pl["columns"]),
+          "report shape ok (money columns present for the exporter)")
+
+    print("\n[price_list] price-list as of a past date")
+    hp = products.create({"name": "History Oil", "brand_id": shell,
+                          "purchase_price_minor": 3000, "sale_price_minor": 5000})
+    db.execute("INSERT INTO product_price_history (product_id,purchase_price_minor,"
+               "sale_price_minor,changed_at) VALUES (?,?,?,?)", (hp, 1000, 1500, "2026-01-01 10:00:00"))
+    db.execute("INSERT INTO product_price_history (product_id,purchase_price_minor,"
+               "sale_price_minor,changed_at) VALUES (?,?,?,?)", (hp, 2000, 2500, "2026-06-01 10:00:00"))
+
+    def hprice(d):
+        return [(r["purchase_price_minor"], r["sale_price_minor"])
+                for r in rs.product_list(as_of=d)["rows"] if r["name"] == "History Oil"]
+    check(hprice("2026-03-01") == [(1000, 1500)], "as-of shows the price in effect then")
+    check(hprice("2026-07-01") == [(2000, 2500)], "as-of picks the latest change on/before the date")
+    check(hprice("2025-01-01") == [], "product excluded from a date before it existed")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

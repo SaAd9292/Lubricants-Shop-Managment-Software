@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 10
+CURRENT_VERSION = 14
 
 
 def run_migrations(db: Database) -> None:
@@ -25,6 +25,10 @@ def run_migrations(db: Database) -> None:
     _migration_8_supplier_payables(db)
     _migration_9_customers(db)
     _migration_10_ui_prefs(db)
+    _migration_11_product_sort_order(db)
+    _migration_12_price_history(db)
+    _migration_13_customer_debt(db)
+    _migration_14_custpay_account(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -245,3 +249,73 @@ def _migration_10_ui_prefs(db: Database) -> None:
         db.execute("ALTER TABLE company_settings ADD COLUMN touch_mode INTEGER "
                    "NOT NULL DEFAULT 0")
     log.info("Migration: added company_settings.language + touch_mode")
+
+
+def _migration_11_product_sort_order(db: Database) -> None:
+    """v11: products.sort_order — a manual display order so the owner can arrange
+    the product list to match a supplier's paper price sheet. Back-fill each
+    existing product's order to its id, preserving the current (creation) order."""
+    if not _column_exists(db, "products", "sort_order"):
+        db.execute("ALTER TABLE products ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+        db.execute("UPDATE products SET sort_order = id")
+    log.info("Migration: added products.sort_order + back-filled to id")
+
+
+def _migration_12_price_history(db: Database) -> None:
+    """v12: product_price_history — log every price change so a price list can be
+    reconstructed 'as of' a past date. Back-fill one baseline row per existing
+    product using its CURRENT prices, effective from its created_at (we have no
+    older data, so as-of dates before the first real change show today's price)."""
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS product_price_history (
+            id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_id           INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+            purchase_price_minor INTEGER NOT NULL DEFAULT 0,
+            sale_price_minor     INTEGER NOT NULL DEFAULT 0,
+            changed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            changed_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_pph_product ON product_price_history(product_id, changed_at);
+        """
+    )
+    db.execute(
+        "INSERT INTO product_price_history "
+        "(product_id, purchase_price_minor, sale_price_minor, changed_at) "
+        "SELECT id, purchase_price_minor, sale_price_minor, created_at FROM products p "
+        "WHERE NOT EXISTS (SELECT 1 FROM product_price_history h WHERE h.product_id = p.id)")
+    log.info("Migration: added product_price_history + baseline back-fill")
+
+
+def _migration_13_customer_debt(db: Database) -> None:
+    """v13: customer credit ('udhaar'). A Debt-method sale is unpaid and sits on
+    the customer's tab; repayments live in customer_payments."""
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS customer_payments (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_id  INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+            sale_id      INTEGER REFERENCES sales(id) ON DELETE SET NULL,
+            amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+            method       TEXT,
+            notes        TEXT,
+            payment_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+            created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_custpay_customer ON customer_payments(customer_id);
+        CREATE INDEX IF NOT EXISTS idx_custpay_date     ON customer_payments(payment_date);
+        """
+    )
+    log.info("Migration: added customer_payments (customer credit / debt)")
+
+
+def _migration_14_custpay_account(db: Database) -> None:
+    """v14: record WHICH account a debt repayment landed in (e.g. a specific
+    EasyPaisa / bank account), mirroring how sales store the account."""
+    if not _column_exists(db, "customer_payments", "account_id"):
+        db.execute("ALTER TABLE customer_payments ADD COLUMN account_id INTEGER "
+                   "REFERENCES payment_accounts(id) ON DELETE SET NULL")
+    if not _column_exists(db, "customer_payments", "account_name"):
+        db.execute("ALTER TABLE customer_payments ADD COLUMN account_name TEXT")
+    log.info("Migration: added customer_payments.account_id + account_name")

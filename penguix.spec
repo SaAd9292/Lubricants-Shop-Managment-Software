@@ -6,6 +6,12 @@
 # IMPORTANT: schema.sql is read at runtime, so it must be bundled as data.
 # (tuple form is OS-independent — no ';' vs ':' issues.)
 
+from PyInstaller.utils.hooks import collect_submodules
+
+# reportlab's barcode package imports ALL its encoder submodules
+# (code93, code39, code128, ...) on load, so grab the whole package.
+_barcode_mods = collect_submodules('reportlab.graphics.barcode')
+
 block_cipher = None
 
 a = Analysis(
@@ -17,7 +23,11 @@ a = Analysis(
         ('assets/penguix.ico', 'assets'),
         ('assets/penguix.png', 'assets'),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        # reportlab loads every barcode encoder dynamically on import; include the
+        # whole barcode package so the invoice barcode works in the frozen build.
+        *_barcode_mods,
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

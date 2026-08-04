@@ -21,6 +21,8 @@ from reportlab.platypus import (
     Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
+from reportlab.graphics.barcode import createBarcodeDrawing
+
 from ..core.money import format_money
 
 LINE = colors.HexColor("#000000")
@@ -149,13 +151,24 @@ def generate_invoice_pdf(*, sale: dict[str, Any], company: dict[str, Any],
     if sale.get("tax_minor"):
         rate = sale.get("tax_rate_bps", 0) / 100.0
         trows.append([f"{sale.get('tax_label', 'Tax')} {rate:.2f}%", fmt(sale["tax_minor"])])
-    trows.append(["Grand Total", fmt(sale.get("grand_total_minor", 0))])
-    if str(sale.get("payment_method", "")).lower() == "cash" and sale.get("amount_paid_minor"):
-        trows.append(["Paid", fmt(sale["amount_paid_minor"])])
-        change = max(0, int(sale["amount_paid_minor"]) - int(sale.get("grand_total_minor", 0)))
-        trows.append(["Change", fmt(change)])
+    grand = int(sale.get("grand_total_minor", 0))
+    trows.append(["Grand Total", fmt(grand)])
+    method = str(sale.get("payment_method", "")).lower()
+    # A 'Debt' sale is unpaid: nothing paid now, whole amount is due. Every other
+    # method is paid in full at the counter. Cash may show tendered + change.
+    if method == "debt":
+        trows.append(["Amount Paid", fmt(0)])
+        trows.append(["Amount Due", fmt(grand)])
+    else:
+        if method == "cash" and sale.get("amount_paid_minor"):
+            trows.append(["Cash Tendered", fmt(sale["amount_paid_minor"])])
+            change = max(0, int(sale["amount_paid_minor"]) - grand)
+            trows.append(["Change", fmt(change)])
+        trows.append(["Amount Paid", fmt(grand)])
+        trows.append(["Amount Due", fmt(0)])
 
     grand_row = next(i for i, r_ in enumerate(trows) if r_[0] == "Grand Total")
+    due_row = next(i for i, r_ in enumerate(trows) if r_[0] == "Amount Due")
     totals_tbl = Table(trows, colWidths=[CONTENT_W * 0.58, CONTENT_W * 0.42])
     totals_tbl.setStyle(TableStyle([
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
@@ -167,8 +180,23 @@ def generate_invoice_pdf(*, sale: dict[str, Any], company: dict[str, Any],
         ("LINEABOVE", (0, grand_row), (-1, grand_row), 0.5, LINE),
         ("FONTNAME", (0, grand_row), (-1, grand_row), "Helvetica-Bold"),
         ("FONTSIZE", (0, grand_row), (-1, grand_row), 11),
-    ]))
+    ] + ([("FONTNAME", (0, due_row), (-1, due_row), "Helvetica-Bold"),
+          ("TEXTCOLOR", (0, due_row), (-1, due_row), colors.HexColor("#b00020"))]
+         if method == "debt" else [])))
     story.append(totals_tbl)
+
+    # Scannable barcode of the invoice number: at Returns, the cashier scans this
+    # (USB scanner types the value + Enter) to pull the sale up instantly.
+    inv_no = str(sale.get("invoice_no") or "").strip()
+    if inv_no:
+        try:
+            bc = createBarcodeDrawing("Code128", value=inv_no, barHeight=11 * mm,
+                                      width=CONTENT_W, humanReadable=True)
+            bc.hAlign = "CENTER"
+            story += [Spacer(1, 8), bc]
+        except Exception:  # never let a barcode failure break the receipt
+            pass
+
     story.append(Spacer(1, 6))
     story.append(_rule())
     story.append(Spacer(1, 3))

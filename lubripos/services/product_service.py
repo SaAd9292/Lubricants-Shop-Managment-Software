@@ -28,12 +28,13 @@ _SORT_COLUMNS = {
     "purchase_price": "p.purchase_price_minor",
     "stock": "p.stock_qty",
     "updated_at": "p.updated_at",
+    "sort_order": "brand_name, p.sort_order",   # group by brand, then per-brand order
 }
 
 _EDITABLE = {
     "barcode", "name", "brand_id", "category_id", "unit_type",
     "purchase_price_minor", "sale_price_minor", "markup_bps", "stock_qty",
-    "min_stock_level",
+    "min_stock_level", "sort_order",
 }
 
 _SELECT = """
@@ -58,13 +59,14 @@ class ProductService:
         brand_id: int | None = None,
         only_active: bool = True,
         low_stock_only: bool = False,
+        has_barcode: str | None = None,   # None / "with" / "without"
         sort_by: str = "name",
         sort_dir: str = "asc",
         limit: int = 25,
         offset: int = 0,
     ) -> dict[str, Any]:
         where, params = self._build_where(
-            search, category_id, brand_id, only_active, low_stock_only
+            search, category_id, brand_id, only_active, low_stock_only, has_barcode
         )
         sort_expr = _SORT_COLUMNS.get(sort_by, "p.name")
         direction = "DESC" if str(sort_dir).lower() == "desc" else "ASC"
@@ -110,6 +112,26 @@ class ProductService:
         except sqlite3.IntegrityError as exc:
             raise self._barcode_error(exc, clean.get("barcode"))
         new_id = cur.lastrowid
+        if "sort_order" not in clean:
+            # append the new product to the END of ITS BRAND's list — each brand
+            # is ordered independently and numbered starting from 1.
+            brand = clean.get("brand_id")
+            if brand is None:
+                self.db.execute(
+                    "UPDATE products SET sort_order = (SELECT COALESCE(MAX(sort_order),0)+1 "
+                    "FROM products WHERE brand_id IS NULL AND id != ?) WHERE id = ?",
+                    (new_id, new_id))
+            else:
+                self.db.execute(
+                    "UPDATE products SET sort_order = (SELECT COALESCE(MAX(sort_order),0)+1 "
+                    "FROM products WHERE brand_id = ? AND id != ?) WHERE id = ?",
+                    (brand, new_id, new_id))
+        # baseline price-history entry so 'price list as of' works from day one
+        self.db.execute(
+            "INSERT INTO product_price_history (product_id, purchase_price_minor, "
+            "sale_price_minor, changed_by) VALUES (?,?,?,?)",
+            (new_id, clean.get("purchase_price_minor", 0),
+             clean.get("sale_price_minor", 0), user_id))
         self.audit.record(action="CREATE", user_id=user_id, entity_type="product",
                           entity_id=new_id, details={"name": clean.get("name")})
         log.info("Created product id=%s name=%r", new_id, clean.get("name"))
@@ -117,7 +139,7 @@ class ProductService:
 
     def update(self, product_id: int, data: dict[str, Any],
                *, user_id: int | None = None) -> None:
-        self.get(product_id)  # raises NotFoundError if missing
+        current = self.get(product_id)  # raises NotFoundError if missing
         clean = self._validate(data, creating=False)
         if not clean:
             return
@@ -129,6 +151,17 @@ class ProductService:
             )
         except sqlite3.IntegrityError as exc:
             raise self._barcode_error(exc, clean.get("barcode"))
+        # if a price actually changed, append a price-history row (new effective
+        # prices) so old price lists can be reconstructed by date
+        if "purchase_price_minor" in clean or "sale_price_minor" in clean:
+            new_pp = clean.get("purchase_price_minor", current["purchase_price_minor"])
+            new_sp = clean.get("sale_price_minor", current["sale_price_minor"])
+            if (new_pp != current["purchase_price_minor"]
+                    or new_sp != current["sale_price_minor"]):
+                self.db.execute(
+                    "INSERT INTO product_price_history (product_id, "
+                    "purchase_price_minor, sale_price_minor, changed_by) VALUES (?,?,?,?)",
+                    (product_id, new_pp, new_sp, user_id))
         self.audit.record(action="UPDATE", user_id=user_id, entity_type="product",
                           entity_id=product_id, details={"fields": list(clean)})
         log.info("Updated product id=%s fields=%s", product_id, list(clean))
@@ -168,7 +201,8 @@ class ProductService:
         return new_qty
 
     # -- helpers ------------------------------------------------------
-    def _build_where(self, search, category_id, brand_id, only_active, low_stock_only):
+    def _build_where(self, search, category_id, brand_id, only_active, low_stock_only,
+                     has_barcode=None):
         clauses: list[str] = []
         params: list[Any] = []
         if only_active:
@@ -185,6 +219,10 @@ class ProductService:
             params.append(brand_id)
         if low_stock_only:
             clauses.append("p.stock_qty <= p.min_stock_level")
+        if has_barcode == "with":
+            clauses.append("(p.barcode IS NOT NULL AND TRIM(p.barcode) != '')")
+        elif has_barcode == "without":
+            clauses.append("(p.barcode IS NULL OR TRIM(p.barcode) = '')")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         return where, tuple(params)
 

@@ -8,6 +8,7 @@ customer to a sale is always optional — walk-in sales keep customer_id NULL.
 from __future__ import annotations
 
 import re
+import sqlite3
 from typing import Any
 
 from ..core.exceptions import NotFoundError, ValidationError
@@ -22,6 +23,7 @@ _SORT_COLUMNS = {
     "last_purchase": "last_purchase",
     "total_spent": "total_spent",
     "sales_count": "sales_count",
+    "balance_owed": "balance_owed",
 }
 _EDITABLE = {"name", "phone", "notes"}
 
@@ -57,6 +59,52 @@ class CustomerService:
         log.info("Created customer id=%s name=%r", new_id, name)
         return new_id
 
+    def create(self, data: dict[str, Any], *, user_id: int | None = None) -> int:
+        """Create a NEW customer from the Add dialog, saving name, phone AND notes.
+        Raises ValidationError if a customer with the same (name, phone) already
+        exists, so the UI can tell the user instead of silently doing nothing."""
+        name = (data.get("name") or "").strip()
+        if not name:
+            raise ValidationError("A customer name is required.")
+        phone = _norm_phone(data.get("phone"))
+        notes = (data.get("notes") or "").strip() or None
+        # A (name, phone) pair is UNIQUE. If one already exists we must decide:
+        #  - active   -> genuine duplicate, tell the user.
+        #  - inactive -> this customer was 'Removed' before (soft-deleted). The
+        #    row still occupies the unique key AND is hidden from the active
+        #    list, so a plain INSERT would fail with "already exists" while the
+        #    list shows nothing. Instead, bring them back (reactivate) so adding
+        #    a previously-removed customer just works.
+        existing = self.db.query_one(
+            "SELECT id, is_active FROM customers "
+            "WHERE name = ? COLLATE NOCASE AND phone = ?", (name, phone))
+        if existing:
+            if existing["is_active"]:
+                raise ValidationError(
+                    "A customer with this name and phone already exists.")
+            self.db.execute(
+                "UPDATE customers SET is_active = 1, notes = COALESCE(?, notes), "
+                "updated_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = ?",
+                (notes, existing["id"]))
+            self.audit.record(action="UPDATE", user_id=user_id,
+                              entity_type="customer", entity_id=existing["id"],
+                              details={"reactivated": True})
+            log.info("Reactivated previously-removed customer id=%s name=%r",
+                     existing["id"], name)
+            return existing["id"]
+        try:
+            cur = self.db.execute(
+                "INSERT INTO customers (name, phone, notes) VALUES (?, ?, ?)",
+                (name, phone, notes))
+        except sqlite3.IntegrityError:
+            raise ValidationError(
+                "A customer with this name and phone already exists.")
+        new_id = cur.lastrowid
+        self.audit.record(action="CREATE", user_id=user_id, entity_type="customer",
+                          entity_id=new_id, details={"name": name})
+        log.info("Created customer id=%s name=%r (full add)", new_id, name)
+        return new_id
+
     # -- reads --------------------------------------------------------
     def list_customers(self, *, search: str = "", only_active: bool = True,
                        sort_by: str = "name", sort_dir: str = "asc",
@@ -78,9 +126,15 @@ class CustomerService:
                "GROUP BY customer_id) a ON a.customer_id = c.id")
         total = self.db.query_one(
             f"SELECT COUNT(*) AS n FROM customers c {where}", tuple(params))["n"]
+        # balance_owed = SUM(their unpaid 'Debt' sales) - SUM(their repayments)
+        bal = ("(COALESCE((SELECT SUM(grand_total_minor) FROM sales "
+               "WHERE customer_id = c.id AND status='completed' "
+               "AND payment_method='Debt'),0) "
+               "- COALESCE((SELECT SUM(amount_minor) FROM customer_payments "
+               "WHERE customer_id = c.id),0)) AS balance_owed")
         rows = self.db.query(
             f"SELECT c.*, COALESCE(a.n,0) AS sales_count, a.last_date AS last_purchase, "
-            f"COALESCE(a.spent,0) AS total_spent FROM customers c {agg} {where} "
+            f"COALESCE(a.spent,0) AS total_spent, {bal} FROM customers c {agg} {where} "
             f"ORDER BY {sort_expr} {direction}, c.id LIMIT ? OFFSET ?",
             (*params, int(limit), int(offset)))
         return {"rows": [dict(r) for r in rows], "total": total}
@@ -155,6 +209,75 @@ class CustomerService:
         total_spent = sum(x["total"] for x in sales)
         return {"customer": cust, "products": products, "sales": sales,
                 "visits": len(sales), "total_spent": total_spent}
+
+    # -- customer credit ("udhaar" / debt) ----------------------------
+    def balance_owed(self, customer_id: int) -> int:
+        """How much this customer currently owes: total of their unpaid 'Debt'
+        sales minus everything they have repaid. Never negative in practice, but
+        an overpayment would show as a negative (credit) balance."""
+        row = self.db.query_one(
+            "SELECT COALESCE((SELECT SUM(grand_total_minor) FROM sales "
+            "WHERE customer_id = ? AND status='completed' AND payment_method='Debt'),0) "
+            "- COALESCE((SELECT SUM(amount_minor) FROM customer_payments "
+            "WHERE customer_id = ?),0) AS bal", (customer_id, customer_id))
+        return int(row["bal"] or 0)
+
+    def record_payment(self, customer_id: int, amount_minor: int, *,
+                       method: str | None = None, account_id: int | None = None,
+                       account_name: str | None = None, notes: str | None = None,
+                       user_id: int | None = None) -> int:
+        """Record a repayment against a customer's tab. Amount is in minor units
+        and must be positive; it reduces their balance_owed. account_id/name
+        capture which specific account (bank / EasyPaisa) received the money."""
+        self.get(customer_id)  # raises NotFoundError if missing
+        amount_minor = int(amount_minor)
+        if amount_minor <= 0:
+            raise ValidationError("Payment amount must be greater than zero.")
+        cur = self.db.execute(
+            "INSERT INTO customer_payments (customer_id, amount_minor, method, "
+            "account_id, account_name, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (customer_id, amount_minor, (method or "").strip() or None,
+             account_id, (account_name or "").strip() or None,
+             (notes or "").strip() or None, user_id))
+        pay_id = cur.lastrowid
+        self.audit.record(action="CREATE", user_id=user_id,
+                          entity_type="customer_payment", entity_id=pay_id,
+                          details={"customer_id": customer_id, "amount": amount_minor})
+        log.info("Recorded customer payment id=%s customer=%s amount=%s",
+                 pay_id, customer_id, amount_minor)
+        return pay_id
+
+    def debt_ledger(self, customer_id: int) -> dict[str, Any]:
+        """Combined, date-ordered ledger for one customer: each 'Debt' sale
+        (money owed, +) and each repayment (money in, -), plus running totals."""
+        cust = self.get(customer_id)
+        charges = [dict(r) for r in self.db.query(
+            "SELECT s.id, substr(s.sale_date,1,16) AS date, s.invoice_no AS ref, "
+            "s.grand_total_minor AS amount FROM sales s "
+            "WHERE s.customer_id = ? AND s.status='completed' "
+            "AND s.payment_method='Debt' ORDER BY s.sale_date", (customer_id,))]
+        payments = [dict(r) for r in self.db.query(
+            "SELECT id, substr(payment_date,1,16) AS date, method, notes, "
+            "amount_minor AS amount FROM customer_payments "
+            "WHERE customer_id = ? ORDER BY payment_date", (customer_id,))]
+        charged = sum(c["amount"] for c in charges)
+        paid = sum(p["amount"] for p in payments)
+        return {"customer": cust, "charges": charges, "payments": payments,
+                "charged_total": charged, "paid_total": paid,
+                "balance": charged - paid}
+
+    def get_payment(self, payment_id: int) -> dict[str, Any]:
+        """Full detail of one repayment (for its receipt): customer, amount,
+        method/account, note, date, plus the customer's balance right now."""
+        row = self.db.query_one(
+            "SELECT cp.*, c.name AS customer_name, c.phone AS customer_phone "
+            "FROM customer_payments cp JOIN customers c ON c.id = cp.customer_id "
+            "WHERE cp.id = ?", (payment_id,))
+        if not row:
+            raise NotFoundError(f"Payment {payment_id} not found")
+        d = dict(row)
+        d["balance_after"] = self.balance_owed(d["customer_id"])
+        return d
 
     # -- writes -------------------------------------------------------
     def update(self, customer_id: int, data: dict[str, Any],

@@ -18,10 +18,10 @@ from typing import Any, Callable
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QScrollArea, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from ..ui.widgets import DataTable
+from ..ui.widgets import DataTable, FlowLayout
 
 # payment channels always shown (even at zero) so the owner can eyeball the
 # cash-vs-digital split at a glance
@@ -41,16 +41,22 @@ class DayCloseWidget(QWidget):
 
     # -- construction -------------------------------------------------
     def _build(self) -> None:
-        root = QVBoxLayout(self)
+        # Everything lives inside a scroll area so a short window scrolls instead
+        # of squashing the stacked tables until their contents overlap.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        content = QWidget()
+        root = QVBoxLayout(content)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(14)
 
-        self.kpi_row = QHBoxLayout()
-        self.kpi_row.setSpacing(12)
+        # cards WRAP to the next line on a narrow window (no clipping)
+        self.kpi_row = FlowLayout(spacing=12)
         root.addLayout(self.kpi_row)
-
-        self.pay_row = QHBoxLayout()
-        self.pay_row.setSpacing(12)
+        self.pay_row = FlowLayout(spacing=12)
         root.addLayout(self.pay_row)
 
         body = QHBoxLayout()
@@ -58,7 +64,7 @@ class DayCloseWidget(QWidget):
 
         left = QVBoxLayout()
         left.addWidget(self._h("Sales"))
-        self.sales_tbl = self._table("No sales recorded for this day.")
+        self.sales_tbl = self._table("No sales recorded for this day.", 240)
         left.addWidget(self.sales_tbl, 1)
         self.sales_total = self._total_label()
         left.addWidget(self.sales_total)
@@ -66,21 +72,24 @@ class DayCloseWidget(QWidget):
 
         right = QVBoxLayout()
         right.addWidget(self._h("Expenses"))
-        self.exp_tbl = self._table("No expenses recorded for this day.")
-        right.addWidget(self.exp_tbl, 1)
+        self.exp_tbl = self._table("No expenses recorded for this day.", 130)
+        right.addWidget(self.exp_tbl)
         self.exp_total = self._total_label()
         right.addWidget(self.exp_total)
         right.addWidget(self._h("Money received"))
-        self.pay_tbl = self._table("No payments recorded.")
-        right.addWidget(self.pay_tbl, 1)
+        self.pay_tbl = self._table("No payments recorded.", 130)
+        right.addWidget(self.pay_tbl)
         right.addWidget(self._h("Returns"))
-        self.returns_tbl = self._table("No returns for this day.")
-        right.addWidget(self.returns_tbl, 1)
+        self.returns_tbl = self._table("No returns for this day.", 130)
+        right.addWidget(self.returns_tbl)
         self.returns_total = self._total_label()
         right.addWidget(self.returns_total)
+        right.addStretch(1)
         body.addLayout(right, 1)
 
         root.addLayout(body, 1)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
 
     def _h(self, text: str) -> QLabel:
         lbl = QLabel(text)
@@ -93,12 +102,13 @@ class DayCloseWidget(QWidget):
         lbl.setStyleSheet("font-weight:700; font-size:13px; color:#1f1f1f;")
         return lbl
 
-    def _table(self, placeholder: str) -> DataTable:
+    def _table(self, placeholder: str, min_height: int = 130) -> DataTable:
         t = DataTable(0, 0)
         t.placeholder = placeholder
         t.verticalHeader().setVisible(False)
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        t.setMinimumHeight(min_height)   # never squash below this (no overlap)
         return t
 
     # -- public render ------------------------------------------------
@@ -108,6 +118,7 @@ class DayCloseWidget(QWidget):
 
         self._fill_cards(self.kpi_row, [
             ("Gross sales", fmt(summ.get("Gross sales", 0)), _ACCENT),
+            ("Money received", fmt(summ.get("Money received", 0)), _GREEN),
             ("Refunds", fmt(summ.get("Refunds", 0)), _RED),
             ("Expenses", fmt(summ.get("Expenses", 0)), _RED),
             ("Net", fmt(summ.get("Net", 0)), _GREEN),
@@ -132,16 +143,16 @@ class DayCloseWidget(QWidget):
             self._fill_table(self.pay_tbl, secs["Money received"])
 
     # -- helpers ------------------------------------------------------
-    def _fill_cards(self, layout: QHBoxLayout, items) -> None:
+    def _fill_cards(self, layout, items) -> None:
         self._clear_layout(layout)
         for title, value, color in items:
             layout.addWidget(self._card(title, value, color))
-        layout.addStretch(1)
 
     def _card(self, title: str, value: str, color: str | None) -> QFrame:
         card = QFrame()
         card.setObjectName("Card")
         card.setMinimumWidth(150)
+        card.setMinimumHeight(62)
         v = QVBoxLayout(card)
         v.setContentsMargins(14, 10, 14, 10)
         v.setSpacing(2)

@@ -95,6 +95,11 @@ class SaleController:
             if cust_name:
                 customer_id = self.customers.find_or_create(
                     cust_name, customer_phone, user_id=user.id)
+            # A Debt (credit) sale is unpaid and MUST sit on a customer's tab.
+            if payment_method == "Debt" and customer_id is None:
+                return (False,
+                        "A debt sale needs a customer. Attach one before checkout.",
+                        None)
             summary = self.sales.create_sale(
                 items=items, cashier_id=user.id, cashier_name=user.full_name or user.username,
                 discount_minor=discount_minor, payment_method=payment_method,

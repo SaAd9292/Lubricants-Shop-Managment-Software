@@ -26,6 +26,7 @@ from ..controllers.payment_account_controller import PaymentAccountController
 from ..core import money
 from ..core.session import current_session
 from ..core.i18n import tr
+from ..ui.widgets import FlowLayout
 from ..ui.numeric_keypad import NumericKeypad
 from ..ui.icons import make_icon
 from .product_picker_dialog import ProductPickerDialog
@@ -33,7 +34,7 @@ from .sale_receipt_dialog import SaleReceiptDialog
 
 # Cart columns
 C_NUM, C_ITEM, C_PRICE, C_QTY, C_TOTAL, C_ACTION = range(6)
-_METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
+_METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash", "Debt"]
 
 
 def _esc(text: str) -> str:
@@ -216,17 +217,16 @@ class POSView(QWidget):
         # payment method as selectable chips
         self._method_group = QButtonGroup(self)
         self._method_group.setExclusive(True)
-        chips = QHBoxLayout()
-        chips.setSpacing(6)
+        chips = FlowLayout(spacing=6)
         for m in _METHODS:
             chip = QPushButton(m)
             chip.setObjectName("Chip")
             chip.setCheckable(True)
+            chip.setMinimumWidth(chip.sizeHint().width())  # never clip the label
             if m == "Cash":
                 chip.setChecked(True)
             self._method_group.addButton(chip)
             chips.addWidget(chip)
-        chips.addStretch(1)
         pl.addLayout(chips)
         self._method_group.buttonClicked.connect(lambda _btn: self._reload_accounts())
 
@@ -419,7 +419,7 @@ class POSView(QWidget):
         records just the method."""
         method = self._selected_method()
         self.account.clear()
-        if method == "Cash":
+        if method in ("Cash", "Debt"):
             self.account_label.setEnabled(False)
             self.account.setEnabled(False)
             return
@@ -489,9 +489,16 @@ class POSView(QWidget):
                 "qty": self.cart.cellWidget(r, C_QTY).value(),
                 "unit_price": self.cart.cellWidget(r, C_PRICE).value(),
             })
+        method = self._selected_method()
+        if method == "Debt" and not self.cust_name.text().strip():
+            QMessageBox.warning(
+                self, "Customer required",
+                "A debt (credit) sale must be put on a customer's tab.\n"
+                "Find an existing customer or type their name (and phone) first.")
+            return
         ok, msg, summary = self.controller.checkout(
             lines=lines, discount=self.discount.value(),
-            payment_method=self._selected_method(),
+            payment_method=method,
             payment_account_id=self.account.currentData(), amount_paid=0,
             customer_name=self.cust_name.text(),
             customer_phone=self.cust_phone.text(),
