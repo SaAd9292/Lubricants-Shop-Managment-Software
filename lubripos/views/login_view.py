@@ -166,13 +166,20 @@ class LoginDialog(QDialog):
         bl.addSpacing(6)
         bl.addWidget(self.error)
 
-        btn = QPushButton("Sign in")
-        btn.setObjectName("SignIn")
-        btn.setMinimumHeight(44)
-        btn.setCursor(Qt.PointingHandCursor)
-        btn.clicked.connect(self._attempt_login)
-        bl.addSpacing(10)
-        bl.addWidget(btn)
+        self.sign_in_btn = QPushButton("Sign in")
+        self.sign_in_btn.setObjectName("SignIn")
+        self.sign_in_btn.setMinimumHeight(46)
+        self.sign_in_btn.setCursor(Qt.PointingHandCursor)
+        # style the button DIRECTLY (not only via the dialog stylesheet) so it can
+        # never render blank due to an app-wide stylesheet cascade quirk.
+        self.sign_in_btn.setStyleSheet(
+            f"QPushButton{{background:{ACCENT};color:#ffffff;border:none;"
+            "border-radius:9px;font-size:14px;font-weight:600;}"
+            "QPushButton:hover{background:#1d4ed8;}"
+            "QPushButton:pressed{background:#1e40af;}")
+        self.sign_in_btn.clicked.connect(self._attempt_login)
+        bl.addSpacing(12)
+        bl.addWidget(self.sign_in_btn)
 
         foot = QLabel("Secured by Penguix POS")
         foot.setAlignment(Qt.AlignHCenter)

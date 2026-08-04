@@ -17,6 +17,7 @@ from ..app_context import AppContext
 from ..ui.widgets import DataTable
 from ..controllers.user_controller import UserController
 from .user_edit_dialog import UserEditDialog
+from .security_prompt import require_admin_password
 
 COLUMNS = ["Username", "Full Name", "Role", "Status", "Last Login"]
 
@@ -151,6 +152,8 @@ class UsersView(QWidget):
             "Activate / Deactivate instead.",
             QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if confirm != QMessageBox.Yes:
+            return
+        if not require_admin_password(self, self.ctx):
             return
         success, msg, _ = self.controller.delete(uid)
         if success:
