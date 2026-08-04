@@ -334,10 +334,11 @@ class MainWindow(QMainWindow):
             # Show any already-known pending update immediately (offline-friendly,
             # and visible to every user — admins and cashiers alike).
             self._restore_update_banner()
-            # Then refresh from the network (throttled once/day). Everyone checks
-            # so the whole team sees the banner; only admins can install.
-            if self._updater.should_check_today():
-                self._check_updates(manual=False)
+            # Then do one live check per app launch (not throttled to once a day)
+            # so a freshly published release is noticed the next time anyone opens
+            # the app. Everyone checks so the whole team sees the banner; only
+            # admins can install. The check is a tiny signed-manifest fetch.
+            self._check_updates(manual=False)
         except Exception:  # never let the update check break startup
             pass
 
