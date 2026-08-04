@@ -23,6 +23,7 @@ from .. import __version__
 from ..app_context import AppContext
 from ..core.session import current_session
 from .payment_accounts_dialog import PaymentAccountsDialog
+from .security_prompt import require_admin_password
 
 
 class SettingsView(QWidget):
@@ -313,6 +314,9 @@ class SettingsView(QWidget):
             user = current_session.require_role("admin")
         except Exception as exc:
             QMessageBox.warning(self, "Not allowed", str(exc))
+            return
+        # re-confirm the admin's identity before wiping everything
+        if not require_admin_password(self, self.ctx):
             return
         try:
             safety = self.ctx.backup.flush_shop_data(user_id=user.id)

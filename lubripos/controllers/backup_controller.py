@@ -33,6 +33,9 @@ class BackupController:
     def restore(self, path: str):
         return self._guarded(lambda uid: self.backup.restore_backup(path, user_id=uid))
 
+    def delete(self, path: str):
+        return self._guarded(lambda uid: self.backup.delete_backup(path, user_id=uid))
+
     def _guarded(self, op):
         try:
             user = current_session.require_role("admin")

@@ -62,6 +62,23 @@ class AuthService:
             permissions=frozenset(perms.parse(perm_raw)),
         )
 
+    def verify_password(self, user_id: int, password: str) -> bool:
+        """Re-check an active user's password (no login side effects). Used to
+        re-confirm identity before destructive actions (delete backup, reset)."""
+        if not password:
+            return False
+        row = self.db.query_one(
+            "SELECT password_hash, password_salt, pwd_iterations FROM users "
+            "WHERE id = ? AND is_active = 1", (user_id,))
+        if row is None:
+            return False
+        try:
+            return security.verify_password(
+                password, row["password_hash"], row["password_salt"],
+                row["pwd_iterations"])
+        except Exception:
+            return False
+
     def must_change_password(self, user_id: int) -> bool:
         row = self.db.query_one("SELECT must_change_pw FROM users WHERE id = ?", (user_id,))
         return bool(row and row["must_change_pw"])

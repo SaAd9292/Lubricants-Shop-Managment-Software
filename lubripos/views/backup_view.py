@@ -17,6 +17,7 @@ from ..app_context import AppContext
 from pathlib import Path
 
 from ..controllers.backup_controller import BackupController
+from .security_prompt import require_admin_password
 
 COLUMNS = ["When", "Type", "Size", "Location"]
 
@@ -69,10 +70,14 @@ class BackupView(QWidget):
         restore_file = QPushButton("Restore from file…")
         restore_file.setObjectName("Secondary")
         restore_file.clicked.connect(self._restore_from_file)
+        delete_btn = QPushButton("Delete backup")
+        delete_btn.setObjectName("Danger")
+        delete_btn.clicked.connect(self._delete_selected)
         actions.addWidget(backup_btn)
         actions.addWidget(restore_sel)
         actions.addWidget(restore_file)
         actions.addStretch(1)
+        actions.addWidget(delete_btn)
         root.addLayout(actions)
 
         self.table = QTableWidget(0, len(COLUMNS))
@@ -178,3 +183,34 @@ class BackupView(QWidget):
             "Please close and reopen the application now.",
         )
         self._reload()
+
+    def _delete_selected(self) -> None:
+        path, exists = self._selected()
+        if path is None:
+            QMessageBox.information(self, "Select a backup",
+                                    "Please select a backup row first.")
+            return
+        # Already-missing file: nothing to delete on disk, just tidy the list.
+        if not exists:
+            QMessageBox.information(
+                self, "Already deleted",
+                "This backup file was already deleted. Removing it from the list.")
+            self.controller.delete(path)
+            self._reload()
+            return
+        # Real file present: warn, then require the admin password.
+        confirm = QMessageBox.warning(
+            self, "Delete backup",
+            "This permanently deletes the selected backup file:\n\n"
+            f"{path}\n\nThis cannot be undone. Continue?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        if not require_admin_password(self, self.ctx):
+            return
+        ok, msg, _ = self.controller.delete(path)
+        if ok:
+            QMessageBox.information(self, "Deleted", "The backup was deleted.")
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not delete", msg)

@@ -107,6 +107,23 @@ class BackupService:
             out.append(d)
         return out
 
+    def delete_backup(self, path: str, *, user_id: int | None = None) -> bool:
+        """Remove a backup: delete the .db file if it's still there and drop its
+        record. Returns True if a file was actually deleted, False if it was
+        already missing (record simply cleaned out of the list)."""
+        p = Path(path)
+        existed = p.is_file()
+        if existed:
+            try:
+                p.unlink()
+            except OSError as exc:
+                raise ValidationError(f"Could not delete the backup file: {exc}")
+        self.db.execute("DELETE FROM backups WHERE file_path = ?", (str(path),))
+        self.ctx.audit.record(action="DELETE", user_id=user_id, entity_type="backup",
+                              details={"path": str(path), "file_existed": existed})
+        log.info("Deleted backup %s (file existed=%s)", path, existed)
+        return existed
+
     # -- restore ------------------------------------------------------
     def validate_backup(self, path: str) -> None:
         p = Path(path)
