@@ -275,7 +275,7 @@ class SaleService:
     def get_by_invoice(self, invoice_no: str) -> dict[str, Any] | None:
         """Look up a full sale (header + items) by its invoice number, or None."""
         row = self.db.query_one(
-            "SELECT id FROM sales WHERE invoice_no = ?", ((invoice_no or "").strip(),))
+            "SELECT id FROM sales WHERE invoice_no = ? COLLATE NOCASE", ((invoice_no or "").strip(),))
         return self.get_sale(row["id"]) if row else None
 
     def get_sale(self, sale_id: int) -> dict[str, Any]:

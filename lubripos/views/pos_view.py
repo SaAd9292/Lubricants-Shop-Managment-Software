@@ -11,13 +11,15 @@ Accessible to both admin and cashier.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+import time
+
+from PySide6.QtCore import Qt, QTimer, QEvent
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox,
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox,
+    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -91,8 +93,59 @@ class POSView(QWidget):
         self._status_timer = QTimer(self)
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(lambda: self.status.setText(""))
+        self._filter_on = False
+        self._scan_buf = ""
+        self._scan_last = 0.0
         self._build_ui()
         self._recompute()
+
+    # -- barcode capture ----------------------------------------------
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        """While the Sale screen is open, capture product-barcode scans anywhere
+        on the page (scanner acts as a keyboard) so the cashier can scan without
+        first clicking the barcode box. Installed only while this screen shows."""
+        super().showEvent(event)
+        app = QApplication.instance()
+        if app is not None and not self._filter_on:
+            app.installEventFilter(self)
+            self._filter_on = True
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        app = QApplication.instance()
+        if app is not None and self._filter_on:
+            app.removeEventFilter(self)
+            self._filter_on = False
+        super().hideEvent(event)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() != QEvent.KeyPress:
+            return super().eventFilter(obj, event)
+        # never capture while a dialog is open (product picker, receipt, message)
+        if QApplication.activeModalWidget() is not None:
+            return False
+        # leave real typing alone: the barcode box (its own Enter handler), the
+        # customer name/phone boxes, discount/qty/price spinners, etc.
+        fw = QApplication.focusWidget()
+        if fw is self.barcode or isinstance(fw, (QAbstractSpinBox, QLineEdit)):
+            return False
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            code = self._scan_buf.strip()
+            self._scan_buf = ""
+            if code:
+                self.barcode.setText(code)
+                self._add_by_barcode()
+                return True   # a scan completed
+            return False
+        text = event.text()
+        if text and text.isprintable() and not text.isspace():
+            now = time.monotonic()
+            if now - self._scan_last > 0.5:   # long pause => new code
+                self._scan_buf = ""
+            self._scan_buf += text
+            self._scan_last = now
+            return True   # swallow scan chars so they don't hit buttons/shortcuts
+        return False
 
     # -- UI -----------------------------------------------------------
     def _build_ui(self) -> None:

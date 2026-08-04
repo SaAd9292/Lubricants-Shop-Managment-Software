@@ -9,10 +9,13 @@ Gated by the 'Void / reverse a sale' privilege.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import time
+
+from PySide6.QtCore import Qt, QEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -30,7 +33,59 @@ class ReturnsView(QWidget):
         self.controller = SaleController(ctx)
         self._sale: dict | None = None
         self._rows: list[dict] = []   # {sale_item_id, unit_price_minor, spin, refund_item}
+        self._filter_on = False
+        self._scan_buf = ""
+        self._scan_last = 0.0
         self._build_ui()
+
+    # -- barcode capture ----------------------------------------------
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        """While the Returns screen is open, capture receipt-barcode scans
+        anywhere on the page — the scanner behaves like a keyboard, so the
+        cashier can just scan without first clicking the invoice box. The filter
+        is only installed while this screen is visible."""
+        super().showEvent(event)
+        app = QApplication.instance()
+        if app is not None and not self._filter_on:
+            app.installEventFilter(self)
+            self._filter_on = True
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        app = QApplication.instance()
+        if app is not None and self._filter_on:
+            app.removeEventFilter(self)
+            self._filter_on = False
+        super().hideEvent(event)
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() != QEvent.KeyPress:
+            return super().eventFilter(obj, event)
+        # never capture while a dialog is open (e.g. the confirm-return box)
+        if QApplication.activeModalWidget() is not None:
+            return False
+        # If the cashier is actually typing in a text/number box (the invoice box
+        # or a return-qty spinner), leave those keystrokes alone.
+        fw = QApplication.focusWidget()
+        if fw is self.invoice or isinstance(fw, (QAbstractSpinBox, QLineEdit)):
+            return False
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            code = self._scan_buf.strip()
+            self._scan_buf = ""
+            if code:
+                self.invoice.setText(code)
+                self._fetch()
+                return True   # a scan completed — consume the Enter
+            return False
+        text = event.text()
+        if text and text.isprintable() and not text.isspace():
+            now = time.monotonic()
+            if now - self._scan_last > 0.5:   # a long pause means a new code
+                self._scan_buf = ""
+            self._scan_buf += text
+            self._scan_last = now
+            return True   # swallow scan chars so they don't trigger buttons
+        return False
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -43,7 +98,7 @@ class ReturnsView(QWidget):
 
         lookup = QHBoxLayout()
         self.invoice = QLineEdit()
-        self.invoice.setPlaceholderText("Enter invoice number (e.g. INV-000012) and press Enter…")
+        self.invoice.setPlaceholderText("Scan the receipt barcode, or type the invoice number (e.g. INV-000012) and press Enter…")
         self.invoice.setMinimumHeight(32)
         self.invoice.returnPressed.connect(self._fetch)
         fetch_btn = QPushButton("Fetch invoice")
@@ -75,6 +130,12 @@ class ReturnsView(QWidget):
         self.total_lbl = QLabel("")
         self.total_lbl.setStyleSheet("font-weight:700; font-size:15px;")
         footer.addWidget(self.total_lbl)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setObjectName("Secondary")
+        self.cancel_btn.setMinimumHeight(36)
+        self.cancel_btn.clicked.connect(self._abort)
+        self.cancel_btn.setEnabled(False)
+        footer.addWidget(self.cancel_btn)
         self.return_btn = QPushButton("Process return")
         self.return_btn.setObjectName("Success")
         self.return_btn.setMinimumHeight(36)
@@ -107,7 +168,15 @@ class ReturnsView(QWidget):
         self.total_lbl.setText("")
         self.all_btn.setEnabled(False)
         self.return_btn.setEnabled(False)
+        self.cancel_btn.setEnabled(False)
         self.meta.setText(message)
+
+    def _abort(self) -> None:
+        """Abort a return in progress: drop the fetched invoice, clear the table
+        and totals, and put the cursor back in the invoice box for the next one."""
+        self.invoice.clear()
+        self._clear("Enter an invoice number to look it up.")
+        self.invoice.setFocus()
 
     def _populate(self, sale: dict) -> None:
         items = sale.get("items", [])
@@ -158,6 +227,7 @@ class ReturnsView(QWidget):
             f"   •   Total: {self.controller.fmt(sale.get('grand_total_minor', 0))}"
             f"   •   Status: {status}")
         self.all_btn.setEnabled(can and not is_void and any_returnable)
+        self.cancel_btn.setEnabled(True)
         self._recalc()
 
     def _select_all(self) -> None:
