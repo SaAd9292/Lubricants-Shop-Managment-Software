@@ -25,7 +25,7 @@ _SORT_COLUMNS = {
     "sales_count": "sales_count",
     "balance_owed": "balance_owed",
 }
-_EDITABLE = {"name", "phone", "notes"}
+_EDITABLE = {"name", "phone", "notes", "opening_debt_minor"}
 
 
 def _norm_phone(phone: str | None) -> str:
@@ -68,6 +68,9 @@ class CustomerService:
             raise ValidationError("A customer name is required.")
         phone = _norm_phone(data.get("phone"))
         notes = (data.get("notes") or "").strip() or None
+        opening = int(data.get("opening_debt_minor") or 0)
+        if opening < 0:
+            raise ValidationError("Opening balance cannot be negative.")
         # A (name, phone) pair is UNIQUE. If one already exists we must decide:
         #  - active   -> genuine duplicate, tell the user.
         #  - inactive -> this customer was 'Removed' before (soft-deleted). The
@@ -84,8 +87,9 @@ class CustomerService:
                     "A customer with this name and phone already exists.")
             self.db.execute(
                 "UPDATE customers SET is_active = 1, notes = COALESCE(?, notes), "
+                "opening_debt_minor = CASE WHEN ? > 0 THEN ? ELSE opening_debt_minor END, "
                 "updated_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = ?",
-                (notes, existing["id"]))
+                (notes, opening, opening, existing["id"]))
             self.audit.record(action="UPDATE", user_id=user_id,
                               entity_type="customer", entity_id=existing["id"],
                               details={"reactivated": True})
@@ -94,8 +98,8 @@ class CustomerService:
             return existing["id"]
         try:
             cur = self.db.execute(
-                "INSERT INTO customers (name, phone, notes) VALUES (?, ?, ?)",
-                (name, phone, notes))
+                "INSERT INTO customers (name, phone, notes, opening_debt_minor) "
+                "VALUES (?, ?, ?, ?)", (name, phone, notes, opening))
         except sqlite3.IntegrityError:
             raise ValidationError(
                 "A customer with this name and phone already exists.")
@@ -127,7 +131,8 @@ class CustomerService:
         total = self.db.query_one(
             f"SELECT COUNT(*) AS n FROM customers c {where}", tuple(params))["n"]
         # balance_owed = SUM(their unpaid 'Debt' sales) - SUM(their repayments)
-        bal = ("(COALESCE((SELECT SUM(grand_total_minor) FROM sales "
+        bal = ("(c.opening_debt_minor "
+               "+ COALESCE((SELECT SUM(grand_total_minor) FROM sales "
                "WHERE customer_id = c.id AND status='completed' "
                "AND payment_method='Debt'),0) "
                "- COALESCE((SELECT SUM(amount_minor) FROM customer_payments "
@@ -216,10 +221,12 @@ class CustomerService:
         sales minus everything they have repaid. Never negative in practice, but
         an overpayment would show as a negative (credit) balance."""
         row = self.db.query_one(
-            "SELECT COALESCE((SELECT SUM(grand_total_minor) FROM sales "
+            "SELECT COALESCE((SELECT opening_debt_minor FROM customers WHERE id = ?),0) "
+            "+ COALESCE((SELECT SUM(grand_total_minor) FROM sales "
             "WHERE customer_id = ? AND status='completed' AND payment_method='Debt'),0) "
             "- COALESCE((SELECT SUM(amount_minor) FROM customer_payments "
-            "WHERE customer_id = ?),0) AS bal", (customer_id, customer_id))
+            "WHERE customer_id = ?),0) AS bal",
+            (customer_id, customer_id, customer_id))
         return int(row["bal"] or 0)
 
     def record_payment(self, customer_id: int, amount_minor: int, *,
@@ -256,6 +263,12 @@ class CustomerService:
             "s.grand_total_minor AS amount FROM sales s "
             "WHERE s.customer_id = ? AND s.status='completed' "
             "AND s.payment_method='Debt' ORDER BY s.sale_date", (customer_id,))]
+        opening = int(cust.get("opening_debt_minor") or 0)
+        if opening > 0:
+            charges.insert(0, {"id": None,
+                               "date": (cust.get("created_at") or "")[:16],
+                               "ref": "Opening balance (from paper)",
+                               "amount": opening})
         payments = [dict(r) for r in self.db.query(
             "SELECT id, substr(payment_date,1,16) AS date, method, notes, "
             "amount_minor AS amount FROM customer_payments "

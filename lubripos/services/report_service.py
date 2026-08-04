@@ -34,9 +34,10 @@ class ReportService:
         #    the same product is sold across several invoices) --
         line_rows = [dict(r) for r in self.db.query(
             """SELECT s.invoice_no AS invoice, substr(s.sale_date,12,5) AS time,
-                  si.product_name AS product, si.qty AS qty,
+                  COALESCE(p.name, si.product_name) AS product, si.qty AS qty,
                   si.unit_price_minor AS price, si.line_total_minor AS amount
                FROM sale_items si JOIN sales s ON s.id = si.sale_id
+               LEFT JOIN products p ON p.id = si.product_id
                WHERE s.status='completed' AND s.sale_date LIKE ?
                ORDER BY s.id, si.id""", (like,))]
         items_subtotal = sum(r["amount"] for r in line_rows)
@@ -51,9 +52,10 @@ class ReportService:
 
         # -- returns / refunds for the day --
         ret_rows = [dict(r) for r in self.db.query(
-            """SELECT sri.product_name AS product, sri.qty AS qty,
+            """SELECT COALESCE(p.name, sri.product_name) AS product, sri.qty AS qty,
                   sri.line_total_minor AS amount
                FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+               LEFT JOIN products p ON p.id = sri.product_id
                WHERE sr.return_date LIKE ?
                ORDER BY sr.id DESC, sri.id""", (like,))]
         refunds_total = sum(r["amount"] for r in ret_rows)
@@ -194,11 +196,12 @@ class ReportService:
                FROM sales WHERE status='completed' AND sale_date LIKE ?
                GROUP BY day ORDER BY day""", (like,))]
         prod_rows = [dict(r) for r in self.db.query(
-            """SELECT si.product_name AS product, SUM(si.qty) AS qty,
+            """SELECT COALESCE(p.name, si.product_name) AS product, SUM(si.qty) AS qty,
                   SUM(si.line_total_minor) AS revenue
                FROM sale_items si JOIN sales s ON s.id = si.sale_id
+               LEFT JOIN products p ON p.id = si.product_id
                WHERE s.status='completed' AND s.sale_date LIKE ?
-               GROUP BY si.product_name ORDER BY revenue DESC""", (like,))]
+               GROUP BY COALESCE(p.name, si.product_name) ORDER BY revenue DESC""", (like,))]
         items_subtotal = sum(r["revenue"] for r in prod_rows)
         agg = self.db.query_one(
             """SELECT COUNT(*) n, COALESCE(SUM(subtotal_minor),0) sub,
@@ -249,14 +252,15 @@ class ReportService:
         # not the product's current cost — so historical profit never shifts when
         # a product is repriced later. Gross profit = revenue - COGS per product.
         rows = self.db.query(
-            """SELECT si.product_name,
+            """SELECT COALESCE(p.name, si.product_name) AS product_name,
                   SUM(si.qty) qty,
                   SUM(si.line_total_minor) revenue,
                   SUM(si.unit_cost_minor*si.qty) cost,
                   SUM(si.line_total_minor - si.unit_cost_minor*si.qty) profit
                FROM sale_items si JOIN sales s ON s.id=si.sale_id
+               LEFT JOIN products p ON p.id = si.product_id
                WHERE s.status='completed' AND s.sale_date BETWEEN ? AND ?
-               GROUP BY si.product_name ORDER BY profit DESC""", (lo, hi))
+               GROUP BY COALESCE(p.name, si.product_name) ORDER BY profit DESC""", (lo, hi))
         data = [dict(r) for r in rows]
         totals = self.db.query_one(
             """SELECT COALESCE(SUM(si.line_total_minor),0) revenue,

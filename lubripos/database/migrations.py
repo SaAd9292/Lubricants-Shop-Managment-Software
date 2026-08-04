@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 14
+CURRENT_VERSION = 15
 
 
 def run_migrations(db: Database) -> None:
@@ -29,6 +29,7 @@ def run_migrations(db: Database) -> None:
     _migration_12_price_history(db)
     _migration_13_customer_debt(db)
     _migration_14_custpay_account(db)
+    _migration_15_opening_debt(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -319,3 +320,12 @@ def _migration_14_custpay_account(db: Database) -> None:
     if not _column_exists(db, "customer_payments", "account_name"):
         db.execute("ALTER TABLE customer_payments ADD COLUMN account_name TEXT")
     log.info("Migration: added customer_payments.account_id + account_name")
+
+
+def _migration_15_opening_debt(db: Database) -> None:
+    """v15: opening balance a customer already owed on paper before going digital.
+    Added to their balance_owed alongside on-system Debt sales."""
+    if not _column_exists(db, "customers", "opening_debt_minor"):
+        db.execute("ALTER TABLE customers ADD COLUMN opening_debt_minor "
+                   "INTEGER NOT NULL DEFAULT 0")
+    log.info("Migration: added customers.opening_debt_minor")

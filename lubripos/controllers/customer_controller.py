@@ -81,6 +81,11 @@ class CustomerController:
 
     # -- writes -------------------------------------------------------
     def save(self, form: dict[str, Any], customer_id: int | None = None):
+        # convert the opening-balance field (entered in rupees) to minor units
+        if "opening_debt" in form:
+            _, mu = self.currency()
+            form = dict(form)
+            form["opening_debt_minor"] = money.to_minor(form.pop("opening_debt") or 0, mu)
         def op(uid):
             if customer_id is None:
                 return self.customers.create(form, user_id=uid)

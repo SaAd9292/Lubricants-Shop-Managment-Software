@@ -247,14 +247,25 @@ class CustomerEditDialog(QDialog):
         self.name = QLineEdit()
         self.phone = QLineEdit()
         self.notes = QLineEdit()
+        # opening balance: money the customer already owed on paper before going
+        # digital. Adds straight into their "balance owed".
+        self.opening = QDoubleSpinBox()
+        self.opening.setMaximum(99_999_999)
+        self.opening.setDecimals(2)
+        self.opening.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self.opening.setToolTip("Money this customer already owed from your paper "
+                                "records. Leave 0 for a brand-new customer.")
         form.addRow("Name", self.name)
         form.addRow("Phone", self.phone)
+        form.addRow("Opening balance owed", self.opening)
         form.addRow("Notes", self.notes)
+        _, self._mu = controller.currency()
         if customer_id is not None:
             c = controller.get(customer_id)
             self.name.setText(c.get("name") or "")
             self.phone.setText(c.get("phone") or "")
             self.notes.setText(c.get("notes") or "")
+            self.opening.setValue((c.get("opening_debt_minor") or 0) / self._mu)
         box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         box.button(QDialogButtonBox.Save).setObjectName("Success")
         box.accepted.connect(self._save)
@@ -263,7 +274,8 @@ class CustomerEditDialog(QDialog):
 
     def _save(self) -> None:
         form = {"name": self.name.text().strip(), "phone": self.phone.text().strip(),
-                "notes": self.notes.text().strip()}
+                "notes": self.notes.text().strip(),
+                "opening_debt": self.opening.value()}
         if not form["name"]:
             QMessageBox.information(self, "Name required", "Enter a customer name.")
             return
