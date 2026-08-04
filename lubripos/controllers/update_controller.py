@@ -29,6 +29,16 @@ class UpdateController(QObject):
     def should_check_today(self) -> bool:
         return self.svc.should_check_today()
 
+    # -- pending-update banner cache (shared by all users) ------------
+    def pending(self):
+        return self.svc.pending()
+
+    def save_pending(self, info) -> None:
+        self.svc.save_pending(info)
+
+    def clear_pending(self) -> None:
+        self.svc.clear_pending()
+
     # -- check --------------------------------------------------------
     def check_async(self) -> None:
         threading.Thread(target=self._check, daemon=True).start()

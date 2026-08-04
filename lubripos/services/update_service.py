@@ -83,6 +83,55 @@ class UpdateService:
         except OSError:
             pass
 
+    # -- pending-update cache ----------------------------------------
+    # Remembers the latest known available version so EVERY user (admins and
+    # cashiers) sees the dashboard "update available" banner instantly on
+    # launch, even offline and even if today's throttled network check was
+    # skipped. Cleared once the app is on/after that version, or when a check
+    # reports up-to-date.
+    def _pending_file(self) -> Path | None:
+        if not self.ctx:
+            return None
+        try:
+            return Path(self.ctx.config.data_root) / "pending_update.json"
+        except Exception:
+            return None
+
+    def save_pending(self, info: dict) -> None:
+        f = self._pending_file()
+        if not f:
+            return
+        try:
+            f.write_text(json.dumps({"version": info.get("version"),
+                                     "notes": info.get("notes", "")}),
+                         encoding="utf-8")
+        except OSError:
+            pass
+
+    def clear_pending(self) -> None:
+        f = self._pending_file()
+        if f and f.exists():
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+    def pending(self) -> dict | None:
+        """Return {version, notes} if a newer version is still pending install,
+        else None (cleaning up a stale record once we're up to date)."""
+        f = self._pending_file()
+        if not f or not f.exists():
+            return None
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        v = str(d.get("version") or "")
+        if v and is_newer(v):
+            return {"version": v, "notes": d.get("notes", "")}
+        self.clear_pending()
+        return None
+
     # -- manifest ----------------------------------------------------
     def _fetch_manifest(self) -> dict:
         try:

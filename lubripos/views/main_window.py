@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self._nav_buttons: dict[str, object] = {}
         self._update_manual = False
         self._update_progress = None
+        self._update_info = None
         self._build_ui()
         self._updater = UpdateController(ctx)
         self._updater.checked.connect(self._on_update_checked)
@@ -330,11 +331,56 @@ class MainWindow(QMainWindow):
 
     def _auto_check_updates(self) -> None:
         try:
-            # only administrators are ever prompted to update the software
-            if self._is_admin() and self._updater.should_check_today():
+            # Show any already-known pending update immediately (offline-friendly,
+            # and visible to every user — admins and cashiers alike).
+            self._restore_update_banner()
+            # Then refresh from the network (throttled once/day). Everyone checks
+            # so the whole team sees the banner; only admins can install.
+            if self._updater.should_check_today():
                 self._check_updates(manual=False)
         except Exception:  # never let the update check break startup
             pass
+
+    def _restore_update_banner(self) -> None:
+        info = self._updater.pending()
+        if info:
+            self._show_update_banner(info)
+
+    def _dashboard_view(self):
+        idx = self._pages.get("dashboard")
+        w = self.stack.widget(idx) if idx is not None else None
+        return w if isinstance(w, DashboardView) else None
+
+    def _show_update_banner(self, info: dict) -> None:
+        self._update_info = info
+        dash = self._dashboard_view()
+        if dash is None:
+            return
+        ver = info.get("version", "")
+        if self._is_admin():
+            text = f"A new version (v{ver}) is available — click here to update."
+        else:
+            text = (f"A new version (v{ver}) is available — "
+                    "please ask an administrator to install it.")
+        dash.set_update_banner(text, self._on_update_banner_clicked)
+
+    def _clear_update_banner(self) -> None:
+        dash = self._dashboard_view()
+        if dash is not None:
+            dash.clear_update_banner()
+
+    def _on_update_banner_clicked(self) -> None:
+        if self._is_admin():
+            # take the admin to Settings and start the install flow
+            self._go("settings")
+            self.check_for_updates()
+        else:
+            ver = (self._update_info or {}).get("version", "")
+            QMessageBox.information(
+                self, "Update available",
+                f"Version {ver} is available.\n\n"
+                "Only an administrator can install updates. Please ask your "
+                "administrator to update the software.")
 
     def _check_updates(self, manual: bool) -> None:
         self._update_manual = manual
@@ -342,11 +388,22 @@ class MainWindow(QMainWindow):
 
     def _on_update_checked(self, info) -> None:
         if not info:
+            # up to date: drop any stale pending banner
+            self._updater.clear_pending()
+            self._clear_update_banner()
             if self._update_manual:
                 QMessageBox.information(
                     self, "Up to date",
                     f"You are running the latest version (v{__version__}).")
             return
+        # remember it so the banner shows for everyone until it's installed
+        self._updater.save_pending(info)
+        self._update_info = info
+        if not self._update_manual:
+            # background/startup check → notify via the dashboard banner only
+            self._show_update_banner(info)
+            return
+        # manual (admin clicked "check for updates") → offer to install now
         notes = ("\n\n" + info["notes"]) if info.get("notes") else ""
         ans = QMessageBox.question(
             self, "Update available",

@@ -12,7 +12,7 @@
 ; ============================================================
 
 #define AppName       "Penguix"
-#define AppVersion    "0.5.14"
+#define AppVersion    "0.5.15"
 #define AppPublisher  "Penguin Inc"
 #define AppExeName    "Penguix.exe"
 
