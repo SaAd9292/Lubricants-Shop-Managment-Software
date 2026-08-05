@@ -24,10 +24,6 @@ def _H(m: bytes) -> bytes:
     return hashlib.sha512(m).digest()
 
 
-def _expmod(base: int, e: int, m: int) -> int:
-    return pow(base, e, m)
-
-
 def _inv(x: int) -> int:
     return pow(x, _q - 2, _q)
 

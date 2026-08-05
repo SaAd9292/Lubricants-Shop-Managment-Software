@@ -29,10 +29,6 @@ class Session:
         return self._user
 
     @property
-    def is_authenticated(self) -> bool:
-        return self._user is not None
-
-    @property
     def is_admin(self) -> bool:
         return self._user is not None and self._user.role == "admin"
 

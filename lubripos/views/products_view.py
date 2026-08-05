@@ -130,8 +130,8 @@ class ProductsView(QWidget):
         hdr.setStretchLastSection(False)
         hdr.setMinimumSectionSize(45)
         # Order Barcode Name Brand Categ Purch Sale Margin Stock Status Save
-        _widths = [60, 130, 240, 100, 130, 95, 95, 80, 70, 90, 90]
-        for _c, _w in enumerate(_widths):
+        self._col_widths = [60, 130, 240, 100, 130, 95, 95, 80, 70, 90, 90]
+        for _c, _w in enumerate(self._col_widths):
             self.table.setColumnWidth(_c, _w)
         hdr.sectionClicked.connect(self._on_sort)
         self.table.doubleClicked.connect(lambda: self._edit_selected())
@@ -166,6 +166,29 @@ class ProductsView(QWidget):
         footer.addWidget(self.next_btn)
         root.addLayout(footer)
 
+    _NAME_COL = 2
+    _NAME_MIN = 240
+
+    def resizeEvent(self, e) -> None:  # noqa: N802 (Qt signature)
+        super().resizeEvent(e)
+        self._fit_name_column()
+
+    def _fit_name_column(self) -> None:
+        """Keep every column at its fixed width, but let the Name column grow to
+        fill any leftover space on a wide screen (so there's no empty band on the
+        right). On a narrow laptop Name stays at its minimum and the table scrolls
+        — structure is identical on every screen."""
+        table = getattr(self, "table", None)
+        if table is None:
+            return
+        used = 0
+        for c in range(table.columnCount()):
+            if c == self._NAME_COL or table.isColumnHidden(c):
+                continue
+            used += table.columnWidth(c)
+        avail = table.viewport().width()
+        table.setColumnWidth(self._NAME_COL, max(self._NAME_MIN, avail - used))
+
     def _fill_filter(self, combo: QComboBox, all_label: str, items: list[dict]) -> None:
         combo.clear()
         combo.addItem(all_label, None)
@@ -193,6 +216,9 @@ class ProductsView(QWidget):
         self._total = result["total"]
         self._populate(result["rows"])
         self._update_pagination()
+        # re-fit the Name column after rows render (scrollbar presence can change
+        # the usable width); deferred so the table has its final size
+        QTimer.singleShot(0, self._fit_name_column)
 
     def _populate(self, rows: list[dict]) -> None:
         # Rebuild from scratch so any edit-mode cell widgets from a previous
@@ -200,7 +226,7 @@ class ProductsView(QWidget):
         self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, p in enumerate(rows):
-            low = p["stock_qty"] <= p["min_stock_level"]
+            low = p["min_stock_level"] > 0 and p["stock_qty"] <= p["min_stock_level"]
             values = [
                 str(p.get("sort_order") or 0),
                 p.get("barcode") or "",

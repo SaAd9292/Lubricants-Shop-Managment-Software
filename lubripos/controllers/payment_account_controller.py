@@ -11,7 +11,7 @@ from ..app_context import AppContext
 from ..core.exceptions import LubriPosError
 from ..core.logging_config import get_logger
 from ..core.session import current_session
-from ..services.payment_account_service import METHODS, PaymentAccountService
+from ..services.payment_account_service import PaymentAccountService
 
 log = get_logger(__name__)
 
@@ -20,9 +20,6 @@ class PaymentAccountController:
     def __init__(self, ctx: AppContext) -> None:
         self.ctx = ctx
         self.accounts = PaymentAccountService(ctx.db, ctx.audit)
-
-    def methods(self) -> list[str]:
-        return list(METHODS)
 
     def list(self, **kwargs) -> list[dict[str, Any]]:
         return self.accounts.list_accounts(**kwargs)

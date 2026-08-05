@@ -50,7 +50,7 @@ class DashboardService:
         )
         low_stock = self.db.query_one(
             "SELECT COUNT(*) AS n FROM products "
-            "WHERE is_active=1 AND stock_qty <= min_stock_level"
+            "WHERE is_active=1 AND min_stock_level > 0 AND stock_qty <= min_stock_level"
         )
         product_count = self.db.query_one(
             "SELECT COUNT(*) AS n FROM products WHERE is_active=1"
@@ -100,7 +100,7 @@ class DashboardService:
     def recent_low_stock(self, limit: int = 6) -> list[dict]:
         rows = self.db.query(
             "SELECT name, stock_qty, min_stock_level FROM products "
-            "WHERE is_active=1 AND stock_qty <= min_stock_level "
+            "WHERE is_active=1 AND min_stock_level > 0 AND stock_qty <= min_stock_level "
             "ORDER BY (min_stock_level - stock_qty) DESC, name COLLATE NOCASE LIMIT ?",
             (limit,),
         )

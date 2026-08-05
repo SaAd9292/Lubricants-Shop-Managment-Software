@@ -27,7 +27,7 @@ _LABEL = "color:#475569;font-size:12px;font-weight:600;"
 _FORM_QSS = f"""
 QLineEdit {{
     background:#f8fafc; border:1px solid #e2e8f0; border-radius:9px;
-    padding:10px 12px; font-size:13px; color:{_INK};
+    padding:0 12px; min-height:36px; font-size:13px; color:{_INK};
 }}
 QLineEdit:focus {{ border:1px solid {ACCENT}; background:#ffffff; }}
 QPushButton#SignIn {{
@@ -146,7 +146,7 @@ class LoginDialog(QDialog):
         u_lbl.setStyleSheet(_LABEL)
         self.username = QLineEdit()
         self.username.setPlaceholderText("Enter your username")
-        self.username.setMinimumHeight(20)
+        self.username.setMinimumHeight(38)
         bl.addWidget(u_lbl)
         bl.addWidget(self.username)
         bl.addSpacing(12)
@@ -156,7 +156,7 @@ class LoginDialog(QDialog):
         self.password = QLineEdit()
         self.password.setEchoMode(QLineEdit.Password)
         self.password.setPlaceholderText("Enter your password")
-        self.password.setMinimumHeight(20)
+        self.password.setMinimumHeight(38)
         bl.addWidget(p_lbl)
         bl.addWidget(self.password)
 

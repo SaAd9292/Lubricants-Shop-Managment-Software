@@ -111,10 +111,6 @@ QPushButton#RemoveBtn:pressed {{ background: #f7c5c5; }}
 """
 
 
-def stylesheet() -> str:
-    return _CHROME
-
-
 def apply_theme(app) -> None:
     """Force the Fusion style, then apply the app chrome + button styling.
 

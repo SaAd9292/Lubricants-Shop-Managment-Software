@@ -357,7 +357,7 @@ class ReportService:
             """SELECT p.name, b.name AS brand, p.stock_qty, p.min_stock_level,
                   (p.min_stock_level - p.stock_qty) AS shortfall
                FROM products p LEFT JOIN brands b ON b.id=p.brand_id
-               WHERE p.is_active=1 AND p.stock_qty <= p.min_stock_level
+               WHERE p.is_active=1 AND p.min_stock_level > 0 AND p.stock_qty <= p.min_stock_level
                ORDER BY shortfall DESC, p.name""")
         data = [dict(r) for r in rows]
         return {

@@ -218,7 +218,7 @@ class ProductService:
             clauses.append("p.brand_id = ?")
             params.append(brand_id)
         if low_stock_only:
-            clauses.append("p.stock_qty <= p.min_stock_level")
+            clauses.append("p.min_stock_level > 0 AND p.stock_qty <= p.min_stock_level")
         if has_barcode == "with":
             clauses.append("(p.barcode IS NOT NULL AND TRIM(p.barcode) != '')")
         elif has_barcode == "without":
