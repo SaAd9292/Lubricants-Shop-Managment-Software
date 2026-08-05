@@ -33,7 +33,6 @@ COLUMNS = [
     ("Sale", "sale_price", True, True),
     ("Margin %", None, False, True),
     ("Stock", "stock", False, True),
-    ("Min", None, False, True),
     ("Status", None, False, False),
     ("", None, False, False),          # per-row Save button (price-edit mode)
 ]
@@ -124,12 +123,16 @@ class ProductsView(QWidget):
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         hdr = self.table.horizontalHeader()
-        hdr.setSectionResizeMode(2, QHeaderView.Stretch)   # Name takes the space
-        for _c in (1, 3, 4):                               # Barcode, Brand, Category
-            hdr.setSectionResizeMode(_c, QHeaderView.Interactive)
-        self.table.setColumnWidth(1, 120)
-        self.table.setColumnWidth(3, 110)
-        self.table.setColumnWidth(4, 120)
+        # Fixed, user-resizable widths for EVERY column so the layout keeps the
+        # same structure on any screen (Name never collapses). On a narrow laptop
+        # the table simply scrolls horizontally instead of squeezing columns.
+        hdr.setSectionResizeMode(QHeaderView.Interactive)
+        hdr.setStretchLastSection(False)
+        hdr.setMinimumSectionSize(45)
+        # Order Barcode Name Brand Categ Purch Sale Margin Stock Status Save
+        _widths = [60, 130, 240, 100, 130, 95, 95, 80, 70, 90, 90]
+        for _c, _w in enumerate(_widths):
+            self.table.setColumnWidth(_c, _w)
         hdr.sectionClicked.connect(self._on_sort)
         self.table.doubleClicked.connect(lambda: self._edit_selected())
         root.addWidget(self.table, 1)
@@ -208,7 +211,6 @@ class ProductsView(QWidget):
                 self.controller.fmt(p["sale_price_minor"]),
                 f"{(p.get('markup_bps') or 0) / 100:g} %",
                 str(p["stock_qty"]),
-                str(p["min_stock_level"]),
                 "Active" if p["is_active"] else "Inactive",
                 "",  # Save (used only in price-edit mode)
             ]
@@ -218,7 +220,7 @@ class ProductsView(QWidget):
                 values[0] = values[5] = values[6] = values[7] = ""
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
-                if c in (0, 5, 6, 7, 8, 9):
+                if c in (0, 5, 6, 7, 8):   # Order + money/qty columns, right-aligned
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if c == 0:
                     item.setData(Qt.UserRole, p["id"])  # stash product id

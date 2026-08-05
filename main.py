@@ -62,6 +62,16 @@ def _install_crash_handler(ctx) -> None:
 
 def main() -> int:
     _set_windows_app_id()
+    # Consistent high-DPI behaviour across machines: on laptops with 125%/150%
+    # display scaling, PassThrough keeps fractional scaling smooth instead of
+    # rounding to whole integers (which cramps or bloats the layout). Must be set
+    # before the QApplication is created.
+    try:
+        from PySide6.QtCore import Qt
+        QApplication.setHighDpiScaleFactorRoundingPolicy(
+            Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
 

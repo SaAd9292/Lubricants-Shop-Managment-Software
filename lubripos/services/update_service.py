@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -38,6 +39,20 @@ class UpdateError(LubriPosError):
 
 def _canonical(data: dict) -> bytes:
     return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """A verifying HTTPS context that works in the frozen (PyInstaller) build.
+
+    A packaged app has no OpenSSL CA store, so the default context can't verify
+    github.com and fails with CERTIFICATE_VERIFY_FAILED. We point verification at
+    certifi's bundled CA file (shipped inside the exe). Falls back to the system
+    default if certifi isn't present (dev machines with system certs)."""
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 def _parse_version(v: str) -> tuple:
@@ -137,7 +152,7 @@ class UpdateService:
         try:
             req = urllib.request.Request(
                 MANIFEST_URL, headers={"User-Agent": "Penguix-Updater"})
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=12, context=_ssl_context()) as resp:
                 raw = resp.read()
             return json.loads(raw.decode("utf-8"))
         except Exception as exc:
@@ -179,7 +194,8 @@ class UpdateService:
         sha = hashlib.sha256()
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Penguix-Updater"})
-            with urllib.request.urlopen(req, timeout=30) as resp, open(dest, "wb") as f:
+            with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as resp, \
+                    open(dest, "wb") as f:
                 total = int(resp.headers.get("Content-Length") or 0)
                 read = 0
                 while True:

@@ -27,6 +27,7 @@ a = Analysis(
         # reportlab loads every barcode encoder dynamically on import; include the
         # whole barcode package so the invoice barcode works in the frozen build.
         *_barcode_mods,
+        "certifi",   # CA bundle for HTTPS update checks
     ],
     hookspath=[],
     hooksconfig={},

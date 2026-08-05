@@ -3,6 +3,7 @@
 PySide6>=6.7,<7.0       # Desktop GUI
 reportlab>=4.0          # PDF invoices & report exports
 openpyxl>=3.1           # Excel (.xlsx) exports
+certifi                 # CA bundle so HTTPS update checks verify in the frozen build
 
 # Password hashing uses the standard library (hashlib.pbkdf2_hmac).
 # No external crypto dependency required.

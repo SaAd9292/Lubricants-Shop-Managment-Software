@@ -116,14 +116,17 @@ def stylesheet() -> str:
 
 
 def apply_theme(app) -> None:
-    """Use the native platform style, then apply chrome + button styling."""
+    """Force the Fusion style, then apply the app chrome + button styling.
+
+    We deliberately do NOT use the native Windows style. The native styles differ
+    per OS version (Windows 11 vs the older Vista style on many shop laptops),
+    which drew tables/controls differently machine-to-machine (beveled, boxy
+    cells). Fusion is Qt-drawn and looks IDENTICAL on every PC and at every screen
+    size / DPI, so the shop sees the same structure everywhere."""
     try:
         from PySide6.QtWidgets import QStyleFactory
-        available = set(QStyleFactory.keys())
-        for name in ("windows11", "windowsvista", "Fusion"):
-            if name in available:
-                app.setStyle(name)
-                break
+        if "Fusion" in set(QStyleFactory.keys()):
+            app.setStyle("Fusion")
     except Exception:
         pass
     app.setStyleSheet(_CHROME)
