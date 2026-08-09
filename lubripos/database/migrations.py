@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 15
+CURRENT_VERSION = 17
 
 
 def run_migrations(db: Database) -> None:
@@ -30,6 +30,8 @@ def run_migrations(db: Database) -> None:
     _migration_13_customer_debt(db)
     _migration_14_custpay_account(db)
     _migration_15_opening_debt(db)
+    _migration_16_cash_drawer(db)
+    _migration_17_cash_expense_link(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -329,3 +331,52 @@ def _migration_15_opening_debt(db: Database) -> None:
         db.execute("ALTER TABLE customers ADD COLUMN opening_debt_minor "
                    "INTEGER NOT NULL DEFAULT 0")
     log.info("Migration: added customers.opening_debt_minor")
+
+
+def _migration_16_cash_drawer(db: Database) -> None:
+    """v16: cash drawer sessions + movements (open float, count at close, variance)."""
+    db.connect().executescript(
+        """
+        CREATE TABLE IF NOT EXISTS cash_sessions (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            opened_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+            opened_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            opening_float_minor INTEGER NOT NULL DEFAULT 0,
+            closed_at           TEXT,
+            closed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            counted_cash_minor  INTEGER,
+            expected_cash_minor INTEGER,
+            variance_minor      INTEGER,
+            cash_sales_minor    INTEGER,
+            cash_repay_minor    INTEGER,
+            cash_refunds_minor  INTEGER,
+            paid_out_minor      INTEGER,
+            paid_in_minor       INTEGER,
+            note                TEXT,
+            status              TEXT    NOT NULL DEFAULT 'open'
+        );
+        CREATE INDEX IF NOT EXISTS idx_cash_sessions_status ON cash_sessions(status);
+        CREATE TABLE IF NOT EXISTS cash_movements (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   INTEGER NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
+            kind         TEXT    NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+            reason       TEXT,
+            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+            created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
+        """
+    )
+    log.info("Migration: added cash_sessions + cash_movements (cash drawer)")
+
+
+def _migration_17_cash_expense_link(db: Database) -> None:
+    """v17: link expenses to the cash drawer. Expenses gain a payment_method so
+    CASH expenses can be deducted from the till (bank/other are ignored)."""
+    if not _column_exists(db, "expenses", "payment_method"):
+        db.execute("ALTER TABLE expenses ADD COLUMN payment_method TEXT "
+                   "NOT NULL DEFAULT 'Cash'")
+    if not _column_exists(db, "cash_sessions", "cash_expenses_minor"):
+        db.execute("ALTER TABLE cash_sessions ADD COLUMN cash_expenses_minor INTEGER")
+    log.info("Migration: expenses.payment_method + cash_sessions.cash_expenses_minor")

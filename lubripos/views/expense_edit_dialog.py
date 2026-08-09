@@ -60,9 +60,14 @@ class ExpenseEditDialog(QDialog):
 
         self.description = QLineEdit()
 
+        # how the expense was paid — CASH expenses come out of the till
+        self.pay_method = QComboBox()
+        self.pay_method.addItems(["Cash", "Bank", "EasyPaisa", "JazzCash"])
+
         form.addRow("Date", self.date)
         form.addRow("Category *", cat_row)
         form.addRow("Amount *", self.amount)
+        form.addRow("Paid with", self.pay_method)
         form.addRow("Description", self.description)
         root.addLayout(form)
 
@@ -111,6 +116,7 @@ class ExpenseEditDialog(QDialog):
             idx = self.category.findData(e.get("category"))
         self.category.setCurrentIndex(max(0, idx))
         self.amount.setValue(float(Decimal(e["amount_minor"]) / self._minor_units))
+        self.pay_method.setCurrentText(e.get("payment_method") or "Cash")
         self.description.setText(e.get("description") or "")
 
     def _save(self, add_another: bool = False) -> None:
@@ -124,6 +130,7 @@ class ExpenseEditDialog(QDialog):
             "expense_date": self.date.date().toString("yyyy-MM-dd") + " 00:00:00",
             "category": self.category.currentText().strip(),
             "amount": self.amount.value(),
+            "payment_method": self.pay_method.currentText(),
             "description": self.description.text().strip(),
         }
         ok, msg, _ = self.controller.save(form, self.expense_id)

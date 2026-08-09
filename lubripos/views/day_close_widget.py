@@ -119,6 +119,7 @@ class DayCloseWidget(QWidget):
         self._fill_cards(self.kpi_row, [
             ("Gross sales", fmt(summ.get("Gross sales", 0)), _ACCENT),
             ("Money received", fmt(summ.get("Money received", 0)), _GREEN),
+            ("Cash in hand", fmt(summ.get("Cash in hand", 0)), "#0f172a"),
             ("Refunds", fmt(summ.get("Refunds", 0)), _RED),
             ("Expenses", fmt(summ.get("Expenses", 0)), _RED),
             ("Net", fmt(summ.get("Net", 0)), _GREEN),

@@ -58,6 +58,7 @@ class ProductService:
         category_id: int | None = None,
         brand_id: int | None = None,
         only_active: bool = True,
+        inactive_only: bool = False,      # show ONLY deactivated products
         low_stock_only: bool = False,
         has_barcode: str | None = None,   # None / "with" / "without"
         sort_by: str = "name",
@@ -66,7 +67,8 @@ class ProductService:
         offset: int = 0,
     ) -> dict[str, Any]:
         where, params = self._build_where(
-            search, category_id, brand_id, only_active, low_stock_only, has_barcode
+            search, category_id, brand_id, only_active, low_stock_only,
+            has_barcode, inactive_only
         )
         sort_expr = _SORT_COLUMNS.get(sort_by, "p.name")
         direction = "DESC" if str(sort_dir).lower() == "desc" else "ASC"
@@ -202,10 +204,12 @@ class ProductService:
 
     # -- helpers ------------------------------------------------------
     def _build_where(self, search, category_id, brand_id, only_active, low_stock_only,
-                     has_barcode=None):
+                     has_barcode=None, inactive_only=False):
         clauses: list[str] = []
         params: list[Any] = []
-        if only_active:
+        if inactive_only:
+            clauses.append("p.is_active = 0")   # ONLY deactivated products
+        elif only_active:
             clauses.append("p.is_active = 1")
         if search:
             like = f"%{search.strip()}%"

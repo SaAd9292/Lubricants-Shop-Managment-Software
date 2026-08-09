@@ -23,6 +23,7 @@ SCREEN_PERMISSIONS = [
     ("purchases", "Purchases"),
     ("payables", "Supplier Payables"),
     ("expenses", "Expenses"),
+    ("cashdrawer", "Cash Drawer"),
     ("reports", "Reports"),
 ]
 
@@ -41,7 +42,7 @@ ACTION_KEYS = [k for k, _ in ACTION_PERMISSIONS]
 GRANTABLE_KEYS = SCREEN_KEYS + ACTION_KEYS
 
 # Sensible default for a brand-new cashier and for backfilling legacy accounts.
-DEFAULT_CASHIER = ["dashboard", "pos", "sales"]
+DEFAULT_CASHIER = ["dashboard", "pos", "sales", "cashdrawer"]
 
 
 def clean(keys) -> list[str]:

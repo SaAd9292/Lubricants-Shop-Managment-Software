@@ -108,6 +108,49 @@ QPushButton#RemoveBtn {{
 }}
 QPushButton#RemoveBtn:hover {{ background: #fbdada; }}
 QPushButton#RemoveBtn:pressed {{ background: #f7c5c5; }}
+
+/* ---------- Dialogs: one consistent, modern look everywhere ---------- */
+/* Scoped to QDialog so the main screens/tables are untouched. */
+QDialog {{ background: #ffffff; }}
+QDialog QLineEdit, QDialog QComboBox, QDialog QSpinBox, QDialog QDoubleSpinBox,
+QDialog QDateEdit, QDialog QPlainTextEdit, QDialog QTextEdit {{
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 4px 10px; min-height: 30px; color: #0f172a;
+    selection-background-color: {ACCENT_SOFT}; selection-color: #0f172a;
+}}
+QDialog QLineEdit:focus, QDialog QComboBox:focus, QDialog QSpinBox:focus,
+QDialog QDoubleSpinBox:focus, QDialog QDateEdit:focus,
+QDialog QPlainTextEdit:focus, QDialog QTextEdit:focus {{
+    border: 1px solid {ACCENT}; background: #ffffff;
+}}
+QDialog QComboBox::drop-down {{ border: none; width: 22px; }}
+/* Spin boxes: styling a spinner hides its native arrows, so re-draw the +/-
+   buttons (with CSS-triangle arrows) or they vanish. */
+QDialog QSpinBox, QDialog QDoubleSpinBox {{ padding-right: 20px; }}
+QDialog QSpinBox::up-button, QDialog QDoubleSpinBox::up-button {{
+    subcontrol-origin: border; subcontrol-position: top right; width: 18px;
+    border-left: 1px solid #e2e8f0; border-top-right-radius: 8px; background: #eef2f7;
+}}
+QDialog QSpinBox::down-button, QDialog QDoubleSpinBox::down-button {{
+    subcontrol-origin: border; subcontrol-position: bottom right; width: 18px;
+    border-left: 1px solid #e2e8f0; border-bottom-right-radius: 8px; background: #eef2f7;
+}}
+QDialog QSpinBox::up-button:hover, QDialog QDoubleSpinBox::up-button:hover,
+QDialog QSpinBox::down-button:hover, QDialog QDoubleSpinBox::down-button:hover {{
+    background: #e2e8f0;
+}}
+QDialog QSpinBox::up-arrow, QDialog QDoubleSpinBox::up-arrow {{
+    width: 0; height: 0; border-left: 4px solid transparent;
+    border-right: 4px solid transparent; border-bottom: 5px solid #475569;
+}}
+QDialog QSpinBox::down-arrow, QDialog QDoubleSpinBox::down-arrow {{
+    width: 0; height: 0; border-left: 4px solid transparent;
+    border-right: 4px solid transparent; border-top: 5px solid #475569;
+}}
+QDialog QLabel {{ color: #334155; }}
+/* dialog action buttons: consistent sizing */
+QDialog QPushButton {{ min-height: 32px; padding: 4px 16px; }}
+QDialog QDialogButtonBox QPushButton {{ min-width: 84px; }}
 """
 
 

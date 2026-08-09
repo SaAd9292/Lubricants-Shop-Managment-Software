@@ -359,10 +359,12 @@ def to_xlsx(report: dict[str, Any], company: dict[str, Any], output_path: str | 
                     cell.alignment = Alignment(horizontal="right")
         r += 1
 
-    # summary block
-    r += 1
-    ws.cell(r, 1, "Summary").font = bold
-    r += 1
+    # summary block (only when there is one — keeps a plain data export clean so
+    # it round-trips through the product importer without a stray "Summary" row)
+    if report.get("summary"):
+        r += 1
+        ws.cell(r, 1, "Summary").font = bold
+        r += 1
     for s in report.get("summary", []):
         ws.cell(r, 1, s["label"]).font = bold
         cell = ws.cell(r, 2)

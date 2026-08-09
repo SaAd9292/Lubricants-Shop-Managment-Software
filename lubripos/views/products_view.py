@@ -6,17 +6,25 @@ row to edit; the toolbar adds / edits / adjusts stock / removes / restores.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+import os
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox,
+    QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
 from ..ui.widgets import DataTable
 from ..controllers.product_controller import ProductController
+from ..reports.report_exporter import to_pdf, to_xlsx
+from ..services.column_presets import ColumnPresetStore
+from .column_select_dialog import ColumnSelectDialog
 from .product_edit_dialog import ProductEditDialog
 from .stock_adjust_dialog import StockAdjustDialog
 
@@ -33,7 +41,6 @@ COLUMNS = [
     ("Sale", "sale_price", True, True),
     ("Margin %", None, False, True),
     ("Stock", "stock", False, True),
-    ("Status", None, False, False),
     ("", None, False, False),          # per-row Save button (price-edit mode)
 ]
 _LOW_STOCK_TINT = QColor(180, 60, 60, 60)
@@ -69,6 +76,14 @@ class ProductsView(QWidget):
         title.setObjectName("PageTitle")
         header.addWidget(title)
         header.addStretch(1)
+        excel_btn = QPushButton("Export Excel")
+        excel_btn.setObjectName("Secondary")
+        excel_btn.clicked.connect(lambda: self._export("xlsx"))
+        print_btn = QPushButton("Print")
+        print_btn.setObjectName("Secondary")
+        print_btn.clicked.connect(lambda: self._export("pdf"))
+        header.addWidget(excel_btn)
+        header.addWidget(print_btn)
         self.edit_prices_btn = QPushButton("Update prices")
         self.edit_prices_btn.setObjectName("Secondary")
         self.edit_prices_btn.setCheckable(True)
@@ -101,7 +116,7 @@ class ProductsView(QWidget):
 
         self.f_low = QCheckBox("Low stock only")
         self.f_low.stateChanged.connect(self._reset_and_reload)
-        self.f_inactive = QCheckBox("Show inactive")
+        self.f_inactive = QCheckBox("Inactive only")
         self.f_inactive.stateChanged.connect(self._reset_and_reload)
         self.f_inactive.stateChanged.connect(self._sync_action_label)
 
@@ -129,8 +144,8 @@ class ProductsView(QWidget):
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(False)
         hdr.setMinimumSectionSize(45)
-        # Order Barcode Name Brand Categ Purch Sale Margin Stock Status Save
-        self._col_widths = [60, 130, 240, 100, 130, 95, 95, 80, 70, 90, 90]
+        # Order Barcode Name Brand Categ Purch Sale Margin Stock Save
+        self._col_widths = [60, 130, 240, 100, 130, 95, 95, 80, 70, 90]
         for _c, _w in enumerate(self._col_widths):
             self.table.setColumnWidth(_c, _w)
         hdr.sectionClicked.connect(self._on_sort)
@@ -189,6 +204,71 @@ class ProductsView(QWidget):
         avail = table.viewport().width()
         table.setColumnWidth(self._NAME_COL, max(self._NAME_MIN, avail - used))
 
+    def _export(self, fmt: str) -> None:
+        """Export the CURRENT product list (respecting search + all filters) to
+        Excel, or open a PDF to print. Not limited to the visible page."""
+        res = self.controller.list(
+            search=self.search.text(),
+            category_id=self.f_category.currentData(),
+            brand_id=self.f_brand.currentData(),
+            only_active=not self.f_inactive.isChecked(),
+            inactive_only=self.f_inactive.isChecked(),
+            low_stock_only=self.f_low.isChecked(),
+            has_barcode=self.f_barcode.currentData(),
+            sort_by=self._sort_by, sort_dir=self._sort_dir,
+            limit=1_000_000, offset=0)
+        products = res["rows"]
+        if not products:
+            QMessageBox.information(self, "Nothing to export",
+                                    "No products match the current filters.")
+            return
+        columns = [
+            {"key": "num", "label": "#", "align": "right"},
+            {"key": "barcode", "label": "Barcode"},
+            {"key": "name", "label": "Name"},
+            {"key": "brand", "label": "Brand"},
+            {"key": "category", "label": "Category"},
+            {"key": "purchase", "label": "Purchase", "align": "right", "money": True},
+            {"key": "sale", "label": "Sale", "align": "right", "money": True},
+        ]
+        rows = [{
+            "num": p.get("sort_order") or 0,
+            "barcode": p.get("barcode") or "",
+            "name": p["name"],
+            "brand": p.get("brand_name") or "",
+            "category": p.get("category_name") or "",
+            "purchase": p["purchase_price_minor"],
+            "sale": p["sale_price_minor"],
+        } for p in products]
+        # let the user tick exactly which columns to include (with presets)
+        chosen = ColumnSelectDialog.pick(
+            self, columns, "products", ColumnPresetStore(self.ctx.config.data_root))
+        if chosen is None:
+            return   # cancelled
+        columns = [c for c in columns if c["key"] in chosen]
+
+        company = self.ctx.company.get_company()
+        scope = "Inactive" if self.f_inactive.isChecked() else "Active"
+        report = {"key": "products", "title": "Product List",
+                  "subtitle": f"{scope} · {len(products)} item(s)",
+                  "columns": columns, "rows": rows}
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            if fmt == "xlsx":
+                suggested = str(Path.home() / f"products_{stamp}.xlsx")
+                chosen, _ = QFileDialog.getSaveFileName(
+                    self, "Save products as", suggested, "Excel files (*.xlsx)")
+                if not chosen:
+                    return
+                path = to_xlsx(report, company, chosen)
+                QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
+            else:  # pdf -> open for printing
+                path = to_pdf(report, company, os.path.join(
+                    tempfile.gettempdir(), f"products_{stamp}.pdf"))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+
     def _fill_filter(self, combo: QComboBox, all_label: str, items: list[dict]) -> None:
         combo.clear()
         combo.addItem(all_label, None)
@@ -206,6 +286,7 @@ class ProductsView(QWidget):
             category_id=self.f_category.currentData(),
             brand_id=self.f_brand.currentData(),
             only_active=not self.f_inactive.isChecked(),
+            inactive_only=self.f_inactive.isChecked(),
             low_stock_only=self.f_low.isChecked(),
             has_barcode=self.f_barcode.currentData(),
             sort_by=self._sort_by,
@@ -237,7 +318,6 @@ class ProductsView(QWidget):
                 self.controller.fmt(p["sale_price_minor"]),
                 f"{(p.get('markup_bps') or 0) / 100:g} %",
                 str(p["stock_qty"]),
-                "Active" if p["is_active"] else "Inactive",
                 "",  # Save (used only in price-edit mode)
             ]
             if self._edit_prices:
@@ -425,7 +505,7 @@ class ProductsView(QWidget):
                 "Deactivate this product? It will be hidden from the product "
                 "list, search, and the POS, but its details and past sales "
                 "history are kept. You can reactivate it anytime by ticking "
-                "'Show inactive'.",
+                "'Inactive only'.",
             )
             if confirm != QMessageBox.Yes:
                 return
@@ -437,7 +517,7 @@ class ProductsView(QWidget):
 
     def _sync_action_label(self) -> None:
         """The deactivate button doubles as 'Activate' while viewing inactive
-        products, so its label follows the 'Show inactive' toggle."""
+        products, so its label follows the 'Inactive only' toggle."""
         self.del_btn.setText("Activate" if self.f_inactive.isChecked() else "Deactivate")
 
     def _refresh_filters_and_reload(self) -> None:

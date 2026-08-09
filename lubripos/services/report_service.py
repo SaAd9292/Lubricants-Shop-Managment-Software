@@ -130,6 +130,22 @@ class ReportService:
         gross = agg["total"]
         net = gross - refunds_total - expense_total
 
+        # Cash in hand = the cash that should physically be in the drawer from the
+        # day's activity: cash received (cash sales + cash repayments) + cash put
+        # in, minus refunds, cash-paid expenses and cash taken out. (Opening float
+        # is a drawer-session concept and isn't part of a calendar-day report.)
+        cash_expenses = self.db.query_one(
+            "SELECT COALESCE(SUM(amount_minor),0) v FROM expenses "
+            "WHERE payment_method='Cash' AND expense_date LIKE ?", (like,))["v"]
+        cash_out = self.db.query_one(
+            "SELECT COALESCE(SUM(amount_minor),0) v FROM cash_movements "
+            "WHERE kind='out' AND created_at LIKE ?", (like,))["v"]
+        cash_in = self.db.query_one(
+            "SELECT COALESCE(SUM(amount_minor),0) v FROM cash_movements "
+            "WHERE kind='in' AND created_at LIKE ?", (like,))["v"]
+        cash_in_hand = (method_totals.get("Cash", 0) + cash_in
+                        - refunds_total - cash_expenses - cash_out)
+
         # per-method map so the UI can show a card per channel even at zero
         by_method = method_totals
 
@@ -178,6 +194,7 @@ class ReportService:
                 {"label": "Expenses", "value": expense_total, "money": True},
                 {"label": "Refunds", "value": refunds_total, "money": True},
                 {"label": "Money received", "value": total_received, "money": True},
+                {"label": "Cash in hand", "value": cash_in_hand, "money": True},
                 {"label": "On credit (unpaid)", "value": debt_today, "money": True},
                 {"label": "Debt repayments", "value": repay_today, "money": True},
                 {"label": "Net", "value": net, "money": True},
@@ -287,8 +304,6 @@ class ReportService:
                WHERE sr.return_date BETWEEN ? AND ?""", (lo, hi))
         ret_rev, ret_cost = ret["rev"], ret["cost"]
         net = gross - discounts - (ret_rev - ret_cost)
-        rev_after = revenue - ret_rev
-        margin = (net / rev_after * 100) if rev_after else 0
         return {
             "key": "profit", "title": "Profit Report", "subtitle": f"{date_from} to {date_to}",
             "columns": [
@@ -305,7 +320,6 @@ class ReportService:
                 {"label": "Refunds (returns)", "value": ret_rev, "money": True},
                 {"label": "Net profit (after returns)", "value": net, "money": True},
                 {"label": "Tax collected (pass-through)", "value": sales_agg["tax"], "money": True},
-                {"label": "Net margin %", "value": f"{margin:.1f}%", "money": False},
             ],
         }
 
@@ -542,7 +556,6 @@ class ReportService:
                 _col("category", "Category"),
                 _col("purchase_price_minor", "Purchase", "right", True),
                 _col("sale_price_minor", "Sale", "right", True),
-                _col("stock_qty", "Stock", "right"),
             ],
             "rows": rows,
             "summary": [{"label": "Products", "value": len(rows), "money": False}],

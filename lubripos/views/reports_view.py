@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..ui.widgets import DataTable
 from ..controllers.report_controller import ReportController
+from ..services.column_presets import ColumnPresetStore
+from .column_select_dialog import ColumnSelectDialog
 from .day_close_widget import DayCloseWidget
 from .report_sections_widget import SectionsWidget
 
@@ -37,8 +39,24 @@ class ReportsView(QWidget):
         self.ctx = ctx
         self.controller = ReportController(ctx)
         self._report: dict | None = None
+        self._col_store = ColumnPresetStore(ctx.config.data_root)
         self._build_ui()
         self._on_type_changed()
+
+    def _pick_columns(self, report: dict) -> dict | None:
+        """Ask which columns to include (with presets). Multi-section reports
+        (day-close / monthly sections) are exported whole. Returns a report copy
+        with only the chosen columns, or None if the user cancelled."""
+        if report.get("layout") in ("day_close", "sections"):
+            return report
+        cols = report.get("columns") or []
+        if not cols:
+            return report
+        chosen = ColumnSelectDialog.pick(
+            self, cols, report.get("key", "report"), self._col_store)
+        if chosen is None:
+            return None
+        return {**report, "columns": [c for c in cols if c["key"] in chosen]}
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -253,14 +271,17 @@ class ReportsView(QWidget):
     def _export(self, fmt: str) -> None:
         if not self._report:
             return
+        report = self._pick_columns(self._report)
+        if report is None:
+            return   # cancelled the column picker
         ext = "pdf" if fmt == "pdf" else "xlsx"
         flt = "PDF files (*.pdf)" if fmt == "pdf" else "Excel files (*.xlsx)"
         suggested = str(Path.home() /
-                        f"{self._report['key']}_{datetime.now():%Y%m%d_%H%M%S}.{ext}")
+                        f"{report['key']}_{datetime.now():%Y%m%d_%H%M%S}.{ext}")
         chosen, _ = QFileDialog.getSaveFileName(self, "Save report as", suggested, flt)
         if not chosen:
             return   # user cancelled
-        ok, msg, path = self.controller.export(self._report, fmt, dest=chosen)
+        ok, msg, path = self.controller.export(report, fmt, dest=chosen)
         if ok:
             QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
@@ -270,7 +291,10 @@ class ReportsView(QWidget):
     def _print(self) -> None:
         if not self._report:
             return
-        ok, msg, path = self.controller.export(self._report, "pdf")
+        report = self._pick_columns(self._report)
+        if report is None:
+            return   # cancelled the column picker
+        ok, msg, path = self.controller.export(report, "pdf")
         if ok:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         else:

@@ -17,7 +17,8 @@ from .audit_service import AuditService
 
 log = get_logger(__name__)
 
-_EDITABLE = {"expense_date", "category", "amount_minor", "description"}
+_EDITABLE = {"expense_date", "category", "amount_minor", "description",
+             "payment_method"}
 
 
 class ExpenseService:
