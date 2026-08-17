@@ -13,19 +13,24 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLineEdit,
-    QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
 
 class ProductPickerDialog(QDialog):
-    def __init__(self, search_fn, fmt_fn, categories=None) -> None:
+    def __init__(self, search_fn, fmt_fn, categories=None, allow_carton=False) -> None:
         """search_fn(term[, category_id]) -> list[dict]; fmt_fn(minor) -> str.
-        categories: optional list of {id, name} to enable the category filter."""
+        categories: optional list of {id, name} to enable the category filter.
+        allow_carton: POS mode — shows Units/CTN and an 'Add carton' action that
+        sells a whole carton (units_per_carton bottles) at the per-bottle price.
+        The chosen quantity is returned in `.add_qty` (1 for a single bottle)."""
         super().__init__()
         self._search_fn = search_fn
         self._fmt = fmt_fn
         self._categories = categories
+        self._allow_carton = allow_carton
         self.selected: dict | None = None
+        self.add_qty: int = 1
         self.setWindowTitle("Select product")
         self.setMinimumSize(600, 440)
         self._debounce = QTimer(self)
@@ -56,16 +61,43 @@ class ProductPickerDialog(QDialog):
             top.addWidget(self.f_cat)
         root.addLayout(top)
 
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Name", "Barcode", "Stock", "Sale price"])
+        headers = ["Name", "Barcode", "Stock", "Sale price"]
+        if self._allow_carton:
+            headers.append("Units/CTN")
+        self.table = QTableWidget(0, len(headers))
+        self.table.setHorizontalHeaderLabels(headers)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.doubleClicked.connect(self._choose)
+        # Double-click = add a single bottle (fast common case).
+        self.table.doubleClicked.connect(lambda *_: self._choose(carton=False))
         root.addWidget(self.table, 1)
+
+        if self._allow_carton:
+            actions = QHBoxLayout()
+            actions.addStretch(1)
+            self.btn_bottle = QPushButton("Add bottle")
+            self.btn_bottle.setObjectName("Secondary")
+            self.btn_bottle.clicked.connect(lambda: self._choose(carton=False))
+            self.btn_carton = QPushButton("Add carton")
+            self.btn_carton.clicked.connect(lambda: self._choose(carton=True))
+            self.btn_carton.setEnabled(False)
+            actions.addWidget(self.btn_bottle)
+            actions.addWidget(self.btn_carton)
+            root.addLayout(actions)
+            self.table.itemSelectionChanged.connect(self._update_carton_btn)
+
         self.search.setFocus()
+
+    def _update_carton_btn(self) -> None:
+        """Enable 'Add carton' only for products that come in cartons (>1/ctn),
+        and show the pack size on the button so the cashier sees what a carton is."""
+        p = self._current_product()
+        upc = int((p or {}).get("units_per_carton") or 1)
+        self.btn_carton.setEnabled(p is not None and upc > 1)
+        self.btn_carton.setText(f"Add carton (×{upc})" if upc > 1 else "Add carton")
 
     def _reload(self) -> None:
         term = self.search.text()
@@ -77,15 +109,28 @@ class ProductPickerDialog(QDialog):
         for r, p in enumerate(rows):
             cells = [p["name"], p.get("barcode") or "", str(p["stock_qty"]),
                      self._fmt(p["sale_price_minor"])]
+            if self._allow_carton:
+                upc = int(p.get("units_per_carton") or 1)
+                cells.append(f"{upc}" if upc > 1 else "—")
             for c, val in enumerate(cells):
                 item = QTableWidgetItem(val)
                 if c == 0:
                     item.setData(Qt.UserRole, p)
                 self.table.setItem(r, c, item)
+        if self._allow_carton:
+            self._update_carton_btn()
 
-    def _choose(self) -> None:
+    def _current_product(self) -> dict | None:
         row = self.table.currentRow()
         if row < 0:
+            return None
+        item = self.table.item(row, 0)
+        return item.data(Qt.UserRole) if item else None
+
+    def _choose(self, carton: bool = False) -> None:
+        p = self._current_product()
+        if p is None:
             return
-        self.selected = self.table.item(row, 0).data(Qt.UserRole)
+        self.selected = p
+        self.add_qty = int(p.get("units_per_carton") or 1) if carton else 1
         self.accept()

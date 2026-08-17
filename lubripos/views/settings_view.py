@@ -2,8 +2,7 @@
 
 Organised as a tabbed screen: Shop, Currency & Invoice, Display, Tax, Payment
 Accounts, Updates, and Danger Zone. Editing shop_name here changes the app
-title, login screen, and every invoice automatically. Admin-only (this screen is
-in ADMIN_ONLY_SCREENS).
+title, login screen, and every invoice automatically. Admin-only.
 
 The Danger Zone tab flushes all shop data (products, suppliers, purchases, sales,
 expenses, audit log) for a fresh start, keeping users, settings and the

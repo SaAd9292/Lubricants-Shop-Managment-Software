@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 17
+CURRENT_VERSION = 19
 
 
 def run_migrations(db: Database) -> None:
@@ -30,8 +30,8 @@ def run_migrations(db: Database) -> None:
     _migration_13_customer_debt(db)
     _migration_14_custpay_account(db)
     _migration_15_opening_debt(db)
-    _migration_16_cash_drawer(db)
-    _migration_17_cash_expense_link(db)
+    _migration_18_product_packing(db)
+    _migration_19_drop_cash_drawer(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -333,50 +333,41 @@ def _migration_15_opening_debt(db: Database) -> None:
     log.info("Migration: added customers.opening_debt_minor")
 
 
-def _migration_16_cash_drawer(db: Database) -> None:
-    """v16: cash drawer sessions + movements (open float, count at close, variance)."""
+def _migration_18_product_packing(db: Database) -> None:
+    """v18: structured packing so the catalog mirrors a manufacturer price list.
+
+      * series           - product tier/line (e.g. Platinum, Gold, Fighter).
+      * pack_size         - the pack the product is sold in (e.g. '1 L', '4 L').
+      * units_per_carton  - how many packs make a full carton (>= 1); lets the
+                            shop sell a whole carton in one action at POS.
+
+    All nullable / defaulted so existing products are unaffected."""
+    if not _column_exists(db, "products", "series"):
+        db.execute("ALTER TABLE products ADD COLUMN series TEXT")
+    if not _column_exists(db, "products", "pack_size"):
+        db.execute("ALTER TABLE products ADD COLUMN pack_size TEXT")
+    if not _column_exists(db, "products", "units_per_carton"):
+        db.execute("ALTER TABLE products ADD COLUMN units_per_carton "
+                   "INTEGER NOT NULL DEFAULT 1")
+    log.info("Migration: products.series + pack_size + units_per_carton")
+
+
+def _migration_19_drop_cash_drawer(db: Database) -> None:
+    """v19: remove the cash-drawer feature. Drop its tables and the expense
+    payment_method column (all expenses now come out of cash). Safe to re-run:
+    DROP ... IF EXISTS is a no-op once gone."""
     db.connect().executescript(
         """
-        CREATE TABLE IF NOT EXISTS cash_sessions (
-            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-            opened_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-            opened_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            opening_float_minor INTEGER NOT NULL DEFAULT 0,
-            closed_at           TEXT,
-            closed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
-            counted_cash_minor  INTEGER,
-            expected_cash_minor INTEGER,
-            variance_minor      INTEGER,
-            cash_sales_minor    INTEGER,
-            cash_repay_minor    INTEGER,
-            cash_refunds_minor  INTEGER,
-            paid_out_minor      INTEGER,
-            paid_in_minor       INTEGER,
-            note                TEXT,
-            status              TEXT    NOT NULL DEFAULT 'open'
-        );
-        CREATE INDEX IF NOT EXISTS idx_cash_sessions_status ON cash_sessions(status);
-        CREATE TABLE IF NOT EXISTS cash_movements (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id   INTEGER NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
-            kind         TEXT    NOT NULL,
-            amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
-            reason       TEXT,
-            created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-            created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
+        DROP TABLE IF EXISTS cash_movements;
+        DROP TABLE IF EXISTS cash_sessions;
         """
     )
-    log.info("Migration: added cash_sessions + cash_movements (cash drawer)")
-
-
-def _migration_17_cash_expense_link(db: Database) -> None:
-    """v17: link expenses to the cash drawer. Expenses gain a payment_method so
-    CASH expenses can be deducted from the till (bank/other are ignored)."""
-    if not _column_exists(db, "expenses", "payment_method"):
-        db.execute("ALTER TABLE expenses ADD COLUMN payment_method TEXT "
-                   "NOT NULL DEFAULT 'Cash'")
-    if not _column_exists(db, "cash_sessions", "cash_expenses_minor"):
-        db.execute("ALTER TABLE cash_sessions ADD COLUMN cash_expenses_minor INTEGER")
-    log.info("Migration: expenses.payment_method + cash_sessions.cash_expenses_minor")
+    if _column_exists(db, "expenses", "payment_method"):
+        try:
+            db.execute("ALTER TABLE expenses DROP COLUMN payment_method")
+        except Exception:
+            # DROP COLUMN needs SQLite >= 3.35. If unavailable, leave it — it is
+            # unused (all expenses are cash) and harmless.
+            log.warning("Could not drop expenses.payment_method (SQLite too old?); "
+                        "leaving it in place - it is unused and harmless.")
+    log.info("Migration: dropped cash_sessions/cash_movements + expenses.payment_method")

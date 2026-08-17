@@ -1,9 +1,59 @@
 """Reusable UI widgets shared across screens."""
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QLayout, QTableWidget
+from PySide6.QtWidgets import (
+    QAbstractSpinBox, QHBoxLayout, QLayout, QSpinBox, QTableWidget, QWidget,
+)
+
+from ..core.packs import split_packs
+
+
+class CartonQtyEntry(QWidget):
+    """Enter a quantity as cartons + loose pieces, exposing a single piece count.
+
+    For a product sold in cartons (units_per_carton > 1) it shows two spin boxes
+    ('N ctn' + 'M pc'); for loose/drum items (<= 1) just a piece box. Used at the
+    till-side counting screens (purchases, stock adjust) so staff enter stock the
+    way it sits on the shelf while the database keeps a single piece count."""
+
+    valueChanged = Signal()
+
+    def __init__(self, units_per_carton=1, parent=None) -> None:
+        super().__init__(parent)
+        self.upc = max(1, int(units_per_carton or 1))
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self.cartons = None
+        if self.upc > 1:
+            self.cartons = QSpinBox()
+            self.cartons.setRange(0, 100_000_000)
+            self.cartons.setSuffix(" ctn")
+            self.cartons.setButtonSymbols(QAbstractSpinBox.NoButtons)
+            self.cartons.valueChanged.connect(self.valueChanged)
+            lay.addWidget(self.cartons)
+        self.pieces = QSpinBox()
+        self.pieces.setRange(0, 100_000_000)
+        self.pieces.setSuffix(" pc")
+        self.pieces.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.pieces.valueChanged.connect(self.valueChanged)
+        lay.addWidget(self.pieces)
+
+    def total_pieces(self) -> int:
+        n = self.pieces.value()
+        if self.cartons is not None:
+            n += self.cartons.value() * self.upc
+        return n
+
+    def set_total(self, qty) -> None:
+        cartons, loose = split_packs(qty, self.upc)
+        if self.cartons is not None:
+            self.cartons.setValue(cartons)
+            self.pieces.setValue(loose)
+        else:
+            self.pieces.setValue(int(qty or 0))
 
 
 class DataTable(QTableWidget):

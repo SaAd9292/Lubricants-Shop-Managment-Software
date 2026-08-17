@@ -41,7 +41,7 @@ def run(db: Database) -> None:
     engine = next(c["id"] for c in tax.list_categories() if c["name"] == "Engine Oil")
     again = tax.add_brand("ZIC")
     check(again == zic, "re-adding existing brand returns same id (no duplicate)")
-    new_brand = tax.add_brand("Castrol")
+    tax.add_brand("Castrol")
     check(any(b["name"] == "Castrol" for b in tax.list_brands()), "new brand added")
 
     print("\n[products] create + minor-unit storage")

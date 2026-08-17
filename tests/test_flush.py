@@ -90,9 +90,6 @@ def main() -> int:
     check(count(db, "audit_logs") == 1, "audit log has exactly the flush entry")
     check(Path(safety).is_file(), "safety backup file was created")
 
-    # next invoice should start at 1 again
-    sales.create_sale(items=[], cashier_id=1, cashier_name="admin", user_id=1) \
-        if False else None
     total, passed = len(_r), sum(_r)
     print(f"\n[flush] {passed}/{total} checks passed\n")
     return 0 if passed == total else 1

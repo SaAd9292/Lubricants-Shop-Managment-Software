@@ -75,8 +75,8 @@ def main() -> int:
     ok, _, _ = sc.void(s1["id"])
     check(ok, "cashier WITH sale.void can reverse a sale")
     # c2 lacks sale.void + discount
-    uid2 = us.create_user(username="c2", password="pass123", role="cashier",
-                          permissions=["dashboard", "pos", "sales"])
+    us.create_user(username="c2", password="pass123", role="cashier",
+                   permissions=["dashboard", "pos", "sales"])
     cu2 = auth.authenticate("c2", "pass123")
     current_session.login(cu2)
     s2 = SaleService(ctx.db).create_sale(items=[{"product_id": pid, "qty": 1}],

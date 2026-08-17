@@ -10,6 +10,7 @@ import calendar
 from datetime import date
 from typing import Any
 
+from ..core.packs import split_packs
 from ..database.connection import Database
 
 
@@ -130,21 +131,9 @@ class ReportService:
         gross = agg["total"]
         net = gross - refunds_total - expense_total
 
-        # Cash in hand = the cash that should physically be in the drawer from the
-        # day's activity: cash received (cash sales + cash repayments) + cash put
-        # in, minus refunds, cash-paid expenses and cash taken out. (Opening float
-        # is a drawer-session concept and isn't part of a calendar-day report.)
-        cash_expenses = self.db.query_one(
-            "SELECT COALESCE(SUM(amount_minor),0) v FROM expenses "
-            "WHERE payment_method='Cash' AND expense_date LIKE ?", (like,))["v"]
-        cash_out = self.db.query_one(
-            "SELECT COALESCE(SUM(amount_minor),0) v FROM cash_movements "
-            "WHERE kind='out' AND created_at LIKE ?", (like,))["v"]
-        cash_in = self.db.query_one(
-            "SELECT COALESCE(SUM(amount_minor),0) v FROM cash_movements "
-            "WHERE kind='in' AND created_at LIKE ?", (like,))["v"]
-        cash_in_hand = (method_totals.get("Cash", 0) + cash_in
-                        - refunds_total - cash_expenses - cash_out)
+        # Cash in hand = the cash left from the day: cash sales received, minus
+        # refunds and expenses. All expenses are paid out of the cash till.
+        cash_in_hand = method_totals.get("Cash", 0) - refunds_total - expense_total
 
         # per-method map so the UI can show a card per channel even at zero
         by_method = method_totals
@@ -339,29 +328,42 @@ class ReportService:
         where = "WHERE " + " AND ".join(clauses)
         rows = self.db.query(
             f"""SELECT p.name, b.name AS brand, c.name AS category, p.stock_qty,
+                  p.units_per_carton,
                   p.purchase_price_minor, p.sale_price_minor,
-                  (p.stock_qty*p.purchase_price_minor) AS value
+                  (p.stock_qty*p.purchase_price_minor) AS value,
+                  (p.stock_qty*p.sale_price_minor)     AS sale_value
                FROM products p
                LEFT JOIN brands b ON b.id=p.brand_id
                LEFT JOIN categories c ON c.id=p.category_id
                {where} ORDER BY p.name COLLATE NOCASE""", tuple(params))
         data = [dict(r) for r in rows]
+        # split each piece count into cartons + loose pieces for a familiar view
+        for r in data:
+            cartons, loose = split_packs(r["stock_qty"], r.get("units_per_carton"))
+            r["cartons"], r["loose"] = cartons, loose
         agg = self.db.query_one(
-            f"SELECT COUNT(*) n, COALESCE(SUM(p.stock_qty*p.purchase_price_minor),0) val "
+            f"SELECT COUNT(*) n, "
+            f"COALESCE(SUM(p.stock_qty*p.purchase_price_minor),0) val, "
+            f"COALESCE(SUM(p.stock_qty*p.sale_price_minor),0) sale_val "
             f"FROM products p {where}", tuple(params))
         return {
             "key": "stock", "title": "Stock Report", "subtitle": date.today().isoformat(),
             "columns": [
                 _col("name", "Product"), _col("brand", "Brand"), _col("category", "Category"),
-                _col("stock_qty", "Stock", "right"),
+                _col("units_per_carton", "Pcs/CTR", "right"),
+                _col("cartons", "Cartons", "right"),
+                _col("loose", "Loose", "right"),
+                _col("stock_qty", "Total Pcs", "right"),
                 _col("purchase_price_minor", "Unit Cost", "right", True),
-                _col("value", "Stock Value", "right", True),
+                _col("value", "Value (cost)", "right", True),
                 _col("sale_price_minor", "Sale Price", "right", True),
+                _col("sale_value", "Value (sale)", "right", True),
             ],
             "rows": data,
             "summary": [
                 {"label": "Active products", "value": agg["n"], "money": False},
                 {"label": "Total stock value (at cost)", "value": agg["val"], "money": True},
+                {"label": "Total stock value (at sale)", "value": agg["sale_val"], "money": True},
             ],
         }
 

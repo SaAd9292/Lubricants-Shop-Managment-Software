@@ -169,9 +169,9 @@ class BackupService:
     # company_settings, tax_settings, categories, brands and
     # expense_categories are intentionally KEPT.
     _FLUSH_TABLES = ("sale_return_items", "sale_returns", "customer_payments",
-                     "cash_movements", "cash_sessions", "sale_items",
-                     "supplier_payments", "purchase_items", "sales", "purchases",
-                     "expenses", "products", "suppliers", "customers")
+                     "sale_items", "supplier_payments", "purchase_items",
+                     "sales", "purchases", "expenses", "products", "suppliers",
+                     "customers")
 
     def flush_shop_data(self, *, user_id: int | None = None) -> str:
         """Reset the shop to a clean state for a new business, keeping users,

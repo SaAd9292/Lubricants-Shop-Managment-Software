@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
+from ..core.packs import fmt_packs
 from ..ui.widgets import DataTable
 from ..controllers.product_controller import ProductController
 from ..reports.report_exporter import to_pdf, to_xlsx
@@ -34,9 +35,12 @@ PAGE_SIZE = 25
 COLUMNS = [
     ("Order", "sort_order", False, True),   # manual display order (editable)
     ("Barcode", "barcode", False, False),
-    ("Name", "name", False, False),
     ("Brand", "brand", False, False),
     ("Category", "category", False, False),
+    ("Name", "name", False, False),
+    ("Pack", None, False, False),           # structured packing (mirrors a price list)
+    ("Units/CTN", None, False, True),
+    ("Series", None, False, False),
     ("Purchase", "purchase_price", True, True),
     ("Sale", "sale_price", True, True),
     ("Margin %", None, False, True),
@@ -144,8 +148,8 @@ class ProductsView(QWidget):
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(False)
         hdr.setMinimumSectionSize(45)
-        # Order Barcode Name Brand Categ Purch Sale Margin Stock Save
-        self._col_widths = [60, 130, 240, 100, 130, 95, 95, 80, 70, 90]
+        # Order Barcode Brand Categ Name Pack Units Series Purch Sale Margin Stock Save
+        self._col_widths = [60, 130, 100, 130, 240, 70, 75, 110, 95, 95, 80, 110, 90]
         for _c, _w in enumerate(self._col_widths):
             self.table.setColumnWidth(_c, _w)
         hdr.sectionClicked.connect(self._on_sort)
@@ -181,7 +185,7 @@ class ProductsView(QWidget):
         footer.addWidget(self.next_btn)
         root.addLayout(footer)
 
-    _NAME_COL = 2
+    _NAME_COL = 4
     _NAME_MIN = 240
 
     def resizeEvent(self, e) -> None:  # noqa: N802 (Qt signature)
@@ -228,6 +232,9 @@ class ProductsView(QWidget):
             {"key": "name", "label": "Name"},
             {"key": "brand", "label": "Brand"},
             {"key": "category", "label": "Category"},
+            {"key": "series", "label": "Series"},
+            {"key": "pack_size", "label": "Pack"},
+            {"key": "units_per_carton", "label": "Units/CTN", "align": "right"},
             {"key": "purchase", "label": "Purchase", "align": "right", "money": True},
             {"key": "sale", "label": "Sale", "align": "right", "money": True},
         ]
@@ -237,6 +244,9 @@ class ProductsView(QWidget):
             "name": p["name"],
             "brand": p.get("brand_name") or "",
             "category": p.get("category_name") or "",
+            "series": p.get("series") or "",
+            "pack_size": p.get("pack_size") or "",
+            "units_per_carton": p.get("units_per_carton") or 1,
             "purchase": p["purchase_price_minor"],
             "sale": p["sale_price_minor"],
         } for p in products]
@@ -311,22 +321,25 @@ class ProductsView(QWidget):
             values = [
                 str(p.get("sort_order") or 0),
                 p.get("barcode") or "",
-                p["name"],
                 p.get("brand_name") or "",
                 p.get("category_name") or "",
+                p["name"],
+                p.get("pack_size") or "",
+                str(p.get("units_per_carton") or 1),
+                p.get("series") or "",
                 self.controller.fmt(p["purchase_price_minor"]),
                 self.controller.fmt(p["sale_price_minor"]),
                 f"{(p.get('markup_bps') or 0) / 100:g} %",
-                str(p["stock_qty"]),
+                fmt_packs(p["stock_qty"], p.get("units_per_carton")),
                 "",  # Save (used only in price-edit mode)
             ]
             if self._edit_prices:
                 # editors replace the Order/Purchase/Sale/Margin cells, so blank
                 # the underlying text or it shows faded behind the editor.
-                values[0] = values[5] = values[6] = values[7] = ""
+                values[0] = values[8] = values[9] = values[10] = ""
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
-                if c in (0, 5, 6, 7, 8):   # Order + money/qty columns, right-aligned
+                if c in (0, 6, 8, 9, 10, 11):   # Order + Units/CTN + money/qty, right-aligned
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if c == 0:
                     item.setData(Qt.UserRole, p["id"])  # stash product id
@@ -388,9 +401,9 @@ class ProductsView(QWidget):
         ms.valueChanged.connect(_apply_margin)
         _apply_margin()
 
-        self.table.setCellWidget(r, 5, ps)
-        self.table.setCellWidget(r, 6, ss)
-        self.table.setCellWidget(r, 7, ms)
+        self.table.setCellWidget(r, 8, ps)
+        self.table.setCellWidget(r, 9, ss)
+        self.table.setCellWidget(r, 10, ms)
         btn = QPushButton("Save")
         btn.setObjectName("SuccessOutline")
         btn.clicked.connect(

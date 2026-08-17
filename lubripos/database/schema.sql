@@ -104,6 +104,10 @@ CREATE TABLE IF NOT EXISTS products (
     markup_bps          INTEGER NOT NULL DEFAULT 0 CHECK (markup_bps >= 0),
     stock_qty           INTEGER NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
     min_stock_level     INTEGER NOT NULL DEFAULT 0 CHECK (min_stock_level >= 0),
+    -- Structured packing so the catalog can mirror a manufacturer price list.
+    series              TEXT,                    -- product tier/line (Platinum, Gold, ...)
+    pack_size           TEXT,                    -- pack sold in (e.g. '1 L', '4 L')
+    units_per_carton    INTEGER NOT NULL DEFAULT 1 CHECK (units_per_carton >= 1),
     sort_order    INTEGER NOT NULL DEFAULT 0,   -- manual display order (match a paper price list)
     is_active           INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at          TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
@@ -233,42 +237,6 @@ CREATE TABLE IF NOT EXISTS customer_payments (
 CREATE INDEX IF NOT EXISTS idx_custpay_customer ON customer_payments(customer_id);
 CREATE INDEX IF NOT EXISTS idx_custpay_date     ON customer_payments(payment_date);
 
--- Cash drawer sessions: a till is OPENED with a starting float and CLOSED with
--- a physical cash count. Expected cash and the variance are snapshotted at close.
-CREATE TABLE IF NOT EXISTS cash_sessions (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    opened_at           TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-    opened_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    opening_float_minor INTEGER NOT NULL DEFAULT 0,
-    closed_at           TEXT,
-    closed_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
-    counted_cash_minor  INTEGER,
-    expected_cash_minor INTEGER,
-    variance_minor      INTEGER,
-    cash_sales_minor    INTEGER,
-    cash_repay_minor    INTEGER,
-    cash_refunds_minor  INTEGER,
-    cash_expenses_minor INTEGER,
-    paid_out_minor      INTEGER,
-    paid_in_minor       INTEGER,
-    note                TEXT,
-    status              TEXT    NOT NULL DEFAULT 'open'   -- 'open' | 'closed'
-);
-CREATE INDEX IF NOT EXISTS idx_cash_sessions_status ON cash_sessions(status);
-
--- Cash taken OUT of (or put INTO) the drawer during a session, e.g. paying for
--- chai or a bank deposit. Summed into the expected-cash calculation at close.
-CREATE TABLE IF NOT EXISTS cash_movements (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id   INTEGER NOT NULL REFERENCES cash_sessions(id) ON DELETE CASCADE,
-    kind         TEXT    NOT NULL,            -- 'out' (paid out) | 'in' (paid in)
-    amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
-    reason       TEXT,
-    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-    created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL
-);
-CREATE INDEX IF NOT EXISTS idx_cash_movements_session ON cash_movements(session_id);
-
 CREATE TABLE IF NOT EXISTS sales (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     invoice_no       TEXT    NOT NULL UNIQUE,
@@ -353,7 +321,6 @@ CREATE TABLE IF NOT EXISTS expenses (
     category     TEXT    NOT NULL,                 -- free text, defaults from lookup
     amount_minor INTEGER NOT NULL CHECK (amount_minor >= 0),
     description  TEXT,
-    payment_method TEXT NOT NULL DEFAULT 'Cash',   -- Cash comes out of the till
     created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
 );

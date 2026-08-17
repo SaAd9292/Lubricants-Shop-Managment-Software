@@ -2,15 +2,21 @@
 
 This is a MANUAL override (not a purchase/sale), so it captures a reason and
 writes a before/after entry to the audit log via the controller/service.
+
+For products sold in cartons the count is entered as cartons + loose pieces —
+the way stock is actually counted on the shelf — and converted to a single
+piece count underneath.
 """
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QMessageBox,
-    QPushButton, QSpinBox, QVBoxLayout,
+    QPushButton, QVBoxLayout,
 )
 
 from ..controllers.product_controller import ProductController
+from ..core.packs import fmt_packs
+from ..ui.widgets import CartonQtyEntry
 
 REASONS = ["Stock count correction", "Damaged", "Lost / theft",
            "Returned to supplier", "Expired", "Other"]
@@ -22,6 +28,7 @@ class StockAdjustDialog(QDialog):
         self.controller = controller
         self.product_id = product_id
         self.product = controller.get(product_id)
+        self.upc = max(1, int(self.product.get("units_per_carton") or 1))
         self.setWindowTitle("Adjust Stock")
         self.setMinimumWidth(400)
         self._build_ui()
@@ -34,14 +41,20 @@ class StockAdjustDialog(QDialog):
 
         name = QLabel(self.product["name"])
         name.setStyleSheet("font-weight: 600;")
-        current = QLabel(str(self.product["stock_qty"]))
+        current = QLabel(fmt_packs(self.product["stock_qty"], self.upc))
         form.addRow("Product", name)
         form.addRow("Current stock", current)
 
-        self.new_qty = QSpinBox()
-        self.new_qty.setRange(0, 100_000_000)
-        self.new_qty.setValue(int(self.product["stock_qty"]))
-        form.addRow("New counted qty *", self.new_qty)
+        self.qty = CartonQtyEntry(self.upc)
+        self.qty.set_total(self.product["stock_qty"])
+        label = f"New count ({self.upc}/ctn) *" if self.upc > 1 else "New counted qty *"
+        form.addRow(label, self.qty)
+        self.total_lbl = QLabel()
+        self.total_lbl.setStyleSheet("color:#64748b;")
+        if self.upc > 1:
+            form.addRow("", self.total_lbl)
+            self.qty.valueChanged.connect(self._update_total)
+            self._update_total()
 
         self.reason = QComboBox()
         self.reason.setEditable(True)
@@ -61,8 +74,9 @@ class StockAdjustDialog(QDialog):
         actions.addWidget(cancel)
         actions.addWidget(save)
         root.addLayout(actions)
-        self.new_qty.setFocus()
-        self.new_qty.selectAll()
+
+    def _update_total(self) -> None:
+        self.total_lbl.setText(f"= {self.qty.total_pieces()} pieces total")
 
     def _save(self) -> None:
         reason = self.reason.currentText().strip()
@@ -71,7 +85,7 @@ class StockAdjustDialog(QDialog):
                                 "Please give a reason for the adjustment.")
             return
         ok, msg, _ = self.controller.adjust_stock(
-            self.product_id, self.new_qty.value(), reason)
+            self.product_id, self.qty.total_pieces(), reason)
         if ok:
             self.accept()
         else:

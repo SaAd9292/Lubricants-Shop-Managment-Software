@@ -35,6 +35,7 @@ _EDITABLE = {
     "barcode", "name", "brand_id", "category_id", "unit_type",
     "purchase_price_minor", "sale_price_minor", "markup_bps", "stock_qty",
     "min_stock_level", "sort_order",
+    "series", "pack_size", "units_per_carton",
 }
 
 _SELECT = """
@@ -253,6 +254,12 @@ class ProductService:
         for qty_field in ("stock_qty", "min_stock_level"):
             if qty_field in clean and int(clean[qty_field]) < 0:
                 raise ValidationError("Quantities cannot be negative.")
+        if "units_per_carton" in clean:
+            v = clean["units_per_carton"]
+            upc = 1 if v in (None, "") else int(v)
+            if upc < 1:
+                raise ValidationError("Units per carton must be at least 1.")
+            clean["units_per_carton"] = upc
         return clean
 
     @staticmethod

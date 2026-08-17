@@ -30,7 +30,6 @@ from ..ui.icons import make_icon
 from .audit_view import AuditView
 from .backup_view import BackupView
 from .dashboard_view import DashboardView
-from .cash_drawer_view import CashDrawerView
 from .expenses_view import ExpensesView
 from .placeholder_view import PlaceholderView
 from .pos_view import POSView
@@ -62,7 +61,6 @@ NAV_ITEMS = [
     ("Purchases", "purchases", False),
     ("Payables", "payables", False),
     ("Expenses", "expenses", False),
-    ("Cash Drawer", "cashdrawer", False),
     ("Reports", "reports", False),
     ("Users", "users", True),
     ("Audit Log", "audit", True),
@@ -263,8 +261,6 @@ class MainWindow(QMainWindow):
             return PayablesView(self.ctx)
         if key == "expenses":
             return ExpensesView(self.ctx)
-        if key == "cashdrawer":
-            return CashDrawerView(self.ctx)
         if key == "pos":
             return POSView(self.ctx)
         if key == "sales":

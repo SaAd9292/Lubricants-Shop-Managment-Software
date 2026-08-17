@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..controllers.product_controller import ProductController
+from ..core.packs import name_with_pack, split_packs
 
 UNIT_TYPES = ["Piece", "Bottle", "Carton", "Litre", "Kg"]
 
@@ -79,6 +80,17 @@ class ProductEditDialog(QDialog):
         self.unit_type = QComboBox()
         self.unit_type.addItems(UNIT_TYPES)
 
+        # Structured packing (mirrors a manufacturer price list).
+        self.series = QLineEdit()
+        self.series.setPlaceholderText("e.g. Platinum, Gold (optional)")
+        self.pack_size = QLineEdit()
+        self.pack_size.setPlaceholderText("e.g. 1 L, 4 L (optional)")
+        self.units_per_carton = QSpinBox()
+        self.units_per_carton.setRange(1, 1000)
+        self.units_per_carton.setValue(1)
+        self.units_per_carton.setToolTip(
+            "How many packs make a full carton — lets you sell a whole carton at POS.")
+
         self.purchase_price = self._money_spin()
         self.sale_price = self._money_spin()
         self.markup = QDoubleSpinBox()
@@ -89,22 +101,50 @@ class ProductEditDialog(QDialog):
         self.purchase_price.valueChanged.connect(self._recompute_sale)
         self.markup.valueChanged.connect(self._recompute_sale)
 
-        self.stock_qty = QSpinBox()
-        self.stock_qty.setRange(0, 1_000_000)
+        # Opening stock entered as cartons + loose pieces (converted to a piece
+        # count on save). The cartons box is enabled only when the product ships
+        # in cartons (units per carton > 1).
+        self.stock_cartons = QSpinBox()
+        self.stock_cartons.setRange(0, 1_000_000)
+        self.stock_cartons.setSuffix(" ctn")
+        self.stock_pieces = QSpinBox()
+        self.stock_pieces.setRange(0, 1_000_000)
+        self.stock_pieces.setSuffix(" pc")
+        stock_box = QWidget()
+        _sh = QHBoxLayout(stock_box)
+        _sh.setContentsMargins(0, 0, 0, 0)
+        _sh.addWidget(self.stock_cartons)
+        _sh.addWidget(self.stock_pieces)
+        self.stock_hint = QLabel("")
+        self.stock_hint.setStyleSheet("color:#64748b;")
+        self.stock_cartons.valueChanged.connect(self._update_stock)
+        self.stock_pieces.valueChanged.connect(self._update_stock)
+        self.units_per_carton.valueChanged.connect(self._update_stock)
         self.min_stock = QSpinBox()
         self.min_stock.setRange(0, 1_000_000)
 
+        self.name_preview = QLabel("")
+        self.name_preview.setStyleSheet("color:#64748b; font-size:11px;")
+        self.name.textChanged.connect(self._update_name_preview)
+        self.pack_size.textChanged.connect(self._update_name_preview)
+
         form.addRow("Name *", self.name)
+        form.addRow("", self.name_preview)
         form.addRow("Barcode", self.barcode)
         form.addRow("Brand", brand_row)
         form.addRow("Category", cat_row)
         form.addRow("Unit type", self.unit_type)
+        form.addRow("Series", self.series)
+        form.addRow("Pack size", self.pack_size)
+        form.addRow("Units / carton", self.units_per_carton)
         form.addRow("Purchase price", self.purchase_price)
         form.addRow("Markup % (0 = manual)", self.markup)
         form.addRow("Sale price", self.sale_price)
-        form.addRow("Stock qty", self.stock_qty)
+        form.addRow("Opening stock", stock_box)
+        form.addRow("", self.stock_hint)
         form.addRow("Min stock level", self.min_stock)
         root.addLayout(form)
+        self._update_stock()
 
         self.bc_warn = QLabel("")
         self.bc_warn.setStyleSheet("color: #b00020;")
@@ -147,6 +187,26 @@ class ProductEditDialog(QDialog):
         spin.setGroupSeparatorShown(True)
         spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         return spin
+
+    def _update_name_preview(self) -> None:
+        """Show the final saved name when the pack size will be appended."""
+        typed = self.name.text().strip()
+        final = name_with_pack(self.name.text(), self.pack_size.text())
+        self.name_preview.setText(f"Saves as:  {final}" if typed and final != typed else "")
+
+    def _stock_total(self) -> int:
+        """Opening stock as a single piece count."""
+        upc = self.units_per_carton.value()
+        pieces = self.stock_pieces.value()
+        return self.stock_cartons.value() * upc + pieces if upc > 1 else pieces
+
+    def _update_stock(self) -> None:
+        """Enable the cartons box only for carton products; show the total."""
+        upc = self.units_per_carton.value()
+        self.stock_cartons.setEnabled(upc > 1)
+        if upc <= 1 and self.stock_cartons.value():
+            self.stock_cartons.setValue(0)
+        self.stock_hint.setText(f"= {self._stock_total()} pc total" if upc > 1 else "")
 
     def _recompute_sale(self) -> None:
         """If a markup is set, derive the sale price from cost (rounded to the
@@ -213,12 +273,17 @@ class ProductEditDialog(QDialog):
         self._select_data(self.brand, p.get("brand_id"))
         self._select_data(self.category, p.get("category_id"))
         self.unit_type.setCurrentText(p.get("unit_type") or "Piece")
+        self.series.setText(p.get("series") or "")
+        self.pack_size.setText(p.get("pack_size") or "")
+        self.units_per_carton.setValue(int(p.get("units_per_carton") or 1))
         self.purchase_price.setValue(float(Decimal(p["purchase_price_minor"]) / self._minor_units))
         self.sale_price.setValue(float(Decimal(p["sale_price_minor"]) / self._minor_units))
         # Set markup last: if > 0 it re-derives & locks the sale price; if 0 the
         # stored sale price above stays as a manual value.
         self.markup.setValue((p.get("markup_bps") or 0) / 100.0)
-        self.stock_qty.setValue(p["stock_qty"])
+        cartons, pieces = split_packs(p["stock_qty"], self.units_per_carton.value())
+        self.stock_cartons.setValue(cartons)
+        self.stock_pieces.setValue(pieces)
         self.min_stock.setValue(p["min_stock_level"])
 
     @staticmethod
@@ -231,16 +296,22 @@ class ProductEditDialog(QDialog):
         if not self.name.text().strip():
             QMessageBox.warning(self, "Required", "Product name is required.")
             return
+        pack = self.pack_size.text().strip()
         form: dict[str, Any] = {
-            "name": self.name.text().strip(),
+            # pack size is folded into the name, e.g. "S-oil 0W-20" + "4L" ->
+            # "S-oil 0W-20 4L" (idempotent — never doubles up on re-save).
+            "name": name_with_pack(self.name.text(), pack),
             "barcode": self.barcode.text().strip(),
             "brand_id": self.brand.currentData(),
             "category_id": self.category.currentData(),
             "unit_type": self.unit_type.currentText(),
+            "series": self.series.text().strip() or None,
+            "pack_size": pack or None,
+            "units_per_carton": self.units_per_carton.value(),
             "purchase_price": self.purchase_price.value(),
             "sale_price": self.sale_price.value(),
             "markup": self.markup.value(),
-            "stock_qty": self.stock_qty.value(),
+            "stock_qty": self._stock_total(),
             "min_stock_level": self.min_stock.value(),
         }
         success, msg, _ = self.controller.save(form, self.product_id)
@@ -262,7 +333,8 @@ class ProductEditDialog(QDialog):
         """Reset the per-item fields, keep brand/category/unit/markup/prices."""
         self.name.clear()
         self.barcode.clear()
-        self.stock_qty.setValue(0)
+        self.stock_cartons.setValue(0)
+        self.stock_pieces.setValue(0)
         self.bc_warn.setVisible(False)
         self.barcode.setFocus()  # ready to scan the next item
 

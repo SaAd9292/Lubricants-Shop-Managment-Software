@@ -23,7 +23,6 @@ SCREEN_PERMISSIONS = [
     ("purchases", "Purchases"),
     ("payables", "Supplier Payables"),
     ("expenses", "Expenses"),
-    ("cashdrawer", "Cash Drawer"),
     ("reports", "Reports"),
 ]
 
@@ -34,15 +33,12 @@ ACTION_PERMISSIONS = [
     ("sale.edit_price", "Change a price on a sale line"),
 ]
 
-# Admin-only screens: never grantable to a non-admin.
-ADMIN_ONLY_SCREENS = ("users", "audit", "backup", "settings")
-
 SCREEN_KEYS = [k for k, _ in SCREEN_PERMISSIONS]
 ACTION_KEYS = [k for k, _ in ACTION_PERMISSIONS]
 GRANTABLE_KEYS = SCREEN_KEYS + ACTION_KEYS
 
 # Sensible default for a brand-new cashier and for backfilling legacy accounts.
-DEFAULT_CASHIER = ["dashboard", "pos", "sales", "cashdrawer"]
+DEFAULT_CASHIER = ["dashboard", "pos", "sales"]
 
 
 def clean(keys) -> list[str]:

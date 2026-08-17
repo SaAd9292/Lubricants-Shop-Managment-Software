@@ -9,12 +9,13 @@ from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox,
     QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 
 from ..controllers.purchase_controller import PurchaseController
 from ..core import money
+from ..ui.widgets import CartonQtyEntry
 from .product_picker_dialog import ProductPickerDialog
 
 
@@ -28,7 +29,7 @@ class NewPurchaseDialog(QDialog):
         self._paid_touched = False   # has the user manually edited "amount paid"?
         self._grand_minor = 0
         self.setWindowTitle("New Purchase")
-        self.setMinimumSize(680, 540)
+        self.setMinimumSize(760, 540)
         self._build_ui()
 
     # -- UI -----------------------------------------------------------
@@ -86,11 +87,14 @@ class NewPurchaseDialog(QDialog):
         # line items table
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(
-            ["Product", "Qty", f"Unit cost ({self._symbol})", "Line total"]
+            ["Product", "Qty (ctn + pc)", f"Unit cost/pc ({self._symbol})", "Line total"]
         )
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.setColumnWidth(1, 180)
+        self.table.setColumnWidth(2, 130)
+        self.table.setColumnWidth(3, 110)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         root.addWidget(self.table, 1)
 
@@ -133,9 +137,9 @@ class NewPurchaseDialog(QDialog):
         name_item.setData(Qt.UserRole, p["id"])
         self.table.setItem(row, 0, name_item)
 
-        qty = QSpinBox()
-        qty.setRange(1, 1_000_000)
-        qty.setValue(1)
+        upc = max(1, int(p.get("units_per_carton") or 1))
+        qty = CartonQtyEntry(upc)
+        qty.set_total(upc if upc > 1 else 1)  # default: one carton (or one piece)
         qty.valueChanged.connect(self._recompute)
         self.table.setCellWidget(row, 1, qty)
 
@@ -169,7 +173,7 @@ class NewPurchaseDialog(QDialog):
             cost_w = self.table.cellWidget(row, 2)
             if qty_w is None or cost_w is None:
                 continue
-            qty = qty_w.value()
+            qty = qty_w.total_pieces()
             unit_minor = money.to_minor(cost_w.value(), self._minor_units)
             line_minor = qty * unit_minor
             grand += line_minor
@@ -220,9 +224,14 @@ class NewPurchaseDialog(QDialog):
 
         lines = []
         for row in range(self.table.rowCount()):
+            qty = self.table.cellWidget(row, 1).total_pieces()
+            if qty <= 0:
+                QMessageBox.warning(self, "Quantity required",
+                                    f"'{self.table.item(row, 0).text()}' has no quantity.")
+                return
             lines.append({
                 "product_id": self.table.item(row, 0).data(Qt.UserRole),
-                "qty": self.table.cellWidget(row, 1).value(),
+                "qty": qty,
                 "unit_cost": self.table.cellWidget(row, 2).value(),
             })
 

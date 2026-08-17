@@ -350,9 +350,9 @@ class POSView(QWidget):
     def _add_by_search(self) -> None:
         picker = ProductPickerDialog(
             self.controller.search_products, self.controller.fmt,
-            self.controller.categories())
+            self.controller.categories(), allow_carton=True)
         if picker.exec() and picker.selected:
-            self._add_product(picker.selected)
+            self._add_product(picker.selected, add_qty=picker.add_qty)
         self.barcode.setFocus()
 
     def _add_product(self, p: dict, add_qty: int = 1) -> None:
