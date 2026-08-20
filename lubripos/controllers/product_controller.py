@@ -102,6 +102,12 @@ class ProductController:
             lambda uid: self.products.set_active(product_id, True, user_id=uid) or product_id
         )
 
+    def hard_delete(self, product_id: int) -> tuple[bool, str, int | None]:
+        """Permanently delete a deactivated product with no history (admin)."""
+        return self._guarded(
+            lambda uid: self.products.hard_delete(product_id, user_id=uid) or product_id
+        )
+
     # -- internal -----------------------------------------------------
     def _guarded(self, op) -> tuple[bool, str, int | None]:
         """Run a write op under admin-role enforcement, mapping errors to UI."""

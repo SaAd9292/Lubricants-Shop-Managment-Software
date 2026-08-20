@@ -180,6 +180,30 @@ class ProductService:
                           entity_id=product_id, details={"is_active": bool(active)})
         log.info("Set product id=%s active=%s", product_id, active)
 
+    def hard_delete(self, product_id: int, *, user_id: int | None = None) -> None:
+        """Permanently remove a product. Only allowed when it is already
+        deactivated AND has no transaction history (never purchased, sold, or
+        returned) — otherwise past reports/invoices would lose the record, so we
+        refuse and the product stays deactivated instead."""
+        product = self.get(product_id)  # raises NotFoundError if missing
+        if product["is_active"]:
+            raise ValidationError("Deactivate the product before deleting it permanently.")
+        refs = self.db.query_one(
+            "SELECT (SELECT COUNT(*) FROM sale_items WHERE product_id = ?) "
+            "     + (SELECT COUNT(*) FROM purchase_items WHERE product_id = ?) "
+            "     + (SELECT COUNT(*) FROM sale_return_items WHERE product_id = ?) AS n",
+            (product_id, product_id, product_id))["n"]
+        if refs:
+            raise ValidationError(
+                "This product has purchase or sales history, so it can't be "
+                "permanently deleted. Keep it deactivated — that hides it "
+                "everywhere while your past reports stay accurate.")
+        self.db.execute("DELETE FROM products WHERE id = ?", (product_id,))
+        self.audit.record(action="DELETE", user_id=user_id, entity_type="product",
+                          entity_id=product_id,
+                          details={"permanent": True, "name": product["name"]})
+        log.info("Permanently deleted product id=%s (%s)", product_id, product["name"])
+
     def adjust_stock(self, product_id: int, new_qty: int, reason: str,
                      *, user_id: int | None = None) -> int:
         """Set a product's stock to a counted/corrected value (stock-take).

@@ -27,6 +27,7 @@ from ..reports.report_exporter import to_pdf, to_xlsx
 from ..services.column_presets import ColumnPresetStore
 from .column_select_dialog import ColumnSelectDialog
 from .product_edit_dialog import ProductEditDialog
+from .security_prompt import require_admin_password
 from .stock_adjust_dialog import StockAdjustDialog
 
 PAGE_SIZE = 25
@@ -167,9 +168,15 @@ class ProductsView(QWidget):
         self.del_btn = QPushButton("Deactivate")
         self.del_btn.setObjectName("Secondary")
         self.del_btn.clicked.connect(self._delete_selected)
+        # Permanent delete — only shown while viewing inactive products.
+        self.hard_del_btn = QPushButton("Delete permanently")
+        self.hard_del_btn.setObjectName("Danger")
+        self.hard_del_btn.clicked.connect(self._hard_delete_selected)
+        self.hard_del_btn.setVisible(False)
         footer.addWidget(edit_btn)
         footer.addWidget(adjust_btn)
         footer.addWidget(self.del_btn)
+        footer.addWidget(self.hard_del_btn)
         footer.addStretch(1)
 
         self.prev_btn = QPushButton("‹ Prev")
@@ -528,10 +535,34 @@ class ProductsView(QWidget):
         else:
             QMessageBox.warning(self, "Action failed", msg)
 
+    def _hard_delete_selected(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            QMessageBox.information(self, "Select a product", "Please select a row first.")
+            return
+        confirm = QMessageBox.warning(
+            self, "Delete permanently",
+            "Permanently delete this product? This cannot be undone.\n\n"
+            "Only products with no purchase or sales history can be deleted; "
+            "anything with history should stay deactivated instead.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        if not require_admin_password(self, self.ctx):
+            return
+        ok, msg, _ = self.controller.hard_delete(pid)
+        if ok:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not delete", msg)
+
     def _sync_action_label(self) -> None:
         """The deactivate button doubles as 'Activate' while viewing inactive
-        products, so its label follows the 'Inactive only' toggle."""
-        self.del_btn.setText("Activate" if self.f_inactive.isChecked() else "Deactivate")
+        products, so its label follows the 'Inactive only' toggle. Permanent
+        delete is only offered there (you must deactivate a product first)."""
+        inactive = self.f_inactive.isChecked()
+        self.del_btn.setText("Activate" if inactive else "Deactivate")
+        self.hard_del_btn.setVisible(inactive)
 
     def _refresh_filters_and_reload(self) -> None:
         # a newly added product may introduce a new brand/category
