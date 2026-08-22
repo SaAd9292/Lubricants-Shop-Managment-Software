@@ -38,7 +38,7 @@ class ProductEditDialog(QDialog):
         super().__init__()
         self.controller = controller
         self.product_id = product_id
-        self._minor_units = controller.currency()[1]
+        self._symbol, self._minor_units = controller.currency()
         self._decimals = max(0, len(str(self._minor_units)) - 1)
         self._saved_any = False
         self.setWindowTitle("Edit Product" if product_id else "Add Product")
@@ -100,6 +100,12 @@ class ProductEditDialog(QDialog):
         # When markup > 0 the sale price is derived from cost; recompute live.
         self.purchase_price.valueChanged.connect(self._recompute_sale)
         self.markup.valueChanged.connect(self._recompute_sale)
+        # Live margin readout from the actual purchase + sale prices (works even
+        # when the sale price is typed manually with markup left at 0).
+        self.margin_lbl = QLabel("")
+        self.margin_lbl.setStyleSheet("color:#0f766e; font-weight:600;")
+        self.purchase_price.valueChanged.connect(self._update_margin)
+        self.sale_price.valueChanged.connect(self._update_margin)
 
         # Opening stock entered as cartons + loose pieces (converted to a piece
         # count on save). The cartons box is enabled only when the product ships
@@ -140,6 +146,7 @@ class ProductEditDialog(QDialog):
         form.addRow("Purchase price", self.purchase_price)
         form.addRow("Markup % (0 = manual)", self.markup)
         form.addRow("Sale price", self.sale_price)
+        form.addRow("Margin", self.margin_lbl)
         form.addRow("Opening stock", stock_box)
         form.addRow("", self.stock_hint)
         form.addRow("Min stock level", self.min_stock)
@@ -187,6 +194,22 @@ class ProductEditDialog(QDialog):
         spin.setGroupSeparatorShown(True)
         spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         return spin
+
+    def _update_margin(self) -> None:
+        """Show the live profit margin implied by the purchase + sale prices,
+        regardless of whether markup was used or the sale price was typed by hand.
+        (Margin % here = (sale - cost) / cost, matching the Products list column.)"""
+        cost = self.purchase_price.value()
+        sale = self.sale_price.value()
+        if cost > 0 and sale > 0:
+            pct = (sale - cost) / cost * 100
+            profit = sale - cost
+            self.margin_lbl.setText(
+                f"{pct:.1f}%   ·   {self._symbol} {profit:,.{self._decimals}f} profit / unit")
+        elif sale > 0 and cost <= 0:
+            self.margin_lbl.setText("set a purchase price to see the margin")
+        else:
+            self.margin_lbl.setText("")
 
     def _update_name_preview(self) -> None:
         """Show the final saved name when the pack size will be appended."""

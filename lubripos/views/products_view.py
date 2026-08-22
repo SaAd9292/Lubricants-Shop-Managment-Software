@@ -51,6 +51,15 @@ COLUMNS = [
 _LOW_STOCK_TINT = QColor(180, 60, 60, 60)
 
 
+def _margin_text(cost_minor: int, sale_minor: int) -> str:
+    """Margin % shown in the list, computed from the ACTUAL purchase + sale
+    prices ((sale - cost) / cost) so a hand-priced product shows its real margin,
+    not the stored markup. '—' when there is no cost to divide by."""
+    if not cost_minor:
+        return "—"
+    return f"{(sale_minor - cost_minor) / cost_minor * 100:g} %"
+
+
 class ProductsView(QWidget):
     def __init__(self, ctx: AppContext) -> None:
         super().__init__()
@@ -336,7 +345,7 @@ class ProductsView(QWidget):
                 p.get("series") or "",
                 self.controller.fmt(p["purchase_price_minor"]),
                 self.controller.fmt(p["sale_price_minor"]),
-                f"{(p.get('markup_bps') or 0) / 100:g} %",
+                _margin_text(p["purchase_price_minor"], p["sale_price_minor"]),
                 fmt_packs(p["stock_qty"], p.get("units_per_carton")),
                 "",  # Save (used only in price-edit mode)
             ]
