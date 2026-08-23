@@ -52,11 +52,13 @@ class ReportsView(QWidget):
         cols = report.get("columns") or []
         if not cols:
             return report
-        chosen = ColumnSelectDialog.pick(
+        result = ColumnSelectDialog.pick(
             self, cols, report.get("key", "report"), self._col_store)
-        if chosen is None:
+        if result is None:
             return None
-        return {**report, "columns": [c for c in cols if c["key"] in chosen]}
+        chosen, orientation = result
+        return {**report, "columns": [c for c in cols if c["key"] in chosen],
+                "orientation": orientation}
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)

@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
-from ..ui.widgets import DataTable
+from ..ui.widgets import DataTable, number_rows
 from ..controllers.sale_controller import SaleController
 from .sale_receipt_dialog import SaleReceiptDialog
 
@@ -140,6 +140,7 @@ class SalesView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
+        number_rows(self.table, self._page * PAGE_SIZE + 1)
         for r, s in enumerate(rows):
             values = [
                 s["invoice_no"], (s.get("sale_date") or "")[:16],

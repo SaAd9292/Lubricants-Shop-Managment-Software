@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..core.session import current_session
 from ..controllers.payable_controller import PayableController
-from ..ui.widgets import DataTable
+from ..ui.widgets import DataTable, number_rows
 
 _METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
 # label, key, right-aligned?
@@ -106,6 +106,7 @@ class PayablesView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
+        number_rows(self.table, 1)
         for r, s in enumerate(rows):
             name = QTableWidgetItem(s["name"])
             name.setData(Qt.UserRole, s["id"])

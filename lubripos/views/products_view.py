@@ -267,17 +267,18 @@ class ProductsView(QWidget):
             "sale": p["sale_price_minor"],
         } for p in products]
         # let the user tick exactly which columns to include (with presets)
-        chosen = ColumnSelectDialog.pick(
+        result = ColumnSelectDialog.pick(
             self, columns, "products", ColumnPresetStore(self.ctx.config.data_root))
-        if chosen is None:
+        if result is None:
             return   # cancelled
+        chosen, orientation = result
         columns = [c for c in columns if c["key"] in chosen]
 
         company = self.ctx.company.get_company()
         scope = "Inactive" if self.f_inactive.isChecked() else "Active"
         report = {"key": "products", "title": "Product List",
                   "subtitle": f"{scope} · {len(products)} item(s)",
-                  "columns": columns, "rows": rows}
+                  "columns": columns, "rows": rows, "orientation": orientation}
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
             if fmt == "xlsx":

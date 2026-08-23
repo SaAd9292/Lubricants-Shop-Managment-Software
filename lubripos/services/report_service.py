@@ -327,7 +327,7 @@ class ReportService:
             params.append(product_id)
         where = "WHERE " + " AND ".join(clauses)
         rows = self.db.query(
-            f"""SELECT p.name, b.name AS brand, c.name AS category, p.stock_qty,
+            f"""SELECT p.sort_order, p.name, b.name AS brand, c.name AS category, p.stock_qty,
                   p.units_per_carton,
                   p.purchase_price_minor, p.sale_price_minor,
                   (p.stock_qty*p.purchase_price_minor) AS value,
@@ -335,7 +335,7 @@ class ReportService:
                FROM products p
                LEFT JOIN brands b ON b.id=p.brand_id
                LEFT JOIN categories c ON c.id=p.category_id
-               {where} ORDER BY p.name COLLATE NOCASE""", tuple(params))
+               {where} ORDER BY p.sort_order, p.id""", tuple(params))
         data = [dict(r) for r in rows]
         # split each piece count into cartons + loose pieces for a familiar view
         for r in data:
@@ -349,6 +349,7 @@ class ReportService:
         return {
             "key": "stock", "title": "Stock Report", "subtitle": date.today().isoformat(),
             "columns": [
+                _col("sort_order", "#", "right"),
                 _col("name", "Product"), _col("brand", "Brand"), _col("category", "Category"),
                 _col("units_per_carton", "Pcs/CTR", "right"),
                 _col("cartons", "Cartons", "right"),

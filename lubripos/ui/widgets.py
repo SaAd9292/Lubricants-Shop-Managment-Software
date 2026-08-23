@@ -4,10 +4,21 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QHBoxLayout, QLayout, QSpinBox, QTableWidget, QWidget,
+    QAbstractSpinBox, QHBoxLayout, QLayout, QSpinBox, QTableWidget,
+    QTableWidgetItem, QWidget,
 )
 
 from ..core.packs import split_packs
+
+
+def number_rows(table: QTableWidget, start: int = 1) -> None:
+    """Show a continuous, ascending row number in the table's left gutter
+    (vertical header), starting at `start`. Paginated lists pass
+    page*PAGE_SIZE + 1 so the count keeps running across pages (page 2 -> 26,
+    27, ...). Call it right after setRowCount()."""
+    table.verticalHeader().setVisible(True)
+    for i in range(table.rowCount()):
+        table.setVerticalHeaderItem(i, QTableWidgetItem(str(start + i)))
 
 
 class CartonQtyEntry(QWidget):

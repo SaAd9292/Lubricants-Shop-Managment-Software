@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
-from ..ui.widgets import DataTable
+from ..ui.widgets import DataTable, number_rows
 from ..controllers.purchase_controller import PurchaseController
 from .new_purchase_dialog import NewPurchaseDialog
 
@@ -127,6 +127,7 @@ class PurchasesView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
+        number_rows(self.table, self._page * PAGE_SIZE + 1)
         for r, p in enumerate(rows):
             values = [
                 (p.get("purchase_date") or "")[:16],

@@ -160,8 +160,11 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
     p_muted = ParagraphStyle("muted", parent=styles["Normal"], fontSize=9, textColor=MUTED)
     cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=9, leading=11)
 
+    # Page orientation: landscape by default (wide, multi-column reports), but a
+    # report can request portrait via report["orientation"] = "portrait".
+    page = A4 if str(report.get("orientation")).lower() == "portrait" else landscape(A4)
     doc = SimpleDocTemplate(
-        str(output_path), pagesize=landscape(A4),
+        str(output_path), pagesize=page,
         leftMargin=14 * mm, rightMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm,
         title=report["title"],
     )

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
-from ..ui.widgets import DataTable
+from ..ui.widgets import DataTable, number_rows
 from ..controllers.supplier_controller import SupplierController
 from .supplier_edit_dialog import SupplierEditDialog
 
@@ -119,6 +119,7 @@ class SuppliersView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
+        number_rows(self.table, self._page * PAGE_SIZE + 1)
         for r, s in enumerate(rows):
             values = [
                 s["name"], s.get("phone") or "", s.get("address") or "",

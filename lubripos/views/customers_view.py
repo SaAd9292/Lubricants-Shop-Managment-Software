@@ -22,11 +22,14 @@ from ..app_context import AppContext
 from ..controllers.customer_controller import CustomerController
 from ..controllers.payment_account_controller import PaymentAccountController
 from ..reports.report_exporter import to_pdf, to_xlsx
-from ..ui.widgets import DataTable, FlowLayout
+from ..services.column_presets import ColumnPresetStore
+from ..ui.widgets import DataTable, FlowLayout, number_rows
+from .column_select_dialog import ColumnSelectDialog
 
 PAGE_SIZE = 25
 # label, sort key, right-aligned?
 COLUMNS = [("Name", "name", False), ("Phone", None, False),
+           ("Address", None, False),
            ("Sales", "sales_count", True), ("Last purchase", "last_purchase", False),
            ("Total spent", "total_spent", True),
            ("Balance owed", "balance_owed", True)]
@@ -153,21 +156,23 @@ class CustomersView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
+        number_rows(self.table, self._page * PAGE_SIZE + 1)
         for r, c in enumerate(rows):
             name = QTableWidgetItem(c["name"] + ("" if c["is_active"] else "  (inactive)"))
             name.setData(Qt.UserRole, c["id"])
             self.table.setItem(r, 0, name)
             self.table.setItem(r, 1, QTableWidgetItem(c.get("phone") or ""))
+            self.table.setItem(r, 2, QTableWidgetItem(c.get("address") or ""))
             n = _money_item(str(c.get("sales_count", 0)))
-            self.table.setItem(r, 2, n)
+            self.table.setItem(r, 3, n)
             last = (c.get("last_purchase") or "")[:16]
-            self.table.setItem(r, 3, QTableWidgetItem(last or "—"))
-            self.table.setItem(r, 4, _money_item(self.controller.fmt(c.get("total_spent", 0))))
+            self.table.setItem(r, 4, QTableWidgetItem(last or "—"))
+            self.table.setItem(r, 5, _money_item(self.controller.fmt(c.get("total_spent", 0))))
             bal = int(c.get("balance_owed", 0) or 0)
             bcell = _money_item(self.controller.fmt(bal) if bal else "—")
             if bal > 0:
                 bcell.setForeground(QColor("#dc2626"))   # owes money -> red
-            self.table.setItem(r, 5, bcell)
+            self.table.setItem(r, 6, bcell)
 
     def _update_pagination(self) -> None:
         pages = max(1, (self._total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -240,11 +245,19 @@ class CustomersView(QWidget):
             "total_spent": c.get("total_spent") or 0,
             "balance_owed": c.get("balance_owed") or 0,
         } for i, c in enumerate(customers)]
+        # let the user tick exactly which columns to print/export (with presets)
+        result = ColumnSelectDialog.pick(
+            self, columns, "customers", ColumnPresetStore(self.ctx.config.data_root))
+        if result is None:
+            return   # cancelled
+        chosen, orientation = result
+        columns = [c for c in columns if c["key"] in chosen]
+
         company = self.ctx.company.get_company()
         scope = "Inactive" if self.f_inactive.isChecked() else "Active"
         report = {"key": "customers", "title": "Customer List",
                   "subtitle": f"{scope} · {len(customers)} customer(s)",
-                  "columns": columns, "rows": rows}
+                  "columns": columns, "rows": rows, "orientation": orientation}
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
             if fmt == "xlsx":

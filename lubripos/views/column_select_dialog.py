@@ -72,6 +72,15 @@ class ColumnSelectDialog(QDialog):
         scroll.setWidget(host)
         root.addWidget(scroll, 1)
 
+        # -- page orientation (affects the printed/PDF layout only) --
+        orow = QHBoxLayout()
+        orow.addWidget(QLabel("Page orientation (for print / PDF):"))
+        self.orient = QComboBox()
+        self.orient.addItem("Landscape (wide)", "landscape")
+        self.orient.addItem("Portrait (tall)", "portrait")
+        orow.addWidget(self.orient, 1)
+        root.addLayout(orow)
+
         box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         box.button(QDialogButtonBox.Ok).setText("Print / Export")
         box.accepted.connect(self._accept)
@@ -82,6 +91,10 @@ class ColumnSelectDialog(QDialog):
     def selected_keys(self) -> list[str]:
         """Chosen column keys, kept in the report's original column order."""
         return [c["key"] for c in self.columns if self._boxes[c["key"]].isChecked()]
+
+    def orientation(self) -> str:
+        """'landscape' or 'portrait' for the printed/PDF layout."""
+        return self.orient.currentData()
 
     def _toggle_all(self, _state) -> None:
         on = self.all_box.isChecked()
@@ -147,9 +160,10 @@ class ColumnSelectDialog(QDialog):
     # -- convenience --------------------------------------------------
     @staticmethod
     def pick(parent, columns: list[dict], report_key: str,
-             store: ColumnPresetStore) -> list[str] | None:
-        """Show the dialog; return the chosen column keys, or None if cancelled."""
+             store: ColumnPresetStore) -> tuple[list[str], str] | None:
+        """Show the dialog; return (chosen column keys, orientation) or None if
+        cancelled. orientation is 'landscape' or 'portrait'."""
         dlg = ColumnSelectDialog(parent, columns, report_key, store)
         if dlg.exec() != QDialog.Accepted:
             return None
-        return dlg.selected_keys()
+        return dlg.selected_keys(), dlg.orientation()
