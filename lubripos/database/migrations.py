@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 19
+CURRENT_VERSION = 20
 
 
 def run_migrations(db: Database) -> None:
@@ -32,6 +32,7 @@ def run_migrations(db: Database) -> None:
     _migration_15_opening_debt(db)
     _migration_18_product_packing(db)
     _migration_19_drop_cash_drawer(db)
+    _migration_20_customer_address(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -371,3 +372,11 @@ def _migration_19_drop_cash_drawer(db: Database) -> None:
             log.warning("Could not drop expenses.payment_method (SQLite too old?); "
                         "leaving it in place - it is unused and harmless.")
     log.info("Migration: dropped cash_sessions/cash_movements + expenses.payment_method")
+
+
+def _migration_20_customer_address(db: Database) -> None:
+    """v20: optional address on customers (name stays the only required field;
+    phone and address are optional)."""
+    if not _column_exists(db, "customers", "address"):
+        db.execute("ALTER TABLE customers ADD COLUMN address TEXT")
+    log.info("Migration: added customers.address")

@@ -208,7 +208,8 @@ CREATE INDEX IF NOT EXISTS idx_payacct_method ON payment_accounts(method);
 CREATE TABLE IF NOT EXISTS customers (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT    NOT NULL,
-    phone      TEXT    NOT NULL DEFAULT '',          -- normalised digits
+    phone      TEXT    NOT NULL DEFAULT '',          -- normalised digits (optional)
+    address    TEXT,                                 -- optional
     notes      TEXT,
     opening_debt_minor INTEGER NOT NULL DEFAULT 0,   -- balance carried over from paper books
     is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),

@@ -25,7 +25,7 @@ _SORT_COLUMNS = {
     "sales_count": "sales_count",
     "balance_owed": "balance_owed",
 }
-_EDITABLE = {"name", "phone", "notes", "opening_debt_minor"}
+_EDITABLE = {"name", "phone", "address", "notes", "opening_debt_minor"}
 
 
 def _norm_phone(phone: str | None) -> str:
@@ -67,6 +67,7 @@ class CustomerService:
         if not name:
             raise ValidationError("A customer name is required.")
         phone = _norm_phone(data.get("phone"))
+        address = (data.get("address") or "").strip() or None
         notes = (data.get("notes") or "").strip() or None
         opening = int(data.get("opening_debt_minor") or 0)
         if opening < 0:
@@ -87,9 +88,10 @@ class CustomerService:
                     "A customer with this name and phone already exists.")
             self.db.execute(
                 "UPDATE customers SET is_active = 1, notes = COALESCE(?, notes), "
+                "address = COALESCE(?, address), "
                 "opening_debt_minor = CASE WHEN ? > 0 THEN ? ELSE opening_debt_minor END, "
                 "updated_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = ?",
-                (notes, opening, opening, existing["id"]))
+                (notes, address, opening, opening, existing["id"]))
             self.audit.record(action="UPDATE", user_id=user_id,
                               entity_type="customer", entity_id=existing["id"],
                               details={"reactivated": True})
@@ -98,8 +100,8 @@ class CustomerService:
             return existing["id"]
         try:
             cur = self.db.execute(
-                "INSERT INTO customers (name, phone, notes, opening_debt_minor) "
-                "VALUES (?, ?, ?, ?)", (name, phone, notes, opening))
+                "INSERT INTO customers (name, phone, address, notes, opening_debt_minor) "
+                "VALUES (?, ?, ?, ?, ?)", (name, phone, address, notes, opening))
         except sqlite3.IntegrityError:
             raise ValidationError(
                 "A customer with this name and phone already exists.")
