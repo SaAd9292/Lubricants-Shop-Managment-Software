@@ -3,12 +3,17 @@
 """
 from __future__ import annotations
 
+import os
+import tempfile
+from datetime import datetime
+from pathlib import Path
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-    QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
@@ -16,6 +21,7 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..controllers.customer_controller import CustomerController
 from ..controllers.payment_account_controller import PaymentAccountController
+from ..reports.report_exporter import to_pdf, to_xlsx
 from ..ui.widgets import DataTable, FlowLayout
 
 PAGE_SIZE = 25
@@ -58,6 +64,14 @@ class CustomersView(QWidget):
         title.setObjectName("PageTitle")
         header.addWidget(title)
         header.addStretch(1)
+        excel_btn = QPushButton("Export Excel")
+        excel_btn.setObjectName("Secondary")
+        excel_btn.clicked.connect(lambda: self._export("xlsx"))
+        print_btn = QPushButton("Print")
+        print_btn.setObjectName("Secondary")
+        print_btn.clicked.connect(lambda: self._export("pdf"))
+        header.addWidget(excel_btn)
+        header.addWidget(print_btn)
         add_btn = QPushButton("+ Add Customer")
         add_btn.clicked.connect(self._add)
         header.addWidget(add_btn)
@@ -193,6 +207,60 @@ class CustomersView(QWidget):
     def _add(self) -> None:
         if CustomerEditDialog(self.controller).exec():
             self._reset_and_reload()
+
+    def _export(self, fmt: str) -> None:
+        """Export/print the WHOLE customer list (respecting the current search +
+        active/inactive filter), not just the page on screen."""
+        res = self.controller.list(
+            search=self.search.text(),
+            only_active=not self.f_inactive.isChecked(),
+            limit=1_000_000, offset=0)
+        customers = res["rows"]
+        if not customers:
+            QMessageBox.information(self, "Nothing to export",
+                                    "No customers match the current filters.")
+            return
+        columns = [
+            {"key": "num", "label": "#", "align": "right"},
+            {"key": "name", "label": "Name"},
+            {"key": "phone", "label": "Phone"},
+            {"key": "address", "label": "Address"},
+            {"key": "sales_count", "label": "Sales", "align": "right"},
+            {"key": "last_purchase", "label": "Last purchase"},
+            {"key": "total_spent", "label": "Total spent", "align": "right", "money": True},
+            {"key": "balance_owed", "label": "Balance owed", "align": "right", "money": True},
+        ]
+        rows = [{
+            "num": i + 1,
+            "name": c["name"],
+            "phone": c.get("phone") or "",
+            "address": c.get("address") or "",
+            "sales_count": c.get("sales_count") or 0,
+            "last_purchase": (c.get("last_purchase") or "")[:10],
+            "total_spent": c.get("total_spent") or 0,
+            "balance_owed": c.get("balance_owed") or 0,
+        } for i, c in enumerate(customers)]
+        company = self.ctx.company.get_company()
+        scope = "Inactive" if self.f_inactive.isChecked() else "Active"
+        report = {"key": "customers", "title": "Customer List",
+                  "subtitle": f"{scope} · {len(customers)} customer(s)",
+                  "columns": columns, "rows": rows}
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            if fmt == "xlsx":
+                suggested = str(Path.home() / f"customers_{stamp}.xlsx")
+                chosen, _ = QFileDialog.getSaveFileName(
+                    self, "Save customers as", suggested, "Excel files (*.xlsx)")
+                if not chosen:
+                    return
+                path = to_xlsx(report, company, chosen)
+                QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
+            else:  # pdf -> open for printing
+                path = to_pdf(report, company, os.path.join(
+                    tempfile.gettempdir(), f"customers_{stamp}.pdf"))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
 
     def _edit_selected(self) -> None:
         cid = self._selected_id()
