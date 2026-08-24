@@ -69,9 +69,10 @@ class CustomerService:
         phone = _norm_phone(data.get("phone"))
         address = (data.get("address") or "").strip() or None
         notes = (data.get("notes") or "").strip() or None
+        # Opening balance may be negative: a positive value = the customer owes
+        # the shop (paper udhaar carried in); a negative value = the SHOP owes the
+        # customer (advance / credit they'd already paid).
         opening = int(data.get("opening_debt_minor") or 0)
-        if opening < 0:
-            raise ValidationError("Opening balance cannot be negative.")
         # A (name, phone) pair is UNIQUE. If one already exists we must decide:
         #  - active   -> genuine duplicate, tell the user.
         #  - inactive -> this customer was 'Removed' before (soft-deleted). The
@@ -89,7 +90,7 @@ class CustomerService:
             self.db.execute(
                 "UPDATE customers SET is_active = 1, notes = COALESCE(?, notes), "
                 "address = COALESCE(?, address), "
-                "opening_debt_minor = CASE WHEN ? > 0 THEN ? ELSE opening_debt_minor END, "
+                "opening_debt_minor = CASE WHEN ? <> 0 THEN ? ELSE opening_debt_minor END, "
                 "updated_at = strftime('%Y-%m-%d %H:%M:%S','now') WHERE id = ?",
                 (notes, address, opening, opening, existing["id"]))
             self.audit.record(action="UPDATE", user_id=user_id,

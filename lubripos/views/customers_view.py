@@ -169,9 +169,14 @@ class CustomersView(QWidget):
             self.table.setItem(r, 4, QTableWidgetItem(last or "—"))
             self.table.setItem(r, 5, _money_item(self.controller.fmt(c.get("total_spent", 0))))
             bal = int(c.get("balance_owed", 0) or 0)
-            bcell = _money_item(self.controller.fmt(bal) if bal else "—")
-            if bal > 0:
-                bcell.setForeground(QColor("#dc2626"))   # owes money -> red
+            if bal > 0:                                   # customer owes the shop
+                bcell = _money_item(self.controller.fmt(bal))
+                bcell.setForeground(QColor("#dc2626"))    # red
+            elif bal < 0:                                 # the SHOP owes the customer
+                bcell = _money_item(self.controller.fmt(-bal) + " (credit)")
+                bcell.setForeground(QColor("#16a34a"))    # green
+            else:
+                bcell = _money_item("—")
             self.table.setItem(r, 6, bcell)
 
     def _update_pagination(self) -> None:
@@ -334,11 +339,13 @@ class CustomerEditDialog(QDialog):
         # opening balance: money the customer already owed on paper before going
         # digital. Adds straight into their "balance owed".
         self.opening = QDoubleSpinBox()
-        self.opening.setMaximum(99_999_999)
+        self.opening.setRange(-99_999_999, 99_999_999)   # negative = the SHOP owes them
         self.opening.setDecimals(2)
         self.opening.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        self.opening.setToolTip("Money this customer already owed from your paper "
-                                "records. Leave 0 for a brand-new customer.")
+        self.opening.setToolTip(
+            "Balance carried over from your paper records. Positive = the customer "
+            "owes you; negative = you owe the customer (advance / credit). "
+            "Leave 0 for a brand-new customer.")
         form.addRow("Name *", self.name)
         form.addRow("Phone", self.phone)
         form.addRow("Address", self.address)

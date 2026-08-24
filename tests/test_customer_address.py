@@ -47,6 +47,15 @@ def main() -> int:
     except ValidationError:
         check(True, "empty name rejected (name is the only required field)")
 
+    print("\n[balance] opening balance may be negative (shop owes the customer)")
+    adv = cs.create({"name": "Advance Guy", "opening_debt_minor": -50000})
+    check(cs.get(adv)["opening_debt_minor"] == -50000, "negative opening balance saved")
+    check(cs.balance_owed(adv) == -50000, "balance_owed is negative (we owe them)")
+    cs.update(adv, {"opening_debt_minor": -25000})
+    check(cs.get(adv)["opening_debt_minor"] == -25000, "negative balance editable")
+    pos = cs.create({"name": "Owes Us", "opening_debt_minor": 30000})
+    check(cs.balance_owed(pos) == 30000, "positive opening still works (customer owes)")
+
     total, passed = len(_r), sum(_r)
     print(f"\n[address] {passed}/{total} checks passed\n")
     ctx.shutdown()
