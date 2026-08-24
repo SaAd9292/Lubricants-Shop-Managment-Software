@@ -258,11 +258,27 @@ class CustomersView(QWidget):
         chosen, orientation = result
         columns = [c for c in columns if c["key"] in chosen]
 
+        # grand totals across the WHOLE exported set (not just the visible page)
+        total_spent = sum(int(c.get("total_spent") or 0) for c in customers)
+        balances = [int(c.get("balance_owed") or 0) for c in customers]
+        receivable = sum(b for b in balances if b > 0)   # customers owe the shop
+        credit = -sum(b for b in balances if b < 0)      # shop owes customers (>=0)
+        summary = [
+            {"label": "Customers", "value": len(customers), "money": False},
+            {"label": "Total spent (lifetime)", "value": total_spent, "money": True},
+            {"label": "Total balance owed by customers", "value": receivable, "money": True},
+        ]
+        if credit:
+            summary.append({"label": "Total credit (shop owes)", "value": credit, "money": True})
+            summary.append({"label": "Net balance owed", "value": receivable - credit,
+                            "money": True})
+
         company = self.ctx.company.get_company()
         scope = "Inactive" if self.f_inactive.isChecked() else "Active"
         report = {"key": "customers", "title": "Customer List",
                   "subtitle": f"{scope} · {len(customers)} customer(s)",
-                  "columns": columns, "rows": rows, "orientation": orientation}
+                  "columns": columns, "rows": rows, "orientation": orientation,
+                  "summary": summary}
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         try:
             if fmt == "xlsx":
