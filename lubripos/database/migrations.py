@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 20
+CURRENT_VERSION = 22
 
 
 def run_migrations(db: Database) -> None:
@@ -33,6 +33,8 @@ def run_migrations(db: Database) -> None:
     _migration_18_product_packing(db)
     _migration_19_drop_cash_drawer(db)
     _migration_20_customer_address(db)
+    _migration_21_supplier_opening(db)
+    _migration_22_logo_blob(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -380,3 +382,22 @@ def _migration_20_customer_address(db: Database) -> None:
     if not _column_exists(db, "customers", "address"):
         db.execute("ALTER TABLE customers ADD COLUMN address TEXT")
     log.info("Migration: added customers.address")
+
+
+def _migration_21_supplier_opening(db: Database) -> None:
+    """v21: suppliers.opening_debt_minor — carry a supplier balance in from paper
+    records. Positive = the shop owes the supplier; negative = advance/credit.
+    Folds into the payables balance."""
+    if not _column_exists(db, "suppliers", "opening_debt_minor"):
+        db.execute("ALTER TABLE suppliers ADD COLUMN opening_debt_minor "
+                   "INTEGER NOT NULL DEFAULT 0")
+    log.info("Migration: added suppliers.opening_debt_minor")
+
+
+def _migration_22_logo_blob(db: Database) -> None:
+    """v22: store the shop logo IN the database (bytes) so it's carried by
+    backups and survives a move to a new PC — previously only a file path was
+    kept, which broke on restore/relocation. logo_path stays as a fallback."""
+    if not _column_exists(db, "company_settings", "logo_blob"):
+        db.execute("ALTER TABLE company_settings ADD COLUMN logo_blob BLOB")
+    log.info("Migration: added company_settings.logo_blob")

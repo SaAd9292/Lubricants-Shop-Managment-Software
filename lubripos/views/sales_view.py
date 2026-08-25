@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
+from ..core.session import current_session
 from ..ui.widgets import DataTable, number_rows
 from ..controllers.sale_controller import SaleController
 from .sale_receipt_dialog import SaleReceiptDialog
@@ -51,7 +52,7 @@ class SalesView(QWidget):
         self.f_status = QComboBox()
         self.f_status.addItem("All", None)
         self.f_status.addItem("Completed", "completed")
-        self.f_status.addItem("Returned", "void")
+        self.f_status.addItem("Voided", "void")
         self.f_status.currentIndexChanged.connect(self._reset_and_reload)
 
         # Optional date-range filter. Off by default (shows all sales); when
@@ -96,6 +97,11 @@ class SalesView(QWidget):
         pdf_btn.setObjectName("Secondary")
         pdf_btn.clicked.connect(self._print)
         footer.addWidget(pdf_btn)
+        if current_session.can("sale.void"):
+            void_btn = QPushButton("Void sale")
+            void_btn.setObjectName("Danger")
+            void_btn.clicked.connect(self._void)
+            footer.addWidget(void_btn)
         footer.addStretch(1)
         self.prev_btn = QPushButton("‹ Prev")
         self.prev_btn.setObjectName("Secondary")
@@ -146,7 +152,7 @@ class SalesView(QWidget):
                 s["invoice_no"], (s.get("sale_date") or "")[:16],
                 s.get("cashier_name") or "—", str(s.get("line_count", 0)),
                 self.controller.fmt(s["grand_total_minor"]),
-                "Returned" if s["status"] == "void" else "Completed",
+                "Voided" if s["status"] == "void" else "Completed",
             ]
             for c, val in enumerate(values):
                 item = QTableWidgetItem(val)
@@ -199,4 +205,22 @@ class SalesView(QWidget):
             QMessageBox.warning(self, "Could not create PDF", msg)
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(out))
+
+    def _void(self) -> None:
+        sid = self._selected_id()
+        if sid is None:
+            QMessageBox.information(self, "Select a sale", "Please select a sale first.")
+            return
+        if QMessageBox.warning(
+                self, "Void sale",
+                "Void this sale? It will be reversed and every item returned to "
+                "stock. This cannot be undone.\n\n(Use Returns instead if the "
+                "customer is only bringing back some items.)",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        ok, msg, _ = self.controller.void(sid)
+        if ok:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not void", msg)
 

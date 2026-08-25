@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from ..app_context import AppContext
 from ..config import resource_path
+from ..services.company_service import logo_bytes
 from ..controllers.auth_controller import AuthController
 
 ACCENT = "#2563eb"
@@ -106,10 +107,10 @@ class LoginDialog(QDialog):
         self._build_ui()
 
     def _logo_pixmap(self, company: dict) -> QPixmap | None:
-        lp = company.get("logo_path")
-        if lp:
-            pix = QPixmap(str(lp))
-            if not pix.isNull():
+        data = logo_bytes(company)
+        if data:
+            pix = QPixmap()
+            if pix.loadFromData(data) and not pix.isNull():
                 return pix
         pix = QPixmap(str(resource_path("assets", "penguix.png")))
         return pix if not pix.isNull() else None

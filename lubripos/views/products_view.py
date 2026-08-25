@@ -14,9 +14,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDoubleSpinBox,
-    QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QButtonGroup, QCheckBox, QComboBox,
+    QDoubleSpinBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -26,6 +26,7 @@ from ..controllers.product_controller import ProductController
 from ..reports.report_exporter import to_pdf, to_xlsx
 from ..services.column_presets import ColumnPresetStore
 from .column_select_dialog import ColumnSelectDialog
+from .find_duplicates_dialog import FindDuplicatesDialog
 from .product_edit_dialog import ProductEditDialog
 from .security_prompt import require_admin_password
 from .stock_adjust_dialog import StockAdjustDialog
@@ -75,7 +76,7 @@ class ProductsView(QWidget):
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(200)
-        self._debounce.timeout.connect(self._reload)
+        self._debounce.timeout.connect(self._reset_and_reload)  # search resets to page 1
         self._build_ui()
         self._reload()
 
@@ -98,6 +99,10 @@ class ProductsView(QWidget):
         print_btn.clicked.connect(lambda: self._export("pdf"))
         header.addWidget(excel_btn)
         header.addWidget(print_btn)
+        dup_btn = QPushButton("Find duplicates")
+        dup_btn.setObjectName("Secondary")
+        dup_btn.clicked.connect(self._find_duplicates)
+        header.addWidget(dup_btn)
         self.edit_prices_btn = QPushButton("Update prices")
         self.edit_prices_btn.setObjectName("Secondary")
         self.edit_prices_btn.setCheckable(True)
@@ -130,16 +135,27 @@ class ProductsView(QWidget):
 
         self.f_low = QCheckBox("Low stock only")
         self.f_low.stateChanged.connect(self._reset_and_reload)
-        self.f_inactive = QCheckBox("Inactive only")
-        self.f_inactive.stateChanged.connect(self._reset_and_reload)
-        self.f_inactive.stateChanged.connect(self._sync_action_label)
+        # Active / Inactive "folder" toggle — the filter bar works within each.
+        self.seg_active = QPushButton("Active")
+        self.seg_active.setObjectName("Chip")
+        self.seg_active.setCheckable(True)
+        self.seg_active.setChecked(True)
+        self.seg_inactive = QPushButton("Inactive")
+        self.seg_inactive.setObjectName("Chip")
+        self.seg_inactive.setCheckable(True)
+        self._scope_group = QButtonGroup(self)
+        self._scope_group.setExclusive(True)
+        self._scope_group.addButton(self.seg_active)
+        self._scope_group.addButton(self.seg_inactive)
+        self.seg_inactive.toggled.connect(self._on_scope_changed)
 
         filters.addWidget(self.search, 2)
         filters.addWidget(self.f_category, 1)
         filters.addWidget(self.f_brand, 1)
         filters.addWidget(self.f_barcode, 1)
         filters.addWidget(self.f_low)
-        filters.addWidget(self.f_inactive)
+        filters.addWidget(self.seg_active)
+        filters.addWidget(self.seg_inactive)
         root.addLayout(filters)
 
         # table
@@ -231,8 +247,8 @@ class ProductsView(QWidget):
             search=self.search.text(),
             category_id=self.f_category.currentData(),
             brand_id=self.f_brand.currentData(),
-            only_active=not self.f_inactive.isChecked(),
-            inactive_only=self.f_inactive.isChecked(),
+            only_active=not self._showing_inactive(),
+            inactive_only=self._showing_inactive(),
             low_stock_only=self.f_low.isChecked(),
             has_barcode=self.f_barcode.currentData(),
             sort_by=self._sort_by, sort_dir=self._sort_dir,
@@ -275,7 +291,7 @@ class ProductsView(QWidget):
         columns = [c for c in columns if c["key"] in chosen]
 
         company = self.ctx.company.get_company()
-        scope = "Inactive" if self.f_inactive.isChecked() else "Active"
+        scope = "Inactive" if self._showing_inactive() else "Active"
         report = {"key": "products", "title": "Product List",
                   "subtitle": f"{scope} · {len(products)} item(s)",
                   "columns": columns, "rows": rows, "orientation": orientation}
@@ -303,6 +319,14 @@ class ProductsView(QWidget):
             combo.addItem(it["name"], it["id"])
 
     # -- data ---------------------------------------------------------
+    def _showing_inactive(self) -> bool:
+        """True when the 'Inactive' folder is selected."""
+        return self.seg_inactive.isChecked()
+
+    def _on_scope_changed(self, _checked: bool = False) -> None:
+        self._sync_action_label()
+        self._reset_and_reload()
+
     def _reset_and_reload(self) -> None:
         self._page = 0
         self._reload()
@@ -312,8 +336,8 @@ class ProductsView(QWidget):
             search=self.search.text(),
             category_id=self.f_category.currentData(),
             brand_id=self.f_brand.currentData(),
-            only_active=not self.f_inactive.isChecked(),
-            inactive_only=self.f_inactive.isChecked(),
+            only_active=not self._showing_inactive(),
+            inactive_only=self._showing_inactive(),
             low_stock_only=self.f_low.isChecked(),
             has_barcode=self.f_barcode.currentData(),
             sort_by=self._sort_by,
@@ -484,6 +508,11 @@ class ProductsView(QWidget):
         if dlg.exec():
             self._refresh_filters_and_reload()
 
+    def _find_duplicates(self) -> None:
+        dlg = FindDuplicatesDialog(self.controller, self)
+        if dlg.exec():
+            self._reload()
+
     def _on_scan(self) -> None:
         """Enter/scan in the search box: if the barcode is a known product just
         select it; if it's new, offer to add it with the barcode pre-filled."""
@@ -526,7 +555,7 @@ class ProductsView(QWidget):
         if pid is None:
             QMessageBox.information(self, "Select a product", "Please select a row first.")
             return
-        showing_inactive = self.f_inactive.isChecked()
+        showing_inactive = self._showing_inactive()
         if showing_inactive:
             ok, msg, _ = self.controller.reactivate(pid)
         else:
@@ -570,7 +599,7 @@ class ProductsView(QWidget):
         """The deactivate button doubles as 'Activate' while viewing inactive
         products, so its label follows the 'Inactive only' toggle. Permanent
         delete is only offered there (you must deactivate a product first)."""
-        inactive = self.f_inactive.isChecked()
+        inactive = self._showing_inactive()
         self.del_btn.setText("Activate" if inactive else "Deactivate")
         self.hard_del_btn.setVisible(inactive)
 

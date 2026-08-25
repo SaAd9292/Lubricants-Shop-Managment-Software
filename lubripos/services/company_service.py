@@ -5,6 +5,7 @@ No business name is ever hardcoded; the app reads this single row.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from ..core.logging_config import get_logger
@@ -13,8 +14,26 @@ from .audit_service import AuditService
 
 log = get_logger(__name__)
 
+
+def logo_bytes(company: dict) -> bytes | None:
+    """The shop logo as image bytes: prefer the in-database blob (which travels
+    with backups and to a new PC), falling back to the legacy logo_path file."""
+    blob = company.get("logo_blob")
+    if blob:
+        return bytes(blob)
+    path = company.get("logo_path")
+    if path:
+        try:
+            p = Path(path)
+            if p.is_file():
+                return p.read_bytes()
+        except Exception:
+            pass
+    return None
+
+
 _COMPANY_FIELDS = {
-    "shop_name", "owner_name", "phone", "email", "address", "logo_path",
+    "shop_name", "owner_name", "phone", "email", "address", "logo_path", "logo_blob",
     "ntn_number", "gst_number", "currency_code", "currency_symbol",
     "currency_minor_units", "invoice_prefix", "invoice_footer",
     "language", "touch_mode",

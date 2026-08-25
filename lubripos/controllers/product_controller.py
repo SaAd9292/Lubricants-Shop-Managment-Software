@@ -56,6 +56,16 @@ class ProductController:
             return None
         return self.products.find_by_barcode(bc, only_active=False)
 
+    def find_similar(self, name: str, exclude_id: int | None = None) -> list[dict]:
+        """Used by the product form to warn (live) that a similar-named product
+        may already exist — the main guard against duplicates when there is no
+        barcode to match on."""
+        return self.products.find_similar(name or "", exclude_id=exclude_id)
+
+    def find_duplicate_groups(self) -> list[list[dict]]:
+        """Groups of likely-duplicate active products, for the cleanup tool."""
+        return self.products.find_duplicate_groups()
+
     # -- writes -------------------------------------------------------
     def add_category(self, name: str) -> tuple[bool, str, int | None]:
         return self._guarded(lambda uid: self.taxonomy.add_category(name, user_id=uid))

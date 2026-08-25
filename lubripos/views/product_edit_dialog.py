@@ -16,6 +16,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QInputDialog,
@@ -134,8 +135,22 @@ class ProductEditDialog(QDialog):
         self.name.textChanged.connect(self._update_name_preview)
         self.pack_size.textChanged.connect(self._update_name_preview)
 
+        # live "you may already have this product" warning (fuzzy name match) —
+        # the main guard against duplicates when there is no barcode.
+        self.dup_warn = QLabel("")
+        self.dup_warn.setStyleSheet("color:#b45309; font-size:11px; font-weight:600;")
+        self.dup_warn.setWordWrap(True)
+        self.dup_warn.setVisible(False)
+        self._dup_timer = QTimer(self)
+        self._dup_timer.setSingleShot(True)
+        self._dup_timer.setInterval(350)
+        self._dup_timer.timeout.connect(self._check_duplicate)
+        self.name.textChanged.connect(lambda: self._dup_timer.start())
+        self.pack_size.textChanged.connect(lambda: self._dup_timer.start())
+
         form.addRow("Name *", self.name)
         form.addRow("", self.name_preview)
+        form.addRow("", self.dup_warn)
         form.addRow("Barcode", self.barcode)
         form.addRow("Brand", brand_row)
         form.addRow("Category", cat_row)
@@ -216,6 +231,19 @@ class ProductEditDialog(QDialog):
         typed = self.name.text().strip()
         final = name_with_pack(self.name.text(), self.pack_size.text())
         self.name_preview.setText(f"Saves as:  {final}" if typed and final != typed else "")
+
+    def _check_duplicate(self) -> None:
+        """Warn (non-blocking) if a similar-named product already exists, matched
+        on the final saved name so pack/spelling variants are caught."""
+        final = name_with_pack(self.name.text(), self.pack_size.text())
+        matches = self.controller.find_similar(final, exclude_id=self.product_id)
+        if matches:
+            names = ", ".join(f"'{m['name']}'" for m in matches)
+            self.dup_warn.setText(f"⚠ You may already have this: {names}. "
+                                  "Check before adding a duplicate.")
+            self.dup_warn.setVisible(True)
+        else:
+            self.dup_warn.setVisible(False)
 
     def _stock_total(self) -> int:
         """Opening stock as a single piece count."""
@@ -359,6 +387,7 @@ class ProductEditDialog(QDialog):
         self.stock_cartons.setValue(0)
         self.stock_pieces.setValue(0)
         self.bc_warn.setVisible(False)
+        self.dup_warn.setVisible(False)
         self.barcode.setFocus()  # ready to scan the next item
 
     def _close(self) -> None:

@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtWidgets import (
-    QDialog, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox, QPlainTextEdit,
-    QPushButton, QVBoxLayout,
+    QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLineEdit, QMessageBox,
+    QPlainTextEdit, QPushButton, QVBoxLayout,
 )
 
 from ..controllers.supplier_controller import SupplierController
@@ -35,9 +35,18 @@ class SupplierEditDialog(QDialog):
         self.address.setFixedHeight(60)
         self.notes = QPlainTextEdit()
         self.notes.setFixedHeight(60)
+        self._mu = self.controller.currency()[1]
+        self.opening = QDoubleSpinBox()
+        self.opening.setRange(-99_999_999, 99_999_999)
+        self.opening.setDecimals(max(0, len(str(self._mu)) - 1))
+        self.opening.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self.opening.setToolTip(
+            "Balance carried over from your paper records. Positive = you owe the "
+            "supplier; negative = advance/credit. Leave 0 for a new supplier.")
         form.addRow("Name *", self.name)
         form.addRow("Phone", self.phone)
         form.addRow("Address", self.address)
+        form.addRow("Opening balance owed", self.opening)
         form.addRow("Notes", self.notes)
         root.addLayout(form)
 
@@ -64,6 +73,7 @@ class SupplierEditDialog(QDialog):
         self.phone.setText(s.get("phone") or "")
         self.address.setPlainText(s.get("address") or "")
         self.notes.setPlainText(s.get("notes") or "")
+        self.opening.setValue((s.get("opening_debt_minor") or 0) / self._mu)
 
     def _save(self, add_another: bool = False) -> None:
         if not self.name.text().strip():
@@ -74,6 +84,7 @@ class SupplierEditDialog(QDialog):
             "phone": self.phone.text().strip(),
             "address": self.address.toPlainText().strip(),
             "notes": self.notes.toPlainText().strip(),
+            "opening_debt": self.opening.value(),
         }
         ok, msg, _ = self.controller.save(form, self.supplier_id)
         if not ok:
@@ -85,6 +96,7 @@ class SupplierEditDialog(QDialog):
             self.phone.clear()
             self.address.clear()
             self.notes.clear()
+            self.opening.setValue(0)
             self.name.setFocus()
         else:
             self.accept()

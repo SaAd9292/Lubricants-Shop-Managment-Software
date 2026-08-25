@@ -7,6 +7,8 @@ sales and purchase history remain intact.
 """
 from __future__ import annotations
 
+import difflib
+import re
 import sqlite3
 from typing import Any
 
@@ -16,6 +18,13 @@ from ..database.connection import Database
 from .audit_service import AuditService
 
 log = get_logger(__name__)
+
+
+def _norm_match(s) -> str:
+    """Collapse a name to letters+digits only, lowercased — so 'ZIC M5 20W-50'
+    and 'zic  m-5 20w50' compare as the same, catching spelling/spacing variants
+    of the same product even without a barcode."""
+    return re.sub(r"[^a-z0-9]+", "", str(s or "").lower())
 
 # Whitelist of sortable columns -> actual SQL expression (prevents injection
 # via the sort parameter, which originates from clickable table headers).
@@ -98,6 +107,65 @@ class ProductService:
         row = self.db.query_one(sql, (barcode,))
         return dict(row) if row else None
 
+    def find_similar(self, name: str, *, exclude_id: int | None = None,
+                     limit: int = 3, threshold: float = 0.86) -> list[dict]:
+        """Return existing active products whose name is a close match to `name`
+        (normalised letters+digits, fuzzy), so the Add-Product form can warn
+        'you may already have this' before a duplicate is created. Exact
+        normalised matches always rank first."""
+        target = _norm_match(name)
+        if len(target) < 3:
+            return []
+        scored: list[tuple[float, dict]] = []
+        for r in self.db.query("SELECT id, name FROM products WHERE is_active = 1"):
+            if exclude_id and r["id"] == exclude_id:
+                continue
+            cand = _norm_match(r["name"])
+            if not cand:
+                continue
+            score = 1.0 if cand == target else difflib.SequenceMatcher(
+                None, target, cand).ratio()
+            if score >= threshold:
+                scored.append((score, dict(r)))
+        scored.sort(key=lambda x: -x[0])
+        return [r for _, r in scored[:limit]]
+
+    def find_duplicate_groups(self, *, threshold: float = 0.88) -> list[list[dict]]:
+        """Group active products whose names are the same or near-same (normalised,
+        fuzzy) so the owner can clean up accidental duplicates. Products that
+        normalise identically always land together; near-misses (e.g. '...4L' vs
+        '...4Ltr') are merged if similar enough. Returns groups of 2+ products,
+        biggest first."""
+        rows = [dict(r) for r in self.db.query(
+            "SELECT id, name, stock_qty, sale_price_minor FROM products WHERE is_active = 1")]
+        buckets: dict[str, list[dict]] = {}
+        for r in rows:
+            key = _norm_match(r["name"])
+            if key:
+                buckets.setdefault(key, []).append(r)
+        keys = list(buckets)
+        parent = {k: k for k in keys}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                if difflib.SequenceMatcher(None, keys[i], keys[j]).ratio() >= threshold:
+                    parent[find(keys[i])] = find(keys[j])
+
+        clusters: dict[str, list[dict]] = {}
+        for k in keys:
+            clusters.setdefault(find(k), []).extend(buckets[k])
+        groups = [g for g in clusters.values() if len(g) > 1]
+        for g in groups:
+            g.sort(key=lambda p: -int(p["stock_qty"] or 0))   # keep-candidate first
+        groups.sort(key=lambda g: -len(g))
+        return groups
+
     # -- writes -------------------------------------------------------
     def create(self, data: dict[str, Any], *, user_id: int | None = None) -> int:
         clean = self._validate(data, creating=True)
@@ -144,30 +212,31 @@ class ProductService:
                *, user_id: int | None = None) -> None:
         current = self.get(product_id)  # raises NotFoundError if missing
         clean = self._validate(data, creating=False)
-        if not clean:
+        # Only touch the fields that ACTUALLY change. A no-op save (e.g. clicking
+        # Save on a price-edit row without changing anything) then writes nothing
+        # to the DB and records no audit entry — no more audit-log spam.
+        changed = {k: v for k, v in clean.items() if v != current.get(k)}
+        if not changed:
             return
-        set_clause = ", ".join(f"{k} = ?" for k in clean)
+        set_clause = ", ".join(f"{k} = ?" for k in changed)
         try:
             self.db.execute(
                 f"UPDATE products SET {set_clause} WHERE id = ?",
-                (*clean.values(), product_id),
+                (*changed.values(), product_id),
             )
         except sqlite3.IntegrityError as exc:
-            raise self._barcode_error(exc, clean.get("barcode"))
-        # if a price actually changed, append a price-history row (new effective
-        # prices) so old price lists can be reconstructed by date
-        if "purchase_price_minor" in clean or "sale_price_minor" in clean:
-            new_pp = clean.get("purchase_price_minor", current["purchase_price_minor"])
-            new_sp = clean.get("sale_price_minor", current["sale_price_minor"])
-            if (new_pp != current["purchase_price_minor"]
-                    or new_sp != current["sale_price_minor"]):
-                self.db.execute(
-                    "INSERT INTO product_price_history (product_id, "
-                    "purchase_price_minor, sale_price_minor, changed_by) VALUES (?,?,?,?)",
-                    (product_id, new_pp, new_sp, user_id))
+            raise self._barcode_error(exc, changed.get("barcode"))
+        # a changed price -> a new price-history row (reconstruct price list by date)
+        if "purchase_price_minor" in changed or "sale_price_minor" in changed:
+            self.db.execute(
+                "INSERT INTO product_price_history (product_id, "
+                "purchase_price_minor, sale_price_minor, changed_by) VALUES (?,?,?,?)",
+                (product_id,
+                 changed.get("purchase_price_minor", current["purchase_price_minor"]),
+                 changed.get("sale_price_minor", current["sale_price_minor"]), user_id))
         self.audit.record(action="UPDATE", user_id=user_id, entity_type="product",
-                          entity_id=product_id, details={"fields": list(clean)})
-        log.info("Updated product id=%s fields=%s", product_id, list(clean))
+                          entity_id=product_id, details={"fields": list(changed)})
+        log.info("Updated product id=%s fields=%s", product_id, list(changed))
 
     def set_active(self, product_id: int, active: bool,
                    *, user_id: int | None = None) -> None:

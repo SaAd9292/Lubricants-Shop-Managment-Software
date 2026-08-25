@@ -11,6 +11,7 @@ category/brand lists — with an automatic safety backup first.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
@@ -74,6 +75,7 @@ class SettingsView(QWidget):
         shop_form.addRow("NTN number", self.ntn)
         shop_form.addRow("GST number", self.gst)
         self._logo_path = ""
+        self._logo_bytes: bytes | None = None
         self.logo_lbl = QLabel("(none)")
         self.logo_lbl.setObjectName("Muted")
         logo_row = QWidget()
@@ -222,7 +224,19 @@ class SettingsView(QWidget):
         self.address.setPlainText(c.get("address") or "")
         self.ntn.setText(c.get("ntn_number") or "")
         self.gst.setText(c.get("gst_number") or "")
-        self._set_logo(c.get("logo_path") or "")
+        # prefer the stored blob; if only a legacy file path exists, read it so
+        # saving migrates the image into the database
+        blob = c.get("logo_blob")
+        data = bytes(blob) if blob else None
+        path = c.get("logo_path") or ""
+        if not data and path:
+            try:
+                p = Path(path)
+                if p.is_file():
+                    data = p.read_bytes()
+            except Exception:
+                pass
+        self._set_logo(path, data)
         self.currency_code.setText(c.get("currency_code") or "PKR")
         self.currency_symbol.setText(c.get("currency_symbol") or "Rs")
         idx = self.minor_units.findData(c.get("currency_minor_units", 100))
@@ -256,6 +270,7 @@ class SettingsView(QWidget):
             "ntn_number": self.ntn.text().strip(),
             "gst_number": self.gst.text().strip(),
             "logo_path": self._logo_path,
+            "logo_blob": self._logo_bytes,
             "currency_code": self.currency_code.text().strip() or "PKR",
             "currency_symbol": self.currency_symbol.text().strip() or "Rs",
             "currency_minor_units": self.minor_units.currentData(),
@@ -289,12 +304,26 @@ class SettingsView(QWidget):
     def _choose_logo(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose shop logo", "", "Images (*.png *.jpg *.jpeg *.bmp)")
-        if path:
-            self._set_logo(path)
+        if not path:
+            return
+        try:
+            data = Path(path).read_bytes()
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not read image", str(exc))
+            return
+        if len(data) > 2_000_000:      # keep the DB (and backups) lean
+            QMessageBox.warning(self, "Image too large",
+                                "Please choose a logo image under 2 MB.")
+            return
+        self._set_logo(path, data)
 
-    def _set_logo(self, path: str) -> None:
+    def _set_logo(self, path: str, data: bytes | None = None) -> None:
         self._logo_path = path or ""
-        self.logo_lbl.setText(os.path.basename(path) if path else "(none)")
+        self._logo_bytes = data
+        if data:
+            self.logo_lbl.setText(os.path.basename(path) if path else "logo set")
+        else:
+            self.logo_lbl.setText("(none)")
 
     def _manage_payment_accounts(self) -> None:
         PaymentAccountsDialog(self.ctx, self).exec()

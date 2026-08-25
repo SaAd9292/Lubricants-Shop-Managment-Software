@@ -42,6 +42,7 @@ class PayableService:
         rows = self.db.query(
             f"""
             SELECT s.id, s.name, s.phone,
+                   COALESCE(s.opening_debt_minor, 0) AS opening,
                    COALESCE(pu.purchased, 0)  AS purchased,
                    COALESCE(pu.paid_at, 0)    AS paid_at_purchase,
                    COALESCE(pm.paid_later, 0) AS paid_later
@@ -63,7 +64,7 @@ class PayableService:
         for r in rows:
             r = dict(r)
             paid = r["paid_at_purchase"] + r["paid_later"]
-            balance = r["purchased"] - paid
+            balance = r["opening"] + r["purchased"] - paid
             if only_outstanding and balance <= 0:
                 continue
             out.append({"id": r["id"], "name": r["name"], "phone": r["phone"],
@@ -82,7 +83,8 @@ class PayableService:
         """Full history for one supplier: its purchases and its payments,
         with running totals."""
         sup = self.db.query_one(
-            "SELECT id, name, phone FROM suppliers WHERE id = ?", (supplier_id,))
+            "SELECT id, name, phone, COALESCE(opening_debt_minor,0) AS opening "
+            "FROM suppliers WHERE id = ?", (supplier_id,))
         if not sup:
             raise NotFoundError(f"Supplier {supplier_id} not found")
         purchases = [dict(r) for r in self.db.query(
@@ -99,8 +101,10 @@ class PayableService:
                ORDER BY payment_date DESC, id DESC""", (supplier_id,))]
         purchased = sum(p["total"] for p in purchases)
         paid = sum(p["paid_at"] for p in purchases) + sum(p["amount"] for p in payments)
+        opening = sup["opening"]
         return {"supplier": dict(sup), "purchases": purchases, "payments": payments,
-                "purchased": purchased, "paid": paid, "balance": purchased - paid}
+                "purchased": purchased, "paid": paid, "opening": opening,
+                "balance": opening + purchased - paid}
 
     # -- writes -------------------------------------------------------
     def record_payment(self, supplier_id: int, amount_minor: int, *,

@@ -20,7 +20,7 @@ _SORT_COLUMNS = {
     "phone": "phone",
     "created_at": "created_at",
 }
-_EDITABLE = {"name", "phone", "address", "notes"}
+_EDITABLE = {"name", "phone", "address", "notes", "opening_debt_minor"}
 
 
 class SupplierService:

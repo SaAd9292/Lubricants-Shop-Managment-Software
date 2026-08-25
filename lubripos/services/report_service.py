@@ -371,15 +371,16 @@ class ReportService:
     # ---- 5. Low Stock Report ---------------------------------------
     def low_stock(self) -> dict[str, Any]:
         rows = self.db.query(
-            """SELECT p.name, b.name AS brand, p.stock_qty, p.min_stock_level,
+            """SELECT p.sort_order, p.name, b.name AS brand, p.stock_qty, p.min_stock_level,
                   (p.min_stock_level - p.stock_qty) AS shortfall
                FROM products p LEFT JOIN brands b ON b.id=p.brand_id
                WHERE p.is_active=1 AND p.min_stock_level > 0 AND p.stock_qty <= p.min_stock_level
-               ORDER BY shortfall DESC, p.name""")
+               ORDER BY p.sort_order, p.id""")
         data = [dict(r) for r in rows]
         return {
             "key": "low_stock", "title": "Low Stock Report", "subtitle": date.today().isoformat(),
             "columns": [
+                _col("sort_order", "#", "right"),
                 _col("name", "Product"), _col("brand", "Brand"),
                 _col("stock_qty", "In Stock", "right"),
                 _col("min_stock_level", "Min Level", "right"),

@@ -10,6 +10,7 @@ White-label: every shop-identity field comes from company_settings.
 """
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from reportlab.platypus import (
 from reportlab.graphics.barcode import createBarcodeDrawing
 
 from ..core.money import format_money
+from ..services.company_service import logo_bytes
 
 LINE = colors.HexColor("#000000")
 MUTED = colors.HexColor("#333333")
@@ -70,10 +72,10 @@ def generate_invoice_pdf(*, sale: dict[str, Any], company: dict[str, Any],
 
     story: list = []
 
-    logo = company.get("logo_path")
-    if logo and Path(logo).is_file():
+    logo = logo_bytes(company)
+    if logo:
         try:
-            img = Image(logo)
+            img = Image(BytesIO(logo))
             img._restrictSize(28 * mm, 20 * mm)
             img.hAlign = "CENTER"
             story.append(img)

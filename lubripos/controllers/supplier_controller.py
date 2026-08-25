@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..app_context import AppContext
+from ..core import money
 from ..core.exceptions import LubriPosError
 from ..core.logging_config import get_logger
 from ..core.session import current_session
@@ -18,6 +19,10 @@ class SupplierController:
         self.suppliers = SupplierService(ctx.db, ctx.audit)
 
     # reads
+    def currency(self) -> tuple[str, int]:
+        c = self.ctx.company.get_company()
+        return c.get("currency_symbol", "Rs"), c.get("currency_minor_units", 100)
+
     def list(self, **kwargs) -> dict[str, Any]:
         return self.suppliers.list_suppliers(**kwargs)
 
@@ -26,6 +31,12 @@ class SupplierController:
 
     # writes
     def save(self, form: dict[str, Any], supplier_id: int | None = None):
+        # opening balance is entered in rupees -> convert to integer minor units
+        if "opening_debt" in form:
+            _, mu = self.currency()
+            form = dict(form)
+            form["opening_debt_minor"] = money.to_minor(form.pop("opening_debt") or 0, mu)
+
         def op(uid):
             if supplier_id is None:
                 return self.suppliers.create(form, user_id=uid)

@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS company_settings (
     phone         TEXT,
     email         TEXT,
     address       TEXT,
-    logo_path     TEXT,
+    logo_path     TEXT,                            -- legacy: file path (fallback)
+    logo_blob     BLOB,                            -- logo image bytes (carried by backups)
     ntn_number    TEXT,
     gst_number    TEXT,
     currency_code TEXT    NOT NULL DEFAULT 'PKR',   -- ISO 4217-ish code
@@ -139,6 +140,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
     phone      TEXT,
     address    TEXT,
     notes      TEXT,
+    opening_debt_minor INTEGER NOT NULL DEFAULT 0,  -- balance carried in (+ we owe, - advance)
     is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))

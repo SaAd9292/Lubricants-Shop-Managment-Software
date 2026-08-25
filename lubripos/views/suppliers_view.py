@@ -30,7 +30,7 @@ class SuppliersView(QWidget):
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(200)
-        self._debounce.timeout.connect(self._reload)
+        self._debounce.timeout.connect(self._reset_and_reload)  # search resets to page 1
         self._build_ui()
         self._reload()
 
