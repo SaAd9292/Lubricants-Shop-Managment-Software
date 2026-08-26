@@ -130,42 +130,6 @@ class ProductService:
         scored.sort(key=lambda x: -x[0])
         return [r for _, r in scored[:limit]]
 
-    def find_duplicate_groups(self, *, threshold: float = 0.88) -> list[list[dict]]:
-        """Group active products whose names are the same or near-same (normalised,
-        fuzzy) so the owner can clean up accidental duplicates. Products that
-        normalise identically always land together; near-misses (e.g. '...4L' vs
-        '...4Ltr') are merged if similar enough. Returns groups of 2+ products,
-        biggest first."""
-        rows = [dict(r) for r in self.db.query(
-            "SELECT id, name, stock_qty, sale_price_minor FROM products WHERE is_active = 1")]
-        buckets: dict[str, list[dict]] = {}
-        for r in rows:
-            key = _norm_match(r["name"])
-            if key:
-                buckets.setdefault(key, []).append(r)
-        keys = list(buckets)
-        parent = {k: k for k in keys}
-
-        def find(x):
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        for i in range(len(keys)):
-            for j in range(i + 1, len(keys)):
-                if difflib.SequenceMatcher(None, keys[i], keys[j]).ratio() >= threshold:
-                    parent[find(keys[i])] = find(keys[j])
-
-        clusters: dict[str, list[dict]] = {}
-        for k in keys:
-            clusters.setdefault(find(k), []).extend(buckets[k])
-        groups = [g for g in clusters.values() if len(g) > 1]
-        for g in groups:
-            g.sort(key=lambda p: -int(p["stock_qty"] or 0))   # keep-candidate first
-        groups.sort(key=lambda g: -len(g))
-        return groups
-
     # -- writes -------------------------------------------------------
     def create(self, data: dict[str, Any], *, user_id: int | None = None) -> int:
         clean = self._validate(data, creating=True)

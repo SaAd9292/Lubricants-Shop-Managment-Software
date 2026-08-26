@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, QTimer, QEvent
+from PySide6.QtCore import Qt, QTimer, QEvent, QStringListModel
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QApplication, QButtonGroup, QCheckBox,
-    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QCompleter, QDialog, QDialogButtonBox, QDoubleSpinBox, QFrame,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -28,7 +29,7 @@ from ..controllers.payment_account_controller import PaymentAccountController
 from ..core import money
 from ..core.session import current_session
 from ..core.i18n import tr
-from ..ui.widgets import FlowLayout
+from ..ui.widgets import FlowLayout, enable_tabular_figures
 from ..ui.numeric_keypad import NumericKeypad
 from ..ui.icons import make_icon
 from .product_picker_dialog import ProductPickerDialog
@@ -105,6 +106,7 @@ class POSView(QWidget):
         on the page (scanner acts as a keyboard) so the cashier can scan without
         first clicking the barcode box. Installed only while this screen shows."""
         super().showEvent(event)
+        self._refresh_suggestions()   # pick up any newly added products
         app = QApplication.instance()
         if app is not None and not self._filter_on:
             app.installEventFilter(self)
@@ -162,9 +164,19 @@ class POSView(QWidget):
 
         scan_row = QHBoxLayout()
         self.barcode = QLineEdit()
-        self.barcode.setPlaceholderText(tr("Scan barcode and press Enter…"))
+        self.barcode.setPlaceholderText(tr("Scan a barcode, or type a product name…"))
         self.barcode.setMinimumHeight(34)
         self.barcode.returnPressed.connect(self._add_by_barcode)
+        # live name suggestions (type-ahead) — pick one to add it to the cart
+        self._name_index: dict[str, dict] = {}
+        self._suggest = QCompleter(self)
+        self._suggest.setCaseSensitivity(Qt.CaseInsensitive)
+        self._suggest.setFilterMode(Qt.MatchContains)
+        self._suggest.setCompletionMode(QCompleter.PopupCompletion)
+        self._suggest.setMaxVisibleItems(8)
+        self.barcode.setCompleter(self._suggest)
+        self._suggest.activated[str].connect(self._on_suggestion)
+        self._refresh_suggestions()
         search_btn = QPushButton(tr("Search product"))
         search_btn.setObjectName("Secondary")
         search_btn.clicked.connect(self._add_by_search)
@@ -185,6 +197,8 @@ class POSView(QWidget):
         self.cart.verticalHeader().setDefaultSectionSize(50)
         self.cart.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.cart.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.cart.setShowGrid(False)
+        enable_tabular_figures(self.cart)   # prices/qty line up on the decimal
         hdr = self.cart.horizontalHeader()
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(C_NUM, QHeaderView.Fixed)
@@ -245,6 +259,7 @@ class POSView(QWidget):
 
         line = QFrame(); line.setFrameShape(QFrame.HLine); pl.addWidget(line)
         self.lbl_total = self._kv(pl, tr("Grand Total"), big=True)
+        enable_tabular_figures(self.lbl_total)
 
         pl.addWidget(self._h2(tr("Customer (optional)")))
         cust_row = QHBoxLayout()
@@ -296,7 +311,7 @@ class POSView(QWidget):
 
         complete = QPushButton(tr("Complete Sale  (F2)"))
         complete.setObjectName("Success")
-        complete.setMinimumHeight(40)
+        complete.setMinimumHeight(48)
         complete.clicked.connect(self._complete)
         pl.addWidget(complete)
         QShortcut(QKeySequence("F2"), self, self._complete)
@@ -324,7 +339,7 @@ class POSView(QWidget):
         v = QLabel("—")
         v.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         if big:
-            v.setStyleSheet("font-weight:700; font-size:20px; color:#16a34a;")
+            v.setStyleSheet("font-weight:700; font-size:24px; color:#16a34a;")
         row.addWidget(k)
         row.addStretch(1)
         row.addWidget(v)
@@ -336,6 +351,29 @@ class POSView(QWidget):
         return btn.text() if btn else "Cash"
 
     # -- cart ops -----------------------------------------------------
+    def _refresh_suggestions(self) -> None:
+        """(Re)build the type-ahead list of product names for the search box."""
+        try:
+            rows = self.controller.search_products("", None, 100000)
+        except TypeError:
+            rows = self.controller.search_products("")
+        self._name_index = {}
+        names: list[str] = []
+        for p in rows:
+            key = (p["name"] or "").lower()
+            if key and key not in self._name_index:
+                self._name_index[key] = p
+                names.append(p["name"])
+        self._suggest.setModel(QStringListModel(names, self._suggest))
+
+    def _on_suggestion(self, text: str) -> None:
+        """A product name was picked from the type-ahead list -> add it."""
+        p = self._name_index.get((text or "").strip().lower())
+        if p:
+            self._add_product(p)
+        self.barcode.clear()
+        self.barcode.setFocus()
+
     def _add_by_barcode(self) -> None:
         code = self.barcode.text().strip()
         self.barcode.clear()
@@ -343,7 +381,10 @@ class POSView(QWidget):
             return
         product = self.controller.find_by_barcode(code)
         if product is None:
-            self._flash(f"No active product with barcode '{code}'.", error=True)
+            # not a barcode — maybe they typed a product name exactly
+            product = self._name_index.get(code.lower())
+        if product is None:
+            self._flash(f"No product found for '{code}'.", error=True)
             return
         self._add_product(product)
 
@@ -561,7 +602,8 @@ class POSView(QWidget):
             return
         SaleReceiptDialog(self.ctx, summary["id"]).exec()
         self._clear_cart()
-        self._flash(f"Sale {summary['invoice_no']} completed.")
+        total_txt = self.controller.fmt(summary.get("grand_total_minor", 0))
+        self._flash(f"Sale {summary['invoice_no']} saved · {total_txt}")
 
     # -- inline status (non-blocking) ---------------------------------
     def _flash(self, text: str, error: bool = False) -> None:

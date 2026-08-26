@@ -48,6 +48,9 @@ class SaleService:
         amount_paid_minor: int = 0,
         customer_id: int | None = None,
         customer_name: str | None = None,
+        sale_date: str | None = None,
+        allow_negative_stock: bool = False,
+        mark_paid_in_full: bool = False,
         user_id: int | None = None,
     ) -> dict[str, Any]:
         """items: [{product_id, qty, unit_price_minor?}].
@@ -61,7 +64,8 @@ class SaleService:
             raise ValidationError("Discount cannot be negative.")
 
         with self.db.transaction() as conn:
-            lines = self._resolve_lines(conn, items)
+            lines = self._resolve_lines(conn, items,
+                                        allow_negative=allow_negative_stock)
             subtotal = sum(ln["line_total_minor"] for ln in lines)
 
             if discount_minor > subtotal:
@@ -86,6 +90,11 @@ class SaleService:
             else:
                 tax_rate_bps, tax_minor, grand_total = 0, 0, net
 
+            # Historical cash bills are already settled: record them paid in full
+            # so amount_paid matches the grand total regardless of the tax config.
+            if mark_paid_in_full:
+                amount_paid_minor = grand_total
+
             invoice_no = self._next_invoice_no(conn)
 
             # Snapshot the receiving account's NAME so the invoice/reports survive
@@ -100,13 +109,14 @@ class SaleService:
                 account_name = acc["name"]
 
             cur = conn.execute(
-                "INSERT INTO sales (invoice_no, cashier_id, cashier_name, "
+                "INSERT INTO sales (invoice_no, sale_date, cashier_id, cashier_name, "
                 "subtotal_minor, discount_minor, tax_label, tax_rate_bps, tax_minor, "
                 "grand_total_minor, payment_method, payment_account_id, "
                 "payment_account_name, amount_paid_minor, customer_id, customer_name, "
                 "status) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
-                (invoice_no, cashier_id, cashier_name, subtotal, discount_minor,
+                "VALUES (?, COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')), "
+                "?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
+                (invoice_no, sale_date, cashier_id, cashier_name, subtotal, discount_minor,
                  tax_label, tax_rate_bps, tax_minor, grand_total, payment_method,
                  payment_account_id, account_name, amount_paid_minor,
                  customer_id, (customer_name or None)),
@@ -122,8 +132,12 @@ class SaleService:
                      ln["qty"], ln["unit_price_minor"], ln["unit_cost_minor"],
                      ln["line_total_minor"]),
                 )
+                # MAX(0, …) guards the DB's stock_qty >= 0 invariant. On the live
+                # path _resolve_lines already proved qty <= stock, so this is a
+                # no-op there; on the back-dated path (allow_negative_stock) a
+                # short line floors stock at 0 instead of aborting the whole bill.
                 conn.execute(
-                    "UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?",
+                    "UPDATE products SET stock_qty = MAX(0, stock_qty - ?) WHERE id = ?",
                     (ln["qty"], ln["product_id"]),
                 )
 
@@ -142,6 +156,7 @@ class SaleService:
             "tax_rate_bps": tax_rate_bps, "tax_minor": tax_minor,
             "grand_total_minor": grand_total, "amount_paid_minor": amount_paid_minor,
             "change_minor": change_minor,
+            "short_lines": [ln["product_name"] for ln in lines if ln.get("short")],
         }
 
     # -- void ---------------------------------------------------------
@@ -290,7 +305,8 @@ class SaleService:
         return result
 
     # -- helpers ------------------------------------------------------
-    def _resolve_lines(self, conn, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _resolve_lines(self, conn, items: list[dict[str, Any]], *,
+                       allow_negative: bool = False) -> list[dict[str, Any]]:
         # merge duplicate product lines (same product scanned twice)
         merged: dict[int, int] = {}
         overrides: dict[int, int] = {}
@@ -320,7 +336,12 @@ class SaleService:
             if not row["is_active"]:
                 raise ValidationError(f"'{row['name']}' is inactive and cannot be sold.")
             qty = merged[pid]
-            if qty > row["stock_qty"]:
+            short = qty > row["stock_qty"]
+            if short and not allow_negative:
+                # Live sales must never oversell. Back-dated history entry passes
+                # allow_negative=True: the bill is recorded, stock is still
+                # decremented (going negative if a purchase hasn't been keyed
+                # yet), and the line is flagged so the UI can surface it.
                 raise InsufficientStockError(
                     f"Not enough stock for '{row['name']}': have {row['stock_qty']}, need {qty}."
                 )
@@ -332,6 +353,7 @@ class SaleService:
                 "qty": qty, "unit_price_minor": unit_price,
                 "unit_cost_minor": row["purchase_price_minor"],
                 "line_total_minor": qty * unit_price,
+                "short": short,
             })
         return lines
 

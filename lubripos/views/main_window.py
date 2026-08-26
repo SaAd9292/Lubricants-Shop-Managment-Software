@@ -27,8 +27,7 @@ from ..core.logging_config import get_logger
 from ..core.session import current_session
 from ..core.i18n import tr
 from ..ui.icons import make_icon
-from .audit_view import AuditView
-from .backup_view import BackupView
+from .admin_panel_view import AdminPanelView
 from .dashboard_view import DashboardView
 from .expenses_view import ExpensesView
 from .placeholder_view import PlaceholderView
@@ -40,10 +39,8 @@ from .reports_view import ReportsView
 from .sales_view import SalesView
 from .returns_view import ReturnsView
 from .customers_view import CustomersView
-from .settings_view import SettingsView
 from .suppliers_view import SuppliersView
 from .taxonomy_view import TaxonomyView
-from .users_view import UsersView
 
 log = get_logger(__name__)
 
@@ -62,10 +59,7 @@ NAV_ITEMS = [
     ("Payables", "payables", False),
     ("Expenses", "expenses", False),
     ("Reports", "reports", False),
-    ("Users", "users", True),
-    ("Audit Log", "audit", True),
-    ("Backup & Restore", "backup", True),
-    ("Settings", "settings", True),
+    ("Admin Panel", "admin", True),
 ]
 
 
@@ -271,17 +265,11 @@ class MainWindow(QMainWindow):
             return CustomersView(self.ctx)
         if key == "reports":
             return ReportsView(self.ctx)
-        if key == "users":
-            return UsersView(self.ctx)
-        if key == "audit":
-            return AuditView(self.ctx)
-        if key == "backup":
-            return BackupView(self.ctx)
         if key == "taxonomy":
             return TaxonomyView(self.ctx)
-        if key == "settings":
-            return SettingsView(self.ctx, on_saved=self._on_settings_saved,
-                                on_check_updates=self.check_for_updates)
+        if key == "admin":
+            return AdminPanelView(self.ctx, on_settings_saved=self._on_settings_saved,
+                                  on_check_updates=self.check_for_updates)
         return PlaceholderView(label)
 
     # -- navigation ---------------------------------------------------
@@ -372,8 +360,11 @@ class MainWindow(QMainWindow):
 
     def _on_update_banner_clicked(self) -> None:
         if self._is_admin():
-            # take the admin to Settings and start the install flow
-            self._go("settings")
+            # take the admin to the Admin Panel's Settings tab, then start install
+            self._go("admin")
+            admin = self.stack.widget(self._pages.get("admin", -1))
+            if isinstance(admin, AdminPanelView):
+                admin.show_settings()
             self.check_for_updates()
         else:
             ver = (self._update_info or {}).get("version", "")

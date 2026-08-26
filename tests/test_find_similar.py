@@ -43,15 +43,6 @@ def main() -> int:
           "editing a product doesn't flag itself")
     check(ps.find_similar("ab") == [], "too-short input returns nothing")
 
-    print("\n[duplicates] cleanup grouping")
-    ps.create({"name": "zic  m-5 20w50 4L"})       # exact-normalised dup of the M5 4L
-    ps.create({"name": "ZIC M5 20W-50 4Ltr"})      # fuzzy near-dup
-    ps.create({"name": "Havoline 20W-50 4L"})      # unique
-    groups = ps.find_duplicate_groups()
-    check(len(groups) == 1, "one duplicate group found")
-    check(len(groups[0]) == 3, "the 3 M5 variants are grouped together")
-    check(all("Havoline" not in p["name"] for p in groups[0]), "unique product not grouped")
-
     total, passed = len(_r), sum(_r)
     print(f"\n[similar] {passed}/{total} checks passed\n")
     ctx.shutdown()

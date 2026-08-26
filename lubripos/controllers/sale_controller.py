@@ -57,8 +57,8 @@ class SaleController:
     def find_by_invoice(self, invoice_no: str) -> dict | None:
         return self.sales.get_by_invoice(invoice_no)
 
-    def search_customers(self, term: str) -> list[dict]:
-        return self.customers.search_min(term)
+    def search_customers(self, term: str, limit: int = 20) -> list[dict]:
+        return self.customers.search_min(term, limit=limit)
 
     def customer_last_products(self, customer_id: int) -> list[str]:
         return self.customers.last_products(customer_id)
@@ -71,7 +71,9 @@ class SaleController:
                  payment_method: str = "cash", payment_account_id: int | None = None,
                  amount_paid: float = 0, customer_name: str | None = None,
                  customer_phone: str | None = None):
-        """lines: [{product_id, qty, unit_price (decimal)}]. Returns (ok, msg, summary)."""
+        """lines: [{product_id, qty, unit_price (decimal)}]. Live POS sale, stamped
+        today. Back-dated paper bills go through record_backdated_sale instead.
+        Returns (ok, msg, summary)."""
         _, mu = self.currency()
         items: list[dict[str, Any]] = []
         try:
@@ -105,13 +107,78 @@ class SaleController:
                 discount_minor=discount_minor, payment_method=payment_method,
                 payment_account_id=payment_account_id,
                 amount_paid_minor=amount_paid_minor,
-                customer_id=customer_id, customer_name=cust_name, user_id=user.id,
+                customer_id=customer_id, customer_name=cust_name,
+                user_id=user.id,
             )
             return True, "ok", summary
         except LubriPosError as exc:
             return False, str(exc), None
         except Exception as exc:  # pragma: no cover
             log.exception("Checkout failed")
+            return False, f"Unexpected error: {exc}", None
+
+    # -- back-dated bulk entry (admin only) ---------------------------
+    def record_backdated_sale(self, *, lines: list[dict[str, Any]],
+                              sale_date: str, discount: float = 0,
+                              payment_method: str = "Cash",
+                              customer_id: int | None = None,
+                              customer_name: str | None = None,
+                              customer_phone: str | None = None):
+        """Record one historical paper bill on its real date. Admin-only.
+
+        lines: [{product_id, qty, unit_price (decimal)}]. sale_date is
+        'YYYY-MM-DD' (required). payment_method is one of the usual methods;
+        'Debt' (credit / udhaar) is unpaid and needs a customer, everything else
+        is recorded paid-in-full. Unlike the live POS this never blocks on short
+        stock — stock still decrements (flooring at 0 until the matching purchase
+        is keyed) and any short line is reported back. Returns (ok, msg, summary)
+        where summary['short_lines'] lists any short items.
+        """
+        try:
+            user = current_session.require_role("admin")
+        except LubriPosError as exc:
+            return False, str(exc), None
+        if not sale_date:
+            return False, "A sale date is required for a back-dated bill.", None
+        if len(sale_date) == 10:                 # date only -> mid-day timestamp
+            sale_date = sale_date + " 12:00:00"
+        _, mu = self.currency()
+        items: list[dict[str, Any]] = []
+        try:
+            for ln in lines:
+                item = {"product_id": ln["product_id"], "qty": int(ln["qty"])}
+                if ln.get("unit_price") is not None:
+                    item["unit_price_minor"] = money.to_minor(ln["unit_price"], mu)
+                items.append(item)
+            discount_minor = money.to_minor(discount or 0, mu)
+        except (ValueError, ArithmeticError, KeyError):
+            return False, "Invalid line data (check quantities and prices).", None
+
+        is_credit = payment_method == "Debt"
+        try:
+            cust_name = (customer_name or "").strip() or None
+            # A picked, already-saved customer wins (keeps their history/balance);
+            # otherwise a typed name is matched-or-created.
+            if customer_id is None and cust_name:
+                customer_id = self.customers.find_or_create(
+                    cust_name, customer_phone, user_id=user.id)
+            # A credit (udhaar) bill is unpaid and must sit on a customer's tab.
+            if is_credit and customer_id is None:
+                return (False,
+                        "A credit (udhaar) bill needs a customer name.", None)
+            summary = self.sales.create_sale(
+                items=items, cashier_id=user.id,
+                cashier_name=user.full_name or user.username,
+                discount_minor=discount_minor, payment_method=payment_method,
+                customer_id=customer_id, customer_name=cust_name,
+                sale_date=sale_date, allow_negative_stock=True,
+                mark_paid_in_full=not is_credit, user_id=user.id,
+            )
+            return True, "ok", summary
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("Back-dated sale failed")
             return False, f"Unexpected error: {exc}", None
 
     # -- history ------------------------------------------------------

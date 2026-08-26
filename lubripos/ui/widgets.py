@@ -11,6 +11,23 @@ from PySide6.QtWidgets import (
 from ..core.packs import split_packs
 
 
+def enable_tabular_figures(widget) -> None:
+    """Turn on tabular (fixed-width) digits so numbers line up in columns and
+    don't jitter as they change — the 'ledger' look for prices and totals.
+    No-op on Qt builds that lack QFont feature support (numbers still align via
+    right-alignment)."""
+    from PySide6.QtGui import QFont
+    font = widget.font()
+    for setter in (lambda: font.setFeature("tnum", 1),
+                   lambda: font.setFeature(QFont.Tag("tnum"), 1)):
+        try:
+            setter()
+            widget.setFont(font)
+            return
+        except Exception:
+            continue
+
+
 def number_rows(table: QTableWidget, start: int = 1) -> None:
     """Show a continuous, ascending row number in the table's left gutter
     (vertical header), starting at `start`. Paginated lists pass

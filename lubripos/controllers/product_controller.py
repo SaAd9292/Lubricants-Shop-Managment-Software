@@ -62,9 +62,6 @@ class ProductController:
         barcode to match on."""
         return self.products.find_similar(name or "", exclude_id=exclude_id)
 
-    def find_duplicate_groups(self) -> list[list[dict]]:
-        """Groups of likely-duplicate active products, for the cleanup tool."""
-        return self.products.find_duplicate_groups()
 
     # -- writes -------------------------------------------------------
     def add_category(self, name: str) -> tuple[bool, str, int | None]:

@@ -26,7 +26,6 @@ from ..controllers.product_controller import ProductController
 from ..reports.report_exporter import to_pdf, to_xlsx
 from ..services.column_presets import ColumnPresetStore
 from .column_select_dialog import ColumnSelectDialog
-from .find_duplicates_dialog import FindDuplicatesDialog
 from .product_edit_dialog import ProductEditDialog
 from .security_prompt import require_admin_password
 from .stock_adjust_dialog import StockAdjustDialog
@@ -99,10 +98,6 @@ class ProductsView(QWidget):
         print_btn.clicked.connect(lambda: self._export("pdf"))
         header.addWidget(excel_btn)
         header.addWidget(print_btn)
-        dup_btn = QPushButton("Find duplicates")
-        dup_btn.setObjectName("Secondary")
-        dup_btn.clicked.connect(self._find_duplicates)
-        header.addWidget(dup_btn)
         self.edit_prices_btn = QPushButton("Update prices")
         self.edit_prices_btn.setObjectName("Secondary")
         self.edit_prices_btn.setCheckable(True)
@@ -507,11 +502,6 @@ class ProductsView(QWidget):
         dlg = ProductEditDialog(self.controller)
         if dlg.exec():
             self._refresh_filters_and_reload()
-
-    def _find_duplicates(self) -> None:
-        dlg = FindDuplicatesDialog(self.controller, self)
-        if dlg.exec():
-            self._reload()
 
     def _on_scan(self) -> None:
         """Enter/scan in the search box: if the barcode is a known product just
