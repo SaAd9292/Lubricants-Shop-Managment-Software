@@ -61,7 +61,8 @@ class SuppliersView(QWidget):
         root.addLayout(filters)
 
         self.table = DataTable(0, len(COLUMNS))
-        self.table.placeholder = 'No suppliers yet - click "+ Add Supplier" to begin.'
+        self.table.placeholder = ('No suppliers yet\n'
+                                   'Click "+ Add Supplier" to add one.')
         self.table.setHorizontalHeaderLabels([c[0] for c in COLUMNS])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

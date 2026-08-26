@@ -155,7 +155,8 @@ class ProductsView(QWidget):
 
         # table
         self.table = DataTable(0, len(COLUMNS))
-        self.table.placeholder = 'No products yet - click "+ Add Product" to begin.'
+        self.table.placeholder = ('No products yet\n'
+                                   'Click "+ Add Product" to add your first item.')
         self.table.setHorizontalHeaderLabels([c[0] for c in COLUMNS])
         self.table.setColumnHidden(len(COLUMNS) - 1, True)  # Save col: only in edit mode
         self.table.verticalHeader().setVisible(False)

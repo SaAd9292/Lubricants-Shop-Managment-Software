@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QSize, QTimer
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
     QProgressDialog, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
@@ -156,6 +156,7 @@ class MainWindow(QMainWindow):
         self._nav_group.setExclusive(True)
 
         is_admin = current_session.is_admin
+        nav_n = 0                          # running count of VISIBLE nav items
         for label, key, admin_only in NAV_ITEMS:
             if admin_only:
                 if not is_admin:          # sensitive screens: admins only
@@ -170,6 +171,13 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _=False, k=key: self._go(k))
             self._nav_group.addButton(btn)
             self._nav_buttons[key] = btn
+            # keyboard quick-nav: Alt+1..9 jump to the first nine screens
+            nav_n += 1
+            if nav_n <= 9:
+                seq = f"Alt+{nav_n}"
+                QShortcut(QKeySequence(seq), self,
+                          activated=lambda k=key: self._go(k))
+                btn.setToolTip(f"{tr(label)}  ({seq})")
             normal_icon = make_icon(key, "#6b7280")
             active_icon = make_icon(key, "#2563eb")
             if not normal_icon.isNull():
@@ -189,6 +197,10 @@ class MainWindow(QMainWindow):
         logout_btn.setObjectName("Secondary")
         logout_btn.clicked.connect(self._logout)
         side.addWidget(logout_btn)
+
+        # mnemonic: F2 jumps straight to a new sale (the busiest action)
+        if "pos" in self._pages:
+            QShortcut(QKeySequence("F2"), self, activated=lambda: self._go("pos"))
         return sidebar
 
     # -- content (header bar + stacked pages) -------------------------
@@ -439,8 +451,11 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Update failed", msg)
 
     def _on_settings_saved(self) -> None:
-        """Reflect a shop-name change live (window title + header + status bar)."""
+        """Reflect a shop-name change live (window title + header + status bar)
+        and apply a light/dark theme switch immediately across the app."""
         company = self.ctx.company.get_company()
+        from ..ui.theme import apply_theme, resolve_mode
+        apply_theme(self.app, resolve_mode(company.get("theme")))
         shop_name = company.get("shop_name") or "My Shop"
         self.setWindowTitle(f"{shop_name} — Penguix")
         self.header_title.setText(shop_name)

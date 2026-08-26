@@ -92,9 +92,9 @@ class CustomersView(QWidget):
         root.addLayout(filters)
 
         self.table = DataTable(0, len(COLUMNS))
-        self.table.placeholder = ("No customers yet. They're added automatically "
-                                  "when you attach one to a sale, or click "
-                                  '"+ Add Customer".')
+        self.table.placeholder = ('No customers yet\n'
+                                   "They're added automatically when you attach one "
+                                   'to a sale, or click "+ Add Customer".')
         self.table.setHorizontalHeaderLabels([c[0] for c in COLUMNS])
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

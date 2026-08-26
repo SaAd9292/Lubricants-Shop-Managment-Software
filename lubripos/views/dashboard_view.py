@@ -16,9 +16,30 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
+from datetime import datetime
+
 from ..app_context import AppContext
+from ..core.logging_config import get_logger
 from ..core.money import format_money
+from ..core.session import current_session
 from ..services.dashboard_service import DashboardService
+
+log = get_logger(__name__)
+
+
+def _greeting() -> str:
+    h = datetime.now().hour
+    if h < 12:
+        return "Good morning"
+    if h < 17:
+        return "Good afternoon"
+    return "Good evening"
+
+
+def _first_name() -> str:
+    u = current_session.user
+    full = (u.full_name or u.username) if u else ""
+    return full.split()[0] if full else "there"
 
 ACCENT = "#2563eb"
 _INK = "#0f172a"       # near-black for big values
@@ -190,10 +211,14 @@ class _Card(QFrame):
         self._hint.setStyleSheet(f"color:{_FAINT};font-size:11px;")
         lay.addWidget(self._hint)
 
-    def set_value(self, text: str, hint: str = "", color: str | None = None) -> None:
+    def set_value(self, text: str, hint: str = "", color: str | None = None,
+                  hint_color: str | None = None) -> None:
         self._value.setText(text)
         self._hint.setText(hint)
         self._value.setStyleSheet(f"color:{color or _INK};")
+        self._hint.setStyleSheet(
+            f"color:{hint_color or _FAINT};font-size:11px;"
+            + ("font-weight:600;" if hint_color else ""))
 
     def paintEvent(self, e) -> None:  # noqa: N802
         super().paintEvent(e)
@@ -431,9 +456,15 @@ class DashboardView(QWidget):
         root.setSpacing(20)
 
         header = QHBoxLayout()
-        title = QLabel("Dashboard")
-        title.setObjectName("PageTitle")
-        header.addWidget(title)
+        greet_box = QVBoxLayout()
+        greet_box.setSpacing(1)
+        self._greeting = QLabel(f"{_greeting()}, {_first_name()}")
+        self._greeting.setObjectName("PageTitle")
+        greet_box.addWidget(self._greeting)
+        self._greeting_sub = QLabel(datetime.now().strftime("%A, %d %B %Y"))
+        self._greeting_sub.setObjectName("Muted")
+        greet_box.addWidget(self._greeting_sub)
+        header.addLayout(greet_box)
         header.addStretch(1)
         self._period_group = QButtonGroup(self)
         self._period_group.setExclusive(True)
@@ -448,6 +479,17 @@ class DashboardView(QWidget):
             header.addWidget(chip)
         self._period_group.buttonClicked.connect(self._on_period)
         header.addSpacing(10)
+        # quick light/dark toggle — available to everyone, right on the dashboard
+        self._mode = "dark" if str(
+            self.ctx.company.get_company().get("theme") or "light").lower() == "dark" \
+            else "light"
+        self._theme_btn = QPushButton("")
+        self._theme_btn.setObjectName("Secondary")
+        self._theme_btn.setCursor(Qt.PointingHandCursor)
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        self._sync_theme_btn()
+        header.addWidget(self._theme_btn)
+        header.addSpacing(6)
         refresh = QPushButton("Refresh")
         refresh.setObjectName("Secondary")
         refresh.clicked.connect(self.refresh)
@@ -501,8 +543,10 @@ class DashboardView(QWidget):
 
         lists = QHBoxLayout()
         lists.setSpacing(18)
+        self.top_card = _ListCard("Top Sellers", accent="#16a34a")
         self.recent_card = _ListCard("Recent Sales", accent="#2563eb")
         self.low_card = _ListCard("Low Stock Items", accent="#f59e0b")
+        lists.addWidget(self.top_card, 1)
         lists.addWidget(self.recent_card, 1)
         lists.addWidget(self.low_card, 1)
         root.addLayout(lists, 1)
@@ -518,7 +562,34 @@ class DashboardView(QWidget):
         self._period = btn.property("period")
         self.refresh()
 
+    def _sync_theme_btn(self) -> None:
+        """Label the toggle with the mode it will switch TO."""
+        self._theme_btn.setText("Light mode" if self._mode == "dark" else "Dark mode")
+
+    def _toggle_theme(self) -> None:
+        """Flip the shop theme and apply it live across the whole app. Available
+        to any signed-in user (theme is a cosmetic, shop-wide preference)."""
+        from PySide6.QtWidgets import QApplication
+        from ..ui.theme import apply_theme
+        self._mode = "light" if self._mode == "dark" else "dark"
+        try:
+            self.ctx.company.update_company({"theme": self._mode})
+        except Exception:
+            log.exception("Could not save theme preference")
+        app = QApplication.instance()
+        if app is not None:
+            apply_theme(app, self._mode)
+        self._sync_theme_btn()
+
     def refresh(self) -> None:
+        # keep the toggle in sync if the theme changed elsewhere (e.g. Settings)
+        self._mode = "dark" if str(
+            self.ctx.company.get_company().get("theme") or "light").lower() == "dark" \
+            else "light"
+        self._sync_theme_btn()
+        # keep the greeting current (time of day + who is signed in)
+        self._greeting.setText(f"{_greeting()}, {_first_name()}")
+        self._greeting_sub.setText(datetime.now().strftime("%A, %d %B %Y"))
         c = self.ctx.company.get_company()
         sym = c.get("currency_symbol", "Rs")
         mu = c.get("currency_minor_units", 100)
@@ -527,19 +598,39 @@ class DashboardView(QWidget):
             return format_money(v, sym, mu)
 
         s = self.svc.summary(self._period)
+        d = self.svc.deltas(self._period)
         plabel = {"today": "today", "week": "last 7 days",
                   "month": "this month"}.get(self._period, "today")
-        self.card_sales.set_value(m(s["today_sales_minor"]),
-                                  f"{s['today_sales_count']} sale(s) {plabel}")
-        self.card_profit.set_value(m(s["today_profit_minor"]), f"gross, {plabel}",
-                                   color="#16a34a")
-        self.card_expenses.set_value(m(s["today_expenses_minor"]), plabel,
-                                     color="#ef4444" if s["today_expenses_minor"] else None)
+
+        def trend(pct, *, up_is_good=True):
+            """(hint text, colour) for a delta. up_is_good flips the colour for
+            expenses, where a rise is bad."""
+            if pct is None:
+                return d["label"], None
+            arrow = "▲" if pct >= 0 else "▼"
+            good = (pct >= 0) if up_is_good else (pct < 0)
+            color = "#16a34a" if good else "#dc2626"
+            return f"{arrow} {abs(pct):.0f}%  {d['label']}", color
+
+        h, hc = trend(d["sales_pct"])
+        self.card_sales.set_value(m(s["today_sales_minor"]), h, hint_color=hc)
+        h, hc = trend(d["profit_pct"])
+        self.card_profit.set_value(m(s["today_profit_minor"]), h,
+                                   color="#16a34a", hint_color=hc)
+        h, hc = trend(d["expenses_pct"], up_is_good=False)
+        self.card_expenses.set_value(m(s["today_expenses_minor"]), h,
+                                     color="#ef4444" if s["today_expenses_minor"] else None,
+                                     hint_color=hc)
         self.card_stock.set_value(m(s["stock_value_minor"]), "at cost")
         low_n = s["low_stock_count"]
         self.card_low.set_value(str(low_n), "at/below minimum",
                                 color="#b45309" if low_n else None)
         self.card_products.set_value(str(s["inactive_product_count"]), "inactive")
+
+        top = self.svc.top_sellers(self._period, 6)
+        self.top_card.set_rows(
+            [(t["name"], f"{t['qty']} sold") for t in top],
+            f"No sales {plabel}.")
 
         sales = self.svc.recent_sales(6)
         self.recent_card.set_rows(

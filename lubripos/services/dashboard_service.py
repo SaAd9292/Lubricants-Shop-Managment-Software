@@ -71,6 +71,74 @@ class DashboardService:
             "period": period,
         }
 
+    def _delta_windows(self, period: str) -> tuple[str, str]:
+        """(current_start, previous_start) as timestamps. The previous window is
+        the equal-length span immediately BEFORE the current one, so we compare
+        like-for-like: today vs yesterday, this week vs the week before, and
+        month-to-date vs the same number of days in the prior month."""
+        today = date.today()
+        if period == "week":
+            start = today - timedelta(days=6)
+            prev_start = start - timedelta(days=7)
+        elif period == "month":
+            start = today.replace(day=1)
+            length = (today - start).days + 1
+            prev_start = start - timedelta(days=length)
+        else:  # today
+            start = today
+            prev_start = today - timedelta(days=1)
+        return start.isoformat() + " 00:00:00", prev_start.isoformat() + " 00:00:00"
+
+    def _totals(self, start: str, end: str | None) -> dict[str, int]:
+        """Sales / gross profit / expenses within [start, end) (end None = open)."""
+        scond, sparams = "s.sale_date >= ?", [start]
+        econd, eparams = "expense_date >= ?", [start]
+        if end is not None:
+            scond += " AND s.sale_date < ?"; sparams.append(end)
+            econd += " AND expense_date < ?"; eparams.append(end)
+        sales = self.db.query_one(
+            "SELECT COALESCE(SUM(grand_total_minor),0) AS t FROM sales s "
+            "WHERE s.status='completed' AND " + scond, tuple(sparams))
+        profit = self.db.query_one(
+            "SELECT COALESCE(SUM((si.unit_price_minor - si.unit_cost_minor) * si.qty),0) AS t "
+            "FROM sale_items si JOIN sales s ON s.id = si.sale_id "
+            "WHERE s.status='completed' AND " + scond, tuple(sparams))
+        exp = self.db.query_one(
+            "SELECT COALESCE(SUM(amount_minor),0) AS t FROM expenses WHERE " + econd,
+            tuple(eparams))
+        return {"sales": sales["t"], "profit": profit["t"], "expenses": exp["t"]}
+
+    def deltas(self, period: str = "today") -> dict[str, Any]:
+        """Percent change of sales/profit/expenses vs the previous equal window.
+        A pct of None means the previous window was zero (no basis)."""
+        start, prev_start = self._delta_windows(period)
+        cur = self._totals(start, None)
+        prev = self._totals(prev_start, start)
+
+        def pct(c: int, p: int):
+            return None if p == 0 else (c - p) / p * 100.0
+
+        label = {"today": "vs yesterday", "week": "vs prev 7 days",
+                 "month": "vs last month"}.get(period, "vs previous")
+        return {
+            "sales_pct": pct(cur["sales"], prev["sales"]),
+            "profit_pct": pct(cur["profit"], prev["profit"]),
+            "expenses_pct": pct(cur["expenses"], prev["expenses"]),
+            "label": label,
+        }
+
+    def top_sellers(self, period: str = "today", limit: int = 5) -> list[dict]:
+        """Best-selling products in the period, by units sold (revenue tiebreak)."""
+        start = self._period_start(period)
+        rows = self.db.query(
+            "SELECT si.product_name AS name, SUM(si.qty) AS qty, "
+            "SUM(si.line_total_minor) AS revenue "
+            "FROM sale_items si JOIN sales s ON s.id = si.sale_id "
+            "WHERE s.status='completed' AND s.sale_date >= ? "
+            "GROUP BY si.product_name ORDER BY qty DESC, revenue DESC LIMIT ?",
+            (start, limit))
+        return [dict(r) for r in rows]
+
     def sales_series(self, days: int = 7) -> list[dict[str, Any]]:
         """Daily completed-sales totals for the last `days` days (gaps -> 0),
         oldest first, for the dashboard bar chart."""

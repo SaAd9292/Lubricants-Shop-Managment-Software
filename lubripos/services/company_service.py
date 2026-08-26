@@ -36,7 +36,7 @@ _COMPANY_FIELDS = {
     "shop_name", "owner_name", "phone", "email", "address", "logo_path", "logo_blob",
     "ntn_number", "gst_number", "currency_code", "currency_symbol",
     "currency_minor_units", "invoice_prefix", "invoice_footer",
-    "language", "touch_mode",
+    "language", "touch_mode", "theme",
 }
 _TAX_FIELDS = {"tax_enabled", "tax_label", "tax_rate_bps", "tax_inclusive"}
 

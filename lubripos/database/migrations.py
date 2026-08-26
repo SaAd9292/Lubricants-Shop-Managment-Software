@@ -12,7 +12,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 22
+CURRENT_VERSION = 23
 
 
 def run_migrations(db: Database) -> None:
@@ -35,6 +35,7 @@ def run_migrations(db: Database) -> None:
     _migration_20_customer_address(db)
     _migration_21_supplier_opening(db)
     _migration_22_logo_blob(db)
+    _migration_23_theme(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -401,3 +402,12 @@ def _migration_22_logo_blob(db: Database) -> None:
     if not _column_exists(db, "company_settings", "logo_blob"):
         db.execute("ALTER TABLE company_settings ADD COLUMN logo_blob BLOB")
     log.info("Migration: added company_settings.logo_blob")
+
+
+def _migration_23_theme(db: Database) -> None:
+    """v23: UI theme preference (light/dark) on company_settings, so the shop's
+    chosen look persists across restarts and new PCs. Defaults to 'light'."""
+    if not _column_exists(db, "company_settings", "theme"):
+        db.execute("ALTER TABLE company_settings ADD COLUMN theme TEXT "
+                   "NOT NULL DEFAULT 'light'")
+    log.info("Migration: added company_settings.theme")

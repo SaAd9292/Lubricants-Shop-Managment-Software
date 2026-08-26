@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from .. import __version__
 from ..app_context import AppContext
 from ..core.session import current_session
+from ..ui.toast import show_toast
 from .payment_accounts_dialog import PaymentAccountsDialog
 from .security_prompt import require_admin_password
 
@@ -114,11 +115,15 @@ class SettingsView(QWidget):
         # ---- Display tab ----
         disp = QWidget()
         disp_form = QFormLayout(disp)
+        self.theme = QComboBox()
+        self.theme.addItem("Light", "light")
+        self.theme.addItem("Dark", "dark")
         self.language = QComboBox()
         self.language.addItem("English", "en")
         self.language.addItem("اردو (Urdu)", "ur")
         self.touch_mode = QCheckBox(
             "Touchscreen mode (show an on-screen number pad on the Sale screen)")
+        disp_form.addRow("Appearance", self.theme)
         disp_form.addRow("Language", self.language)
         disp_form.addRow("", self.touch_mode)
         disp_hint = QLabel("Urdu covers the counter screens (Sale, menu, receipt). "
@@ -215,6 +220,11 @@ class SettingsView(QWidget):
         outer.addLayout(actions)
 
     # -- data ---------------------------------------------------------
+    def _reload(self) -> None:
+        """Nav hook: re-read settings when the tab is opened, so a theme toggled
+        elsewhere (e.g. the dashboard quick switch) isn't clobbered on save."""
+        self._load()
+
     def _load(self) -> None:
         c = self.ctx.company.get_company()
         self.shop_name.setText(c.get("shop_name", ""))
@@ -245,6 +255,8 @@ class SettingsView(QWidget):
         self.invoice_footer.setText(c.get("invoice_footer") or "")
         self._orig_language = c.get("language") or "en"
         self.language.setCurrentIndex(max(0, self.language.findData(self._orig_language)))
+        self.theme.setCurrentIndex(max(0, self.theme.findData(
+            "dark" if str(c.get("theme") or "light").lower() == "dark" else "light")))
         self.touch_mode.setChecked(bool(c.get("touch_mode", 0)))
 
         t = self.ctx.company.get_tax()
@@ -278,6 +290,7 @@ class SettingsView(QWidget):
             "invoice_footer": self.invoice_footer.text().strip(),
             "language": self.language.currentData(),
             "touch_mode": 1 if self.touch_mode.isChecked() else 0,
+            "theme": self.theme.currentData(),
         }, user_id=uid)
 
         self.ctx.company.update_tax({
@@ -288,12 +301,13 @@ class SettingsView(QWidget):
         }, user_id=uid)
 
         if self.language.currentData() != getattr(self, "_orig_language", "en"):
+            # a language change needs attention (log out/in), so keep the dialog
             QMessageBox.information(
                 self, "Saved",
                 "Settings updated. Log out and back in to apply the new language.")
             self._orig_language = self.language.currentData()
         else:
-            QMessageBox.information(self, "Saved", "Settings updated.")
+            show_toast(self, "Settings saved")
         if self._on_saved:
             self._on_saved()
 

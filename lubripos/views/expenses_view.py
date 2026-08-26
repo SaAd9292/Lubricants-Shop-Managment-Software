@@ -76,7 +76,8 @@ class ExpensesView(QWidget):
         root.addLayout(filters)
 
         self.table = DataTable(0, len(COLUMNS))
-        self.table.placeholder = 'No expenses yet - click "+ Add Expense" to begin.'
+        self.table.placeholder = ('No expenses yet\n'
+                                   'Click "+ Add Expense" to record one.')
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

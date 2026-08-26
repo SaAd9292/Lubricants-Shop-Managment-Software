@@ -9,7 +9,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QFrame, QInputDialog, QLabel, QLineEdit, QMessageBox,
+    QCheckBox, QDialog, QFrame, QInputDialog, QLabel, QLineEdit, QMessageBox,
     QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -160,6 +160,15 @@ class LoginDialog(QDialog):
         self.password.setMinimumHeight(38)
         bl.addWidget(p_lbl)
         bl.addWidget(self.password)
+
+        self.show_pw = QCheckBox("Show password")
+        self.show_pw.setStyleSheet(f"color:{_MUTE};font-size:12px;")
+        self.show_pw.setCursor(Qt.PointingHandCursor)
+        self.show_pw.toggled.connect(
+            lambda on: self.password.setEchoMode(
+                QLineEdit.Normal if on else QLineEdit.Password))
+        bl.addSpacing(8)
+        bl.addWidget(self.show_pw)
 
         self.error = QLabel("")
         self.error.setStyleSheet("color:#ef4444;font-size:12px;")

@@ -78,7 +78,8 @@ class SalesView(QWidget):
         root.addLayout(filters)
 
         self.table = DataTable(0, len(COLUMNS))
-        self.table.placeholder = 'No sales yet - completed sales will appear here.'
+        self.table.placeholder = ('No sales yet\n'
+                                   'Completed sales will appear here.')
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

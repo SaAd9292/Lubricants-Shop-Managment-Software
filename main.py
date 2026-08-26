@@ -18,7 +18,7 @@ from lubripos import __app_name__
 from lubripos.app_context import AppContext
 from lubripos.config import resource_path
 from lubripos.core.i18n import set_language
-from lubripos.ui.theme import apply_theme
+from lubripos.ui.theme import apply_theme, resolve_mode
 from lubripos.views.login_view import LoginDialog
 from lubripos.views.main_window import MainWindow
 
@@ -79,15 +79,15 @@ def main() -> int:
     if not icon.isNull():
         app.setWindowIcon(icon)   # applies to every window + the taskbar
 
-    apply_theme(app)
-
     ctx = AppContext()
     _install_crash_handler(ctx)
     try:
         while True:
-            # pick up the shop's chosen UI language (re-read each login
+            # pick up the shop's chosen UI language + theme (re-read each login
             # so an admin's change applies after logging out)
-            set_language(ctx.company.get_company().get("language"))
+            company = ctx.company.get_company()
+            set_language(company.get("language"))
+            apply_theme(app, resolve_mode(company.get("theme")))
             login = LoginDialog(ctx)
             if icon.isNull() is False:
                 login.setWindowIcon(icon)

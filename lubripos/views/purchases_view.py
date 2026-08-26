@@ -69,7 +69,8 @@ class PurchasesView(QWidget):
         root.addLayout(filters)
 
         self.table = DataTable(0, len(COLUMNS))
-        self.table.placeholder = 'No purchases yet - click "+ New Purchase" to record stock.'
+        self.table.placeholder = ('No purchases yet\n'
+                                   'Click "+ New Purchase" to record incoming stock.')
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)

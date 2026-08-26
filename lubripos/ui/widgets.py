@@ -96,15 +96,29 @@ class DataTable(QTableWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         super().paintEvent(event)
-        if self.rowCount() == 0 and self.placeholder:
-            painter = QPainter(self.viewport())
-            painter.save()
+        if self.rowCount() != 0 or not self.placeholder:
+            return
+        # A placeholder is one line, or "Title\nHint" for a friendlier empty
+        # state: the title is drawn larger, the hint smaller and fainter below.
+        title, _, hint = str(self.placeholder).partition("\n")
+        rect = self.viewport().rect()
+        painter = QPainter(self.viewport())
+        painter.save()
+        if hint:
+            painter.translate(0, -14)
+        painter.setPen(QColor("#64748b"))
+        f = self.font()
+        f.setPointSizeF(f.pointSizeF() + 3)
+        f.setBold(True)
+        painter.setFont(f)
+        painter.drawText(rect, Qt.AlignCenter, title)
+        if hint:
             painter.setPen(QColor("#94a3b8"))
-            f = self.font()
-            f.setPointSizeF(f.pointSizeF() + 1)
-            painter.setFont(f)
-            painter.drawText(self.viewport().rect(), Qt.AlignCenter, self.placeholder)
-            painter.restore()
+            hf = self.font()
+            hf.setBold(False)
+            painter.setFont(hf)
+            painter.drawText(rect.adjusted(0, 30, 0, 30), Qt.AlignCenter, hint)
+        painter.restore()
 
 
 class FlowLayout(QLayout):
