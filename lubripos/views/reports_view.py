@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -278,8 +279,12 @@ class ReportsView(QWidget):
             return   # cancelled the column picker
         ext = "pdf" if fmt == "pdf" else "xlsx"
         flt = "PDF files (*.pdf)" if fmt == "pdf" else "Excel files (*.xlsx)"
+        # Filename mirrors the report heading (e.g. "ZIC Stock Report" ->
+        # "ZIC_Stock_Report_20260826_....pdf"), so the saved file self-describes.
+        slug = re.sub(r"[^A-Za-z0-9]+", "_",
+                      report.get("title") or report["key"]).strip("_") or report["key"]
         suggested = str(Path.home() /
-                        f"{report['key']}_{datetime.now():%Y%m%d_%H%M%S}.{ext}")
+                        f"{slug}_{datetime.now():%Y%m%d_%H%M%S}.{ext}")
         chosen, _ = QFileDialog.getSaveFileName(self, "Save report as", suggested, flt)
         if not chosen:
             return   # user cancelled

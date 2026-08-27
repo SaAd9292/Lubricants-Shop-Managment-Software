@@ -326,6 +326,15 @@ class ReportService:
             clauses.append("p.id = ?")
             params.append(product_id)
         where = "WHERE " + " AND ".join(clauses)
+        # Heading reflects the filter: a brand shows "<Brand> Stock Report", and
+        # no brand filter (all brands) shows "Total Stock Report". This title is
+        # used verbatim on screen and in the PDF/Excel exports.
+        if brand_id:
+            brow = self.db.query_one("SELECT name FROM brands WHERE id = ?", (brand_id,))
+            bname = (brow["name"] if brow else "").strip()
+            title = f"{bname} Stock Report" if bname else "Stock Report"
+        else:
+            title = "Total Stock Report"
         rows = self.db.query(
             f"""SELECT p.sort_order, p.name, b.name AS brand, c.name AS category, p.stock_qty,
                   p.units_per_carton,
@@ -347,7 +356,7 @@ class ReportService:
             f"COALESCE(SUM(p.stock_qty*p.sale_price_minor),0) sale_val "
             f"FROM products p {where}", tuple(params))
         return {
-            "key": "stock", "title": "Stock Report", "subtitle": date.today().isoformat(),
+            "key": "stock", "title": title, "subtitle": date.today().isoformat(),
             "columns": [
                 _col("sort_order", "#", "right"),
                 _col("name", "Product"), _col("brand", "Brand"), _col("category", "Category"),
