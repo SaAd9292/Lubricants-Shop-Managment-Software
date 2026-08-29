@@ -4,14 +4,16 @@ from __future__ import annotations
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QHBoxLayout,
-    QHeaderView, QLabel, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
+from ..core.session import current_session
 from ..ui.widgets import DataTable, number_rows
 from ..controllers.purchase_controller import PurchaseController
 from .new_purchase_dialog import NewPurchaseDialog
+from .security_prompt import require_admin_password
 
 PAGE_SIZE = 25
 COLUMNS = ["Date", "Supplier", "Lines", "Total Qty", "Total", "Invoice #"]
@@ -85,6 +87,11 @@ class PurchasesView(QWidget):
         view_btn.setObjectName("Secondary")
         view_btn.clicked.connect(self._view_details)
         footer.addWidget(view_btn)
+        if current_session.is_admin:
+            self.del_btn = QPushButton("Delete purchase")
+            self.del_btn.setObjectName("Danger")
+            self.del_btn.clicked.connect(self._delete_selected)
+            footer.addWidget(self.del_btn)
         footer.addStretch(1)
         self.prev_btn = QPushButton("‹ Prev")
         self.prev_btn.setObjectName("Secondary")
@@ -180,6 +187,28 @@ class PurchasesView(QWidget):
             return
         data = self.controller.get(pid)
         PurchaseDetailDialog(data, self.controller.fmt).exec()
+
+    def _delete_selected(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            QMessageBox.information(self, "Select a purchase", "Please select a row first.")
+            return
+        confirm = QMessageBox.warning(
+            self, "Delete purchase",
+            "Permanently delete this purchase? The stock it added will be "
+            "removed, and its balance owed to the supplier is reversed. This "
+            "cannot be undone.\n\nIf any of these items were already sold, the "
+            "delete will be refused.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        if not require_admin_password(self, self.ctx):
+            return
+        ok, msg, _ = self.controller.delete(pid)
+        if ok:
+            self._reset_and_reload()
+        else:
+            QMessageBox.warning(self, "Could not delete", msg)
 
 
 class PurchaseDetailDialog(QDialog):

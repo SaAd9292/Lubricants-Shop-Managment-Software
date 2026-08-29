@@ -75,6 +75,12 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(__app_name__)
 
+    # stop stray mouse-wheel scrolls from silently changing amounts/qty/dates in
+    # spin boxes, combo boxes and date fields (must outlive the app -> local ref)
+    from lubripos.ui.wheel_guard import WheelGuard
+    wheel_guard = WheelGuard()
+    app.installEventFilter(wheel_guard)
+
     icon = QIcon(str(resource_path("assets", "penguix.ico")))
     if not icon.isNull():
         app.setWindowIcon(icon)   # applies to every window + the taskbar

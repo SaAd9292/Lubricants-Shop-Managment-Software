@@ -81,13 +81,15 @@ class PayablesView(QWidget):
         self.table.placeholder = "No supplier balances to show."
         self.table.setHorizontalHeaderLabels([c[0] for c in COLUMNS])
         self.table.verticalHeader().setVisible(False)
+        # rows carry a "Record payment" button; give them height so it isn't clipped
+        self.table.verticalHeader().setDefaultSectionSize(44)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.Stretch)
         hh.setSectionResizeMode(5, QHeaderView.Fixed)
-        self.table.setColumnWidth(5, 140)
+        self.table.setColumnWidth(5, 172)
         self.table.doubleClicked.connect(lambda: self._open_ledger())
         root.addWidget(self.table, 1)
 
@@ -118,9 +120,17 @@ class PayablesView(QWidget):
             if self._is_admin:
                 btn = QPushButton("Record payment")
                 btn.setObjectName("Success")
+                btn.setFixedHeight(30)
+                btn.setCursor(Qt.PointingHandCursor)
                 btn.clicked.connect(lambda _=False, sid=s["id"], nm=s["name"],
                                     bal=s["balance"]: self._record_payment(sid, nm, bal))
-                self.table.setCellWidget(r, 5, btn)
+                # wrap with margins so the button sits INSIDE the cell (never
+                # touching/overflowing the table's right edge)
+                wrap = QWidget()
+                wl = QHBoxLayout(wrap)
+                wl.setContentsMargins(4, 3, 8, 3)
+                wl.addWidget(btn)
+                self.table.setCellWidget(r, 5, wrap)
 
     def _selected(self) -> tuple[int, str] | None:
         row = self.table.currentRow()

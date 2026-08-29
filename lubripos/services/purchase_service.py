@@ -133,6 +133,46 @@ class PurchaseService:
                  purchase_id, len(norm), total)
         return purchase_id
 
+    def delete_purchase(self, purchase_id: int, *, user_id: int | None = None) -> None:
+        """Permanently delete a purchase and reverse the stock it added.
+
+        Safety: if any of the purchased units have since been sold (reversing
+        would drive a product's stock below zero), the delete is refused — the
+        admin must reverse those sales or adjust stock first. Product cost/sale
+        prices that the purchase set are left as-is (the prior values aren't
+        stored). Linked supplier payments are kept (their purchase link is
+        cleared) so the supplier balance stays correct; only this purchase's
+        liability is removed. purchase_items cascade-delete with the row.
+        """
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT id FROM purchases WHERE id = ?", (purchase_id,)).fetchone()
+            if row is None:
+                raise NotFoundError(f"Purchase {purchase_id} not found")
+            items = conn.execute(
+                "SELECT product_id, qty FROM purchase_items WHERE purchase_id = ?",
+                (purchase_id,)).fetchall()
+            # pre-check: reversing must not take any product's stock negative
+            for it in items:
+                prow = conn.execute(
+                    "SELECT name, stock_qty FROM products WHERE id = ?",
+                    (it["product_id"],)).fetchone()
+                if prow is not None and it["qty"] > prow["stock_qty"]:
+                    raise ValidationError(
+                        f"Can't delete: '{prow['name']}' has only {prow['stock_qty']} "
+                        f"in stock but this purchase added {it['qty']} — some have "
+                        "already been sold. Reverse those sales or adjust stock first.")
+            for it in items:
+                conn.execute(
+                    "UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?",
+                    (it["qty"], it["product_id"]))
+            conn.execute("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+        self.audit.record(action="DELETE_PURCHASE", user_id=user_id,
+                          entity_type="purchase", entity_id=purchase_id,
+                          details={"lines": len(items)})
+        log.warning("Deleted purchase id=%s; stock reversed (%d lines)",
+                    purchase_id, len(items))
+
     # -- reads --------------------------------------------------------
     def list_purchases(
         self,

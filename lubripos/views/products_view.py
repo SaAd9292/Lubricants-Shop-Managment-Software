@@ -160,6 +160,8 @@ class ProductsView(QWidget):
         self.table.setHorizontalHeaderLabels([c[0] for c in COLUMNS])
         self.table.setColumnHidden(len(COLUMNS) - 1, True)  # Save col: only in edit mode
         self.table.verticalHeader().setVisible(False)
+        # rows carry inline price/stock spin boxes; keep them from clipping
+        self.table.verticalHeader().setDefaultSectionSize(42)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)

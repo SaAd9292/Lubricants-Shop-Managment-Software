@@ -73,6 +73,13 @@ class PurchaseController:
             )
         return self._guarded(op)
 
+    def delete(self, purchase_id: int):
+        """Permanently delete a purchase and reverse its stock (admin only). The
+        UI also requires the admin's password before calling this."""
+        return self._guarded(
+            lambda uid: self.purchases.delete_purchase(purchase_id, user_id=uid)
+            or purchase_id)
+
     def _guarded(self, op):
         try:
             user = current_session.require_role("admin")

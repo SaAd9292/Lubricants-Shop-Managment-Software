@@ -80,6 +80,8 @@ class ExpensesView(QWidget):
                                    'Click "+ Add Expense" to record one.')
         self.table.setHorizontalHeaderLabels(COLUMNS)
         self.table.verticalHeader().setVisible(False)
+        # rows carry inline edit/delete buttons; keep them from clipping
+        self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)

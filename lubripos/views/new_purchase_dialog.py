@@ -52,6 +52,8 @@ class NewPurchaseDialog(QDialog):
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("yyyy-MM-dd")
         self.date.setDate(QDate.currentDate())
+        # stock can't be received in the future — cap at today
+        self.date.setMaximumDate(QDate.currentDate())
         self.invoice_no = QLineEdit()
         self.invoice_no.setPlaceholderText("Supplier's invoice/bill no (optional)")
         self.notes = QLineEdit()
@@ -90,6 +92,9 @@ class NewPurchaseDialog(QDialog):
             ["Product", "Qty (ctn + pc)", f"Unit cost/pc ({self._symbol})", "Line total"]
         )
         self.table.verticalHeader().setVisible(False)
+        # rows hold spin-box cell widgets; give them room so the ctn/pc and cost
+        # editors aren't vertically clipped
+        self.table.verticalHeader().setDefaultSectionSize(46)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setColumnWidth(1, 180)

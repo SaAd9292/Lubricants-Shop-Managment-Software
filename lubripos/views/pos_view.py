@@ -357,18 +357,33 @@ class POSView(QWidget):
             rows = self.controller.search_products("", None, 100000)
         except TypeError:
             rows = self.controller.search_products("")
-        self._name_index = {}
-        names: list[str] = []
+        self._name_index = {}       # exact name -> product (barcode/name fallback)
+        self._suggest_index = {}     # shown label -> product (type-ahead pick)
+        labels: list[str] = []
         for p in rows:
             key = (p["name"] or "").lower()
             if key and key not in self._name_index:
                 self._name_index[key] = p
-                names.append(p["name"])
-        self._suggest.setModel(QStringListModel(names, self._suggest))
+            label = self._suggest_label(p)
+            lkey = label.lower()
+            if lkey and lkey not in self._suggest_index:
+                self._suggest_index[lkey] = p
+                labels.append(label)
+        self._suggest.setModel(QStringListModel(labels, self._suggest))
+
+    @staticmethod
+    def _suggest_label(p: dict) -> str:
+        """Type-ahead text: always show the brand alongside the product name, so
+        the cashier can tell same-named products apart (and can type the brand to
+        filter). Falls back to just the name when a product has no brand."""
+        name = p.get("name") or ""
+        brand = (p.get("brand_name") or "").strip()
+        return f"{name}  ·  {brand}" if brand else name
 
     def _on_suggestion(self, text: str) -> None:
-        """A product name was picked from the type-ahead list -> add it."""
-        p = self._name_index.get((text or "").strip().lower())
+        """A product was picked from the type-ahead list -> add it."""
+        key = (text or "").strip().lower()
+        p = self._suggest_index.get(key) or self._name_index.get(key)
         if p:
             self._add_product(p)
         self.barcode.clear()
@@ -672,6 +687,7 @@ class _ReorderDialog:
         self.tbl = QTableWidget(len(products), 4)
         self.tbl.setHorizontalHeaderLabels(["", "Product", "Price", "Qty"])
         self.tbl.verticalHeader().setVisible(False)
+        self.tbl.verticalHeader().setDefaultSectionSize(40)  # fit the qty spin box
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.tbl.setColumnWidth(0, 34)

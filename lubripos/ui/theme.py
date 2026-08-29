@@ -199,7 +199,7 @@ QHeaderView::section {{
 }}
 QTableWidget, QTableView {{
     background: {t['card_bg']}; color: {t['ink']};
-    gridline-color: {t['grid']}; border: 1px solid {t['table_border']}; border-radius: 10px;
+    gridline-color: {t['grid']}; border: 1px solid {t['table_border']};
     selection-background-color: {t['accent_soft']}; selection-color: {t['ink']};
     alternate-background-color: {t['table_alt']};
 }}
