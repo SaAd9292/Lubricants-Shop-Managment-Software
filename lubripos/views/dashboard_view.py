@@ -501,6 +501,18 @@ class DashboardView(QWidget):
         self._update_banner.hide()
         root.addWidget(self._update_banner)
 
+        # negative-stock alert (hidden unless a product sits below zero)
+        self._neg_banner = QPushButton("")
+        self._neg_banner.setCursor(Qt.PointingHandCursor)
+        self._neg_banner.setStyleSheet(
+            "QPushButton{background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;"
+            "border-radius:8px;padding:9px 14px;text-align:left;font-weight:600;}"
+            "QPushButton:hover{background:#fee2e2;}")
+        self._neg_banner.clicked.connect(
+            lambda: self.navigate("products") if self.navigate else None)
+        self._neg_banner.hide()
+        root.addWidget(self._neg_banner)
+
         nav = self.navigate
         grid = QGridLayout()
         grid.setSpacing(18)
@@ -638,11 +650,25 @@ class DashboardView(QWidget):
               m(r["grand_total_minor"])) for r in sales],
             "No sales yet today.")
 
-        low = self.svc.recent_low_stock(6)
-        self.low_card.set_rows(
-            [(r["name"], f"{r['stock_qty']} / {r['min_stock_level']}", "#dc2626")
-             for r in low],
-            "Nothing low on stock.")
+        # negative-stock alert banner + fold negatives into the low-stock list
+        neg = self.svc.negative_stock(8)
+        neg_count = self.svc.negative_stock_count()
+        if neg_count:
+            shown = ", ".join(f"{r['name']} ({r['stock_qty']})" for r in neg[:4])
+            more = "" if neg_count <= 4 else f"   +{neg_count - 4} more"
+            self._neg_banner.setText(
+                f"⚠  {neg_count} product(s) at negative stock — sold from the "
+                f"warehouse, awaiting purchase:   {shown}{more}")
+            self._neg_banner.show()
+        else:
+            self._neg_banner.hide()
+
+        neg_names = {r["name"] for r in neg}
+        low = [r for r in self.svc.recent_low_stock(8) if r["name"] not in neg_names]
+        rows = [(r["name"], str(r["stock_qty"]), "#dc2626") for r in neg]
+        rows += [(r["name"], f"{r['stock_qty']} / {r['min_stock_level']}", "#dc2626")
+                 for r in low]
+        self.low_card.set_rows(rows[:8], "Nothing low on stock.")
 
         series = self.svc.sales_series(7)
         total = sum(x.get("total", 0) for x in series)

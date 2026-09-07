@@ -45,25 +45,61 @@ def _currency(company: dict) -> tuple[str, int, int]:
 _METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
 
 
+def _content_col_widths(cols, rows, avail, symbol, mu, font_size=8):
+    """Give every column at least the width its OWN widest content needs on a
+    single line, so cells don't wrap and EVERY row is the same (single-line)
+    height. Numeric columns keep full width; leftover goes to text columns. If
+    the row genuinely can't fit the page width, everything scales down together."""
+    def disp(c, val):
+        if val is None:
+            return ""
+        return format_money(int(val or 0), symbol, mu) if c.get("money") else str(val)
+
+    char_w = font_size * 0.62
+    pad = 10
+    mins, is_text = [], []
+    for c in cols:
+        widest = len(str(c.get("label", "")))
+        for row in rows:
+            widest = max(widest, len(disp(c, row.get(c["key"]))))
+        mins.append(max(widest, 2) * char_w + pad)
+        is_text.append(c.get("align", "left") != "right")
+
+    total_min = sum(mins) or 1
+    num_min = sum(m for m, t in zip(mins, is_text) if not t)
+    text_min = sum(m for m, t in zip(mins, is_text) if t)
+    if total_min >= avail:
+        if any(is_text) and num_min < avail and text_min > 0:
+            room = avail - num_min
+            return [m if not t else max(room * m / text_min, 6 * char_w)
+                    for m, t in zip(mins, is_text)]
+        return [avail * m / total_min for m in mins]
+    extra = avail - total_min
+    text_weight = text_min or total_min
+    any_text = any(is_text)
+    return [m + (extra * m / text_weight if (t or not any_text) else 0)
+            for m, t in zip(mins, is_text)]
+
+
 def _box_style():
     return TableStyle([
         ("BOX", (0, 0), (-1, -1), 0.4, LINE),
         ("INNERGRID", (0, 0), (-1, -1), 0.3, LINE),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 7),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
     ])
 
 
-def _multi_pdf(story, report, symbol, mu, cell, with_cards):
+def _multi_pdf(story, report, symbol, mu, cell, with_cards, avail=760):
     """Append a multi-section report to a story. with_cards=True adds the
     day-close KPI + payment strip; with_cards=False appends a summary block."""
     def money(v):
         return format_money(int(v or 0), symbol, mu)
 
-    hsec = ParagraphStyle("sec", parent=cell, fontSize=11, leading=14,
-                          spaceBefore=6, spaceAfter=2)
+    hsec = ParagraphStyle("sec", parent=cell, fontSize=9.5, leading=11,
+                          spaceBefore=4, spaceAfter=1)
 
     if with_cards:
         kpi_cells = []
@@ -114,20 +150,23 @@ def _multi_pdf(story, report, symbol, mu, cell, with_cards):
                       + [Paragraph(f"<b>{money(sec['total'])}</b>", cell)])
         data.append(total_line)
         aligns = [c.get("align", "left").upper() for c in cols]
-        tbl = Table(data, repeatRows=1, hAlign="LEFT")
+        col_widths = _content_col_widths(cols, sec["rows"], avail, symbol, mu)
+        tbl = Table(data, repeatRows=1, hAlign="LEFT", colWidths=col_widths)
         style = [
             ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
             ("ROWBACKGROUNDS", (0, 1), (-1, -2), [colors.white, colors.HexColor("#f2f2f2")]),
             ("LINEABOVE", (0, -1), (-1, -1), 0.5, LINE),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ]
         for idx, a in enumerate(aligns):
             style.append(("ALIGN", (idx, 0), (idx, -1), a))
         tbl.setStyle(TableStyle(style))
         story.append(tbl)
-        story.append(Spacer(1, 8))
+        story.append(Spacer(1, 4))
 
     if not with_cards:
         summ_rows = []
@@ -153,19 +192,21 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
     symbol, mu, _ = _currency(company)
 
     styles = getSampleStyleSheet()
-    h_shop = ParagraphStyle("shop", parent=styles["Title"], fontSize=16, alignment=TA_LEFT,
-                            textColor=colors.black, spaceAfter=0)
-    h_title = ParagraphStyle("title", parent=styles["Title"], fontSize=15, alignment=TA_LEFT,
-                             textColor=ACCENT, spaceBefore=2)
-    p_muted = ParagraphStyle("muted", parent=styles["Normal"], fontSize=9, textColor=MUTED)
-    cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=9, leading=11)
+    # Compact by design: small headings, tight leading and margins so many more
+    # rows fit per page (less paper for the same data).
+    h_shop = ParagraphStyle("shop", parent=styles["Title"], fontSize=13, alignment=TA_LEFT,
+                            textColor=colors.black, spaceAfter=0, leading=15)
+    h_title = ParagraphStyle("title", parent=styles["Title"], fontSize=12, alignment=TA_LEFT,
+                             textColor=ACCENT, spaceBefore=1, leading=14)
+    p_muted = ParagraphStyle("muted", parent=styles["Normal"], fontSize=8, textColor=MUTED)
+    cell = ParagraphStyle("cell", parent=styles["Normal"], fontSize=8, leading=9.5)
 
-    # Page orientation: landscape by default (wide, multi-column reports), but a
-    # report can request portrait via report["orientation"] = "portrait".
-    page = A4 if str(report.get("orientation")).lower() == "portrait" else landscape(A4)
+    # Page orientation: PORTRAIT by default (the shop prints on portrait paper);
+    # a very wide report can still opt in with report["orientation"] = "landscape".
+    page = landscape(A4) if str(report.get("orientation")).lower() == "landscape" else A4
     doc = SimpleDocTemplate(
         str(output_path), pagesize=page,
-        leftMargin=14 * mm, rightMargin=14 * mm, topMargin=14 * mm, bottomMargin=14 * mm,
+        leftMargin=10 * mm, rightMargin=10 * mm, topMargin=10 * mm, bottomMargin=10 * mm,
         title=report["title"],
     )
     story: list = [
@@ -173,12 +214,12 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
         Paragraph(report["title"], h_title),
         Paragraph(f"{report.get('subtitle','')} &nbsp;&nbsp;|&nbsp;&nbsp; "
                   f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}", p_muted),
-        Spacer(1, 8),
+        Spacer(1, 4),
     ]
 
     if report.get("layout") in ("day_close", "sections"):
         _multi_pdf(story, report, symbol, mu, cell,
-                   with_cards=report.get("layout") == "day_close")
+                   with_cards=report.get("layout") == "day_close", avail=doc.width)
         doc.build(story)
         return str(output_path)
 
@@ -201,21 +242,24 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
                           + [Paragraph("", cell)] * (len(cols) - 1))
 
     aligns = [c.get("align", "left").upper() for c in cols]
-    tbl = Table(table_data, repeatRows=1, hAlign="LEFT")
+    col_widths = _content_col_widths(cols, report["rows"], doc.width, symbol, mu)
+    tbl = Table(table_data, repeatRows=1, hAlign="LEFT", colWidths=col_widths)
     style = [
         ("BACKGROUND", (0, 0), (-1, 0), HEADER_BG),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f2f2f2")]),
         ("LINEBELOW", (0, -1), (-1, -1), 0.4, LINE),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
     for i, a in enumerate(aligns):
         style.append(("ALIGN", (i, 0), (i, -1), a))
     tbl.setStyle(TableStyle(style))
     story.append(tbl)
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 6))
 
     # summary block
     summ_rows = []
@@ -227,8 +271,8 @@ def to_pdf(report: dict[str, Any], company: dict[str, Any], output_path: str | P
         summ.setStyle(TableStyle([
             ("ALIGN", (1, 0), (1, -1), "RIGHT"),
             ("LINEABOVE", (0, 0), (-1, 0), 0.5, LINE),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
         ]))
         story.append(summ)
 

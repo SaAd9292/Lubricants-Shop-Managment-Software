@@ -10,6 +10,7 @@ import calendar
 from datetime import date
 from typing import Any
 
+from ..core.exceptions import NotFoundError
 from ..core.packs import split_packs
 from ..database.connection import Database
 
@@ -121,6 +122,15 @@ class ReportService:
         repay_today = self.db.query_one(
             "SELECT COALESCE(SUM(amount_minor),0) v FROM customer_payments "
             "WHERE payment_date LIKE ?", (like,))["v"]
+        # customer debt repayments today, itemised by WHO paid (separate from sales)
+        repay_rows = [dict(r) for r in self.db.query(
+            """SELECT substr(cp.payment_date,12,5) AS time,
+                  COALESCE(c.name, '(removed)') AS customer,
+                  COALESCE(cp.method, 'Cash') AS method,
+                  cp.amount_minor AS amount
+               FROM customer_payments cp
+               LEFT JOIN customers c ON c.id = cp.customer_id
+               WHERE cp.payment_date LIKE ? ORDER BY cp.id""", (like,))]
 
         # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
@@ -168,6 +178,12 @@ class ReportService:
                              _col("amount", "Refund", "right", True)],
                  "rows": ret_rows,
                  "total_label": "Total refunds", "total": refunds_total},
+                {"name": "Customer debt repayments",
+                 "columns": [_col("time", "Time"), _col("customer", "Customer"),
+                             _col("method", "Method"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": repay_rows,
+                 "total_label": "Total repayments", "total": repay_today},
                 {"name": "Money received",
                  "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],
@@ -397,6 +413,111 @@ class ReportService:
             ],
             "rows": data,
             "summary": [{"label": "Products at/below minimum", "value": len(data), "money": False}],
+        }
+
+    # ---- Product History (one product: purchases, sales, returns) ---
+    def product_history(self, product_id: int, date_from: str,
+                        date_to: str) -> dict[str, Any]:
+        """Everything that happened to ONE product in a date range: its
+        purchases, sales and returns, each itemised, plus a movement summary."""
+        lo, hi = date_from, date_to + " 23:59:59"
+        prod = self.db.query_one(
+            "SELECT name, stock_qty, units_per_carton FROM products WHERE id = ?",
+            (product_id,))
+        if prod is None:
+            raise NotFoundError(f"Product {product_id} not found")
+        name = prod["name"]
+
+        purchases = [dict(r) for r in self.db.query(
+            """SELECT substr(p.purchase_date,1,10) AS date,
+                  COALESCE(s.name,'—') AS supplier, pi.qty AS qty,
+                  pi.unit_cost_minor AS cost, pi.discount_minor AS disc,
+                  pi.line_total_minor AS amount
+               FROM purchase_items pi JOIN purchases p ON p.id = pi.purchase_id
+               LEFT JOIN suppliers s ON s.id = p.supplier_id
+               WHERE pi.product_id = ? AND p.purchase_date BETWEEN ? AND ?
+               ORDER BY p.purchase_date, p.id""", (product_id, lo, hi))]
+        sales = [dict(r) for r in self.db.query(
+            """SELECT substr(s.sale_date,1,10) AS date, s.invoice_no AS invoice,
+                  COALESCE(s.customer_name,'') AS customer, si.qty AS qty,
+                  si.unit_price_minor AS price, si.discount_minor AS disc,
+                  si.line_total_minor AS amount
+               FROM sale_items si JOIN sales s ON s.id = si.sale_id
+               WHERE si.product_id = ? AND s.status='completed'
+                 AND s.sale_date BETWEEN ? AND ?
+               ORDER BY s.sale_date, s.id""", (product_id, lo, hi))]
+        returns = [dict(r) for r in self.db.query(
+            """SELECT substr(sr.return_date,1,10) AS date, sri.qty AS qty,
+                  sri.line_total_minor AS amount
+               FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+               WHERE sri.product_id = ? AND sr.return_date BETWEEN ? AND ?
+               ORDER BY sr.return_date, sr.id""", (product_id, lo, hi))]
+
+        bought_qty = sum(r["qty"] for r in purchases)
+        bought_val = sum(r["amount"] for r in purchases)
+        sold_qty = sum(r["qty"] for r in sales)
+        sold_val = sum(r["amount"] for r in sales)
+        ret_qty = sum(r["qty"] for r in returns)
+        ret_val = sum(r["amount"] for r in returns)
+        # gross profit on the sales in range (line total - snapshot cost), net of
+        # the margin on anything returned
+        sale_margin = self.db.query_one(
+            """SELECT COALESCE(SUM(si.line_total_minor - si.unit_cost_minor*si.qty),0) m
+               FROM sale_items si JOIN sales s ON s.id = si.sale_id
+               WHERE si.product_id = ? AND s.status='completed'
+                 AND s.sale_date BETWEEN ? AND ?""", (product_id, lo, hi))["m"]
+        ret_margin = self.db.query_one(
+            """SELECT COALESCE(SUM(sri.line_total_minor - sri.unit_cost_minor*sri.qty),0) m
+               FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
+               WHERE sri.product_id = ? AND sr.return_date BETWEEN ? AND ?""",
+            (product_id, lo, hi))["m"]
+        net_change = bought_qty - sold_qty + ret_qty
+
+        return {
+            "key": "product_history",
+            "title": f"Product History — {name}",
+            "subtitle": f"{date_from} to {date_to}", "layout": "sections",
+            "columns": [_col("date", "Date"), _col("invoice", "Invoice"),
+                        _col("qty", "Qty", "right"),
+                        _col("amount", "Amount", "right", True)],
+            "rows": sales,
+            "sections": [
+                {"name": "Purchases",
+                 "columns": [_col("date", "Date"), _col("supplier", "Supplier"),
+                             _col("qty", "Qty", "right"),
+                             _col("cost", "Unit cost", "right", True),
+                             _col("disc", "Disc", "right", True),
+                             _col("amount", "Line total", "right", True)],
+                 "rows": purchases,
+                 "total_label": "Total purchased", "total": bought_val},
+                {"name": "Sales",
+                 "columns": [_col("date", "Date"), _col("invoice", "Invoice"),
+                             _col("customer", "Customer"), _col("qty", "Qty", "right"),
+                             _col("price", "Unit price", "right", True),
+                             _col("disc", "Disc", "right", True),
+                             _col("amount", "Line total", "right", True)],
+                 "rows": sales,
+                 "total_label": "Total sold", "total": sold_val},
+                {"name": "Returns",
+                 "columns": [_col("date", "Date"), _col("qty", "Qty", "right"),
+                             _col("amount", "Refund", "right", True)],
+                 "rows": returns,
+                 "total_label": "Total refunded", "total": ret_val},
+            ],
+            "summary": [
+                {"label": "Purchased (qty)", "value": bought_qty, "money": False},
+                {"label": "Purchased (value)", "value": bought_val, "money": True},
+                {"label": "Sold (qty)", "value": sold_qty, "money": False},
+                {"label": "Sold (revenue)", "value": sold_val, "money": True},
+                {"label": "Returned (qty)", "value": ret_qty, "money": False},
+                {"label": "Returned (refunds)", "value": ret_val, "money": True},
+                {"label": "Gross profit on sales", "value": sale_margin - ret_margin,
+                 "money": True},
+                {"label": "Net stock change in range", "value": net_change,
+                 "money": False},
+                {"label": "Current stock (now)", "value": prod["stock_qty"],
+                 "money": False},
+            ],
         }
 
     # ---- 6. Purchase Report (itemized) -----------------------------

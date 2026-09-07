@@ -216,7 +216,7 @@ class PurchaseDetailDialog(QDialog):
         super().__init__()
         self._fmt = fmt_fn
         self.setWindowTitle(f"Purchase #{purchase['id']}")
-        self.setMinimumSize(560, 420)
+        self.setMinimumSize(620, 460)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
 
@@ -230,29 +230,43 @@ class PurchaseDetailDialog(QDialog):
         root.addWidget(meta)
 
         items = purchase.get("items", [])
-        table = QTableWidget(len(items), 4)
-        table.setHorizontalHeaderLabels(["Product", "Qty", "Unit cost", "Line total"])
+        table = QTableWidget(len(items), 5)
+        table.setHorizontalHeaderLabels(
+            ["Product", "Qty", "Unit cost", "Disc", "Line total"])
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         for r, it in enumerate(items):
+            d = it.get("discount_minor", 0) or 0
             cells = [
                 it.get("product_name") or "(removed product)",
                 str(it["qty"]),
                 self._fmt(it["unit_cost_minor"]),
+                ("− " + self._fmt(d)) if d else "—",
                 self._fmt(it["line_total_minor"]),
             ]
             for c, val in enumerate(cells):
                 cell = QTableWidgetItem(val)
-                if c in (1, 2, 3):
+                if c in (1, 2, 3, 4):
                     cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 table.setItem(r, c, cell)
         root.addWidget(table, 1)
 
-        total = QLabel("Total:  " + self._fmt(purchase["total_minor"]))
-        total.setStyleSheet("font-size: 16px; font-weight: 700;")
-        total.setAlignment(Qt.AlignRight)
-        root.addWidget(total)
+        # itemised totals: gross subtotal -> line discounts -> bill discount -> total
+        gross = sum(it["qty"] * it["unit_cost_minor"] for it in items)
+        line_disc = sum((it.get("discount_minor", 0) or 0) for it in items)
+        bill_disc = purchase.get("discount_minor", 0) or 0
+        lines = [f"Subtotal (before discount):&nbsp;&nbsp; {self._fmt(gross)}"]
+        if line_disc:
+            lines.append(f"Line discounts:&nbsp;&nbsp; − {self._fmt(line_disc)}")
+        if bill_disc:
+            lines.append(f"Bill discount:&nbsp;&nbsp; − {self._fmt(bill_disc)}")
+        lines.append(f"<b>Total:&nbsp;&nbsp; {self._fmt(purchase['total_minor'])}</b>")
+        summary = QLabel("<br>".join(lines))
+        summary.setTextFormat(Qt.RichText)
+        summary.setAlignment(Qt.AlignRight)
+        summary.setStyleSheet("font-size: 14px;")
+        root.addWidget(summary)
 
         close = QPushButton("Close")
         close.clicked.connect(self.accept)

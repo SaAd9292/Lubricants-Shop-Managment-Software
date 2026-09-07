@@ -242,12 +242,13 @@ class ProductService:
         """Set a product's stock to a counted/corrected value (stock-take).
 
         Unlike purchases/sales this is a manual override, so it records the
-        before/after and a reason to the audit log for accountability.
+        before/after and a reason to the audit log for accountability. A negative
+        target is allowed (e.g. an opening balance for stock already sold from
+        the distribution warehouse but not yet billed); it nets back up when that
+        purchase is entered.
         """
         product = self.get(product_id)  # raises NotFoundError if missing
         new_qty = int(new_qty)
-        if new_qty < 0:
-            raise ValidationError("Stock quantity cannot be negative.")
         old_qty = product["stock_qty"]
         self.db.execute(
             "UPDATE products SET stock_qty = ? WHERE id = ?", (new_qty, product_id))

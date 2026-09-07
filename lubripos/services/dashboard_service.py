@@ -35,11 +35,17 @@ class DashboardService:
             "SELECT COALESCE(SUM(grand_total_minor),0) AS total, COUNT(*) AS n "
             "FROM sales WHERE status='completed' AND sale_date >= ?", (start,),
         )
-        profit = self.db.query_one(
-            "SELECT COALESCE(SUM((si.unit_price_minor - si.unit_cost_minor) * si.qty),0) AS profit "
+        # Profit is net of BOTH discounts: line_total_minor already has the
+        # per-line discount taken off; the whole-bill discount is subtracted once
+        # per sale from the sales header.
+        line_margin = self.db.query_one(
+            "SELECT COALESCE(SUM(si.line_total_minor - si.unit_cost_minor*si.qty),0) AS m "
             "FROM sale_items si JOIN sales s ON s.id = si.sale_id "
-            "WHERE s.status='completed' AND s.sale_date >= ?", (start,),
-        )
+            "WHERE s.status='completed' AND s.sale_date >= ?", (start,))["m"]
+        bill_disc = self.db.query_one(
+            "SELECT COALESCE(SUM(discount_minor),0) AS d FROM sales "
+            "WHERE status='completed' AND sale_date >= ?", (start,))["d"]
+        profit = {"profit": line_margin - bill_disc}
         expenses = self.db.query_one(
             "SELECT COALESCE(SUM(amount_minor),0) AS total FROM expenses "
             "WHERE expense_date >= ?", (start,),
@@ -99,14 +105,19 @@ class DashboardService:
         sales = self.db.query_one(
             "SELECT COALESCE(SUM(grand_total_minor),0) AS t FROM sales s "
             "WHERE s.status='completed' AND " + scond, tuple(sparams))
-        profit = self.db.query_one(
-            "SELECT COALESCE(SUM((si.unit_price_minor - si.unit_cost_minor) * si.qty),0) AS t "
+        # profit net of per-line discounts (in line_total) and bill discounts
+        line_margin = self.db.query_one(
+            "SELECT COALESCE(SUM(si.line_total_minor - si.unit_cost_minor*si.qty),0) AS t "
             "FROM sale_items si JOIN sales s ON s.id = si.sale_id "
-            "WHERE s.status='completed' AND " + scond, tuple(sparams))
+            "WHERE s.status='completed' AND " + scond, tuple(sparams))["t"]
+        bill_disc = self.db.query_one(
+            "SELECT COALESCE(SUM(discount_minor),0) AS d FROM sales s "
+            "WHERE s.status='completed' AND " + scond, tuple(sparams))["d"]
         exp = self.db.query_one(
             "SELECT COALESCE(SUM(amount_minor),0) AS t FROM expenses WHERE " + econd,
             tuple(eparams))
-        return {"sales": sales["t"], "profit": profit["t"], "expenses": exp["t"]}
+        return {"sales": sales["t"], "profit": line_margin - bill_disc,
+                "expenses": exp["t"]}
 
     def deltas(self, period: str = "today") -> dict[str, Any]:
         """Percent change of sales/profit/expenses vs the previous equal window.
@@ -163,6 +174,20 @@ class DashboardService:
             "FROM sales WHERE status='completed' ORDER BY id DESC LIMIT ?",
             (limit,),
         )
+        return [dict(r) for r in rows]
+
+    def negative_stock_count(self) -> int:
+        return self.db.query_one(
+            "SELECT COUNT(*) AS n FROM products WHERE is_active=1 AND stock_qty < 0"
+        )["n"]
+
+    def negative_stock(self, limit: int = 8) -> list[dict]:
+        """Active products currently at negative stock (sold from the warehouse
+        before their purchase was booked), most negative first."""
+        rows = self.db.query(
+            "SELECT name, stock_qty FROM products "
+            "WHERE is_active=1 AND stock_qty < 0 "
+            "ORDER BY stock_qty ASC, name COLLATE NOCASE LIMIT ?", (limit,))
         return [dict(r) for r in rows]
 
     def recent_low_stock(self, limit: int = 6) -> list[dict]:

@@ -63,6 +63,15 @@ class NewPurchaseDialog(QDialog):
         form.addRow("Supplier invoice #", self.invoice_no)
         form.addRow("Notes", self.notes)
 
+        # whole-bill discount, on top of any per-line discounts
+        self.bill_disc = QDoubleSpinBox()
+        self.bill_disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.bill_disc.setDecimals(self._decimals)
+        self.bill_disc.setGroupSeparatorShown(True)
+        self.bill_disc.setRange(0, 1_000_000_000)
+        self.bill_disc.valueChanged.connect(self._recompute)
+        form.addRow(f"Bill discount ({self._symbol})", self.bill_disc)
+
         # amount paid now -> the remainder becomes a payable owed to the supplier
         self.paid = QDoubleSpinBox()
         self.paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
@@ -87,9 +96,10 @@ class NewPurchaseDialog(QDialog):
         root.addLayout(form)
 
         # line items table
-        self.table = QTableWidget(0, 4)
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
-            ["Product", "Qty (ctn + pc)", f"Unit cost/pc ({self._symbol})", "Line total"]
+            ["Product", "Qty (ctn + pc)", f"Unit cost/pc ({self._symbol})",
+             f"Disc ({self._symbol})", "Line total"]
         )
         self.table.verticalHeader().setVisible(False)
         # rows hold spin-box cell widgets; give them room so the ctn/pc and cost
@@ -97,9 +107,10 @@ class NewPurchaseDialog(QDialog):
         self.table.verticalHeader().setDefaultSectionSize(46)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.setColumnWidth(1, 180)
-        self.table.setColumnWidth(2, 130)
-        self.table.setColumnWidth(3, 110)
+        self.table.setColumnWidth(1, 168)
+        self.table.setColumnWidth(2, 120)
+        self.table.setColumnWidth(3, 100)
+        self.table.setColumnWidth(4, 110)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         root.addWidget(self.table, 1)
 
@@ -157,9 +168,18 @@ class NewPurchaseDialog(QDialog):
         cost.valueChanged.connect(self._recompute)
         self.table.setCellWidget(row, 2, cost)
 
+        disc = QDoubleSpinBox()
+        disc.setRange(0, 1_000_000_000)
+        disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        disc.setDecimals(self._decimals)
+        disc.setGroupSeparatorShown(True)
+        disc.setToolTip("Discount off this line (amount)")
+        disc.valueChanged.connect(self._recompute)
+        self.table.setCellWidget(row, 3, disc)
+
         total_item = QTableWidgetItem("")
         total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.table.setItem(row, 3, total_item)
+        self.table.setItem(row, 4, total_item)
 
         self._recompute()
 
@@ -172,19 +192,26 @@ class NewPurchaseDialog(QDialog):
     def _recompute(self) -> None:
         if self._updating:
             return
-        grand = 0
+        subtotal = 0
         for row in range(self.table.rowCount()):
             qty_w = self.table.cellWidget(row, 1)
             cost_w = self.table.cellWidget(row, 2)
+            disc_w = self.table.cellWidget(row, 3)
             if qty_w is None or cost_w is None:
                 continue
             qty = qty_w.total_pieces()
             unit_minor = money.to_minor(cost_w.value(), self._minor_units)
-            line_minor = qty * unit_minor
-            grand += line_minor
-            self.table.item(row, 3).setText(
+            gross = qty * unit_minor
+            line_disc = money.to_minor(disc_w.value(), self._minor_units) if disc_w else 0
+            line_disc = min(line_disc, gross)
+            line_minor = gross - line_disc
+            subtotal += line_minor
+            self.table.item(row, 4).setText(
                 money.format_money(line_minor, self._symbol, self._minor_units)
             )
+        bill_disc = money.to_minor(self.bill_disc.value(), self._minor_units)
+        bill_disc = min(bill_disc, subtotal)
+        grand = subtotal - bill_disc
         self._grand_minor = grand
         if not self._paid_touched:
             self._updating = True
@@ -234,10 +261,12 @@ class NewPurchaseDialog(QDialog):
                 QMessageBox.warning(self, "Quantity required",
                                     f"'{self.table.item(row, 0).text()}' has no quantity.")
                 return
+            disc_w = self.table.cellWidget(row, 3)
             lines.append({
                 "product_id": self.table.item(row, 0).data(Qt.UserRole),
                 "qty": qty,
                 "unit_cost": self.table.cellWidget(row, 2).value(),
+                "discount": disc_w.value() if disc_w else 0,
             })
 
         ok, msg, _ = self.controller.create(
@@ -247,6 +276,7 @@ class NewPurchaseDialog(QDialog):
             supplier_invoice_no=self.invoice_no.text().strip() or None,
             notes=self.notes.text().strip() or None,
             amount_paid=self.paid.value(),
+            discount=self.bill_disc.value(),
         )
         if ok:
             QMessageBox.information(self, "Saved", "Purchase recorded and stock updated.")

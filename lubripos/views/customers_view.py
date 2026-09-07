@@ -105,9 +105,17 @@ class CustomersView(QWidget):
         self.table.doubleClicked.connect(lambda: self._open_history())
         root.addWidget(self.table, 1)
 
+        hint_row = QHBoxLayout()
         hint = QLabel("Double-click a customer to see their purchase history.")
         hint.setObjectName("Muted")
-        root.addWidget(hint)
+        hint_row.addWidget(hint)
+        hint_row.addStretch(1)
+        # live grand totals across the whole filtered set (no need to print)
+        self.totals_lbl = QLabel("")
+        self.totals_lbl.setStyleSheet("font-weight:600;")
+        self.totals_lbl.setTextFormat(Qt.RichText)
+        hint_row.addWidget(self.totals_lbl)
+        root.addLayout(hint_row)
 
         footer = QHBoxLayout()
         hist_btn = QPushButton("View history")
@@ -153,6 +161,20 @@ class CustomersView(QWidget):
         self._total = res["total"]
         self._populate(res["rows"])
         self._update_pagination()
+        self._update_totals()
+
+    def _update_totals(self) -> None:
+        t = self.controller.list_totals(
+            search=self.search.text(), only_active=not self.f_inactive.isChecked())
+        fmt = self.controller.fmt
+        recv = int(t.get("receivable", 0) or 0)
+        credit = int(t.get("credit", 0) or 0)
+        parts = [f"Owed by customers: <b>{fmt(recv)}</b>"]
+        if credit:
+            parts.append(f"Credit (shop owes): <b>{fmt(credit)}</b>")
+            parts.append(f"Net: <b>{fmt(recv - credit)}</b>")
+        parts.append(f"Lifetime spend: <b>{fmt(int(t.get('total_spent', 0) or 0))}</b>")
+        self.totals_lbl.setText("&nbsp;&nbsp;·&nbsp;&nbsp;".join(parts))
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))

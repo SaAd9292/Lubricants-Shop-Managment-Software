@@ -10,7 +10,7 @@ piece count underneath.
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QMessageBox,
+    QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QVBoxLayout,
 )
 
@@ -19,7 +19,8 @@ from ..core.packs import fmt_packs
 from ..ui.widgets import CartonQtyEntry
 
 REASONS = ["Stock count correction", "Damaged", "Lost / theft",
-           "Returned to supplier", "Expired", "Other"]
+           "Returned to supplier", "Expired",
+           "Opening balance (owed to warehouse)", "Other"]
 
 
 class StockAdjustDialog(QDialog):
@@ -45,16 +46,24 @@ class StockAdjustDialog(QDialog):
         form.addRow("Product", name)
         form.addRow("Current stock", current)
 
+        cur = int(self.product["stock_qty"])
         self.qty = CartonQtyEntry(self.upc)
-        self.qty.set_total(self.product["stock_qty"])
+        self.qty.set_total(abs(cur))            # entry holds the magnitude
         label = f"New count ({self.upc}/ctn) *" if self.upc > 1 else "New counted qty *"
         form.addRow(label, self.qty)
+
+        # negative (warehouse-owed) toggle: for stock sold from distribution
+        # before its purchase is booked. Pre-checked if the item is already below zero.
+        self.neg = QCheckBox("Negative — owed to the distribution warehouse")
+        self.neg.setChecked(cur < 0)
+        form.addRow("", self.neg)
+
         self.total_lbl = QLabel()
         self.total_lbl.setStyleSheet("color:#64748b;")
-        if self.upc > 1:
-            form.addRow("", self.total_lbl)
-            self.qty.valueChanged.connect(self._update_total)
-            self._update_total()
+        form.addRow("", self.total_lbl)
+        self.qty.valueChanged.connect(self._update_total)
+        self.neg.toggled.connect(self._update_total)
+        self._update_total()
 
         self.reason = QComboBox()
         self.reason.setEditable(True)
@@ -75,8 +84,14 @@ class StockAdjustDialog(QDialog):
         actions.addWidget(save)
         root.addLayout(actions)
 
+    def _target_qty(self) -> int:
+        """Final stock value: the entered magnitude, negated when 'owed to
+        warehouse' is ticked."""
+        mag = self.qty.total_pieces()
+        return -mag if self.neg.isChecked() else mag
+
     def _update_total(self) -> None:
-        self.total_lbl.setText(f"= {self.qty.total_pieces()} pieces total")
+        self.total_lbl.setText(f"= {self._target_qty()} pieces total")
 
     def _save(self) -> None:
         reason = self.reason.currentText().strip()
@@ -85,7 +100,7 @@ class StockAdjustDialog(QDialog):
                                 "Please give a reason for the adjustment.")
             return
         ok, msg, _ = self.controller.adjust_stock(
-            self.product_id, self.qty.total_pieces(), reason)
+            self.product_id, self._target_qty(), reason)
         if ok:
             self.accept()
         else:

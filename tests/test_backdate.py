@@ -1,7 +1,7 @@
 """Headless tests: back-dated bulk bill entry (Admin Panel > Back-date Entry).
 
 Covers: admin-only guard, real sale_date stamping, multi-line + discount totals,
-paid-in-full recording, short-line flooring at 0 (never breaking the DB's
+paid-in-full recording, short lines going negative (never breaking the DB's
 stock_qty >= 0 invariant), and that the live POS path still blocks oversell.
 """
 from __future__ import annotations
@@ -63,7 +63,7 @@ def main() -> int:
     ra = ctx.db.query_one("SELECT stock_qty FROM products WHERE id=?", (a,))
     rb = ctx.db.query_one("SELECT stock_qty FROM products WHERE id=?", (b,))
     check(ra["stock_qty"] == 7, "in-stock line decremented normally (10 - 3)")
-    check(rb["stock_qty"] == 0, "short line floored at 0, not negative")
+    check(rb["stock_qty"] == -3, "short line goes negative (2 in stock - 5 sold)")
 
     print("\n[backdate] live POS path is unchanged")
     try:

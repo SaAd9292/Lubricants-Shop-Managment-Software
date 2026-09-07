@@ -10,10 +10,11 @@ from __future__ import annotations
 
 def split_packs(qty, units_per_carton) -> tuple[int, int]:
     """Return (cartons, loose_pieces) for a piece count. units_per_carton < 2
-    means the product isn't sold in cartons -> (0, qty)."""
+    means the product isn't sold in cartons -> (0, qty). A negative count (stock
+    owed to the warehouse) is returned whole as loose pieces -> (0, qty)."""
     upc = max(1, int(units_per_carton or 1))
-    q = max(0, int(qty or 0))
-    if upc <= 1:
+    q = int(qty or 0)
+    if q < 0 or upc <= 1:
         return 0, q
     return divmod(q, upc)
 
@@ -37,8 +38,8 @@ def fmt_packs(qty, units_per_carton) -> str:
     """Human display of a piece count as cartons + loose pieces.
     upc<2 -> just the number (e.g. drums, loose items)."""
     upc = max(1, int(units_per_carton or 1))
-    q = max(0, int(qty or 0))
-    if upc <= 1:
+    q = int(qty or 0)
+    if q < 0 or upc <= 1:      # negative (warehouse-owed) shown as a plain number
         return str(q)
     cartons, loose = divmod(q, upc)
     if cartons and loose:

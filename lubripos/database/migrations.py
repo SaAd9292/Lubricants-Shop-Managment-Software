@@ -7,12 +7,14 @@ is safe. app_meta.schema_version records the latest applied version.
 """
 from __future__ import annotations
 
+import re
+
 from ..core.logging_config import get_logger
 from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 23
+CURRENT_VERSION = 26
 
 
 def run_migrations(db: Database) -> None:
@@ -36,6 +38,9 @@ def run_migrations(db: Database) -> None:
     _migration_21_supplier_opening(db)
     _migration_22_logo_blob(db)
     _migration_23_theme(db)
+    _migration_24_allow_negative_stock(db)
+    _migration_25_sale_notes(db)
+    _migration_26_discounts(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -402,6 +407,71 @@ def _migration_22_logo_blob(db: Database) -> None:
     if not _column_exists(db, "company_settings", "logo_blob"):
         db.execute("ALTER TABLE company_settings ADD COLUMN logo_blob BLOB")
     log.info("Migration: added company_settings.logo_blob")
+
+
+def _migration_25_sale_notes(db: Database) -> None:
+    """v25: an optional free-text note/description on each sale."""
+    if not _column_exists(db, "sales", "notes"):
+        db.execute("ALTER TABLE sales ADD COLUMN notes TEXT")
+    log.info("Migration: added sales.notes")
+
+
+def _migration_26_discounts(db: Database) -> None:
+    """v26: per-line discounts on sale/purchase items + a whole-bill discount on
+    purchases (sales already had a bill-level discount)."""
+    if not _column_exists(db, "sale_items", "discount_minor"):
+        db.execute("ALTER TABLE sale_items ADD COLUMN discount_minor "
+                   "INTEGER NOT NULL DEFAULT 0")
+    if not _column_exists(db, "purchase_items", "discount_minor"):
+        db.execute("ALTER TABLE purchase_items ADD COLUMN discount_minor "
+                   "INTEGER NOT NULL DEFAULT 0")
+    if not _column_exists(db, "purchases", "discount_minor"):
+        db.execute("ALTER TABLE purchases ADD COLUMN discount_minor "
+                   "INTEGER NOT NULL DEFAULT 0")
+    log.info("Migration: added per-line + purchase bill discounts")
+
+
+def _migration_24_allow_negative_stock(db: Database) -> None:
+    """v24: drop the CHECK(stock_qty >= 0) on products so stock can go negative.
+
+    The shop legitimately sells items pulled from the distribution warehouse
+    before that stock's purchase is booked; the count must be able to sit at -1
+    so it nets correctly when distribution's bill is later entered as a purchase.
+
+    SQLite can't drop a column CHECK in place, so we rebuild the table from its
+    own CREATE statement (with just that CHECK removed), which preserves every
+    other column, default, constraint and FK exactly. Foreign keys are disabled
+    only for the swap; product ids are kept, so all references stay valid.
+    """
+    row = db.query_one(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='products'")
+    if row is None or "stock_qty" not in row["sql"]:
+        return
+    sql = row["sql"]
+    if "stock_qty >= 0" not in sql:
+        return  # already relaxed (fresh DB from updated schema, or re-run)
+
+    # remove ONLY the stock_qty check; rename the table in the CREATE header
+    new_sql = re.sub(r"CHECK\s*\(\s*stock_qty\s*>=\s*0\s*\)", "", sql)
+    new_sql = re.sub(r'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)"?products"?',
+                     r"\1products_new", new_sql, count=1, flags=re.IGNORECASE)
+
+    index_sqls = [r["sql"] for r in db.query(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='products' "
+        "AND sql IS NOT NULL")]
+
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        with db.transaction() as conn:
+            conn.execute(new_sql)
+            conn.execute("INSERT INTO products_new SELECT * FROM products")
+            conn.execute("DROP TABLE products")
+            conn.execute("ALTER TABLE products_new RENAME TO products")
+            for isql in index_sqls:
+                conn.execute(isql)
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
+    log.info("Migration: relaxed products.stock_qty (negative stock allowed)")
 
 
 def _migration_23_theme(db: Database) -> None:

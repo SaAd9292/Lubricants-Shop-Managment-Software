@@ -13,6 +13,7 @@ from __future__ import annotations
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from xml.sax.saxutils import escape as _xml_escape
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
@@ -117,6 +118,8 @@ def generate_invoice_pdf(*, sale: dict[str, Any], company: dict[str, Any],
     if sale.get("payment_account_name"):
         pay_txt += f" ({sale['payment_account_name']})"
     story.append(Paragraph(f"<b>Payment:</b> {pay_txt}", small))
+    if sale.get("notes"):
+        story.append(Paragraph(f"<b>Note:</b> {_xml_escape(str(sale['notes']))}", small))
     story.append(_rule())
 
     col_l = CONTENT_W * 0.72

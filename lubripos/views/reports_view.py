@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QHeaderView,
-    QLabel, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QCompleter, QDateEdit, QFileDialog, QHBoxLayout,
+    QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
 from ..app_context import AppContext
@@ -31,6 +32,7 @@ REPORTS = [
     ("Expenses", "expenses", "range"),
     ("GST / Tax", "tax", "range"),
     ("Product Price List", "product_list", "day"),
+    ("Product History", "product_history", "range"),
 ]
 
 
@@ -104,6 +106,17 @@ class ReportsView(QWidget):
         self.f_product.addItem("All products", None)
         for p in self.controller.all_products():
             self.f_product.addItem(p["name"], p["id"])
+        # type-to-search over the product list (instead of scrolling all of them);
+        # "All products" stays the default. Editable + no-insert so a typed value
+        # only ever resolves to a real product, never adds a new entry.
+        self.f_product.setEditable(True)
+        self.f_product.setInsertPolicy(QComboBox.NoInsert)
+        self.f_product.setMinimumWidth(240)
+        self.f_product.lineEdit().setPlaceholderText("All products — type to search…")
+        comp = self.f_product.completer()
+        comp.setCompletionMode(QCompleter.PopupCompletion)
+        comp.setFilterMode(Qt.MatchContains)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
         controls.addWidget(self.lbl_brand)
         controls.addWidget(self.f_brand)
         controls.addWidget(self.lbl_product)
@@ -179,7 +192,7 @@ class ReportsView(QWidget):
         self.lbl_to.setVisible(show_to)
         self.date_to.setVisible(show_to)
         show_brand = key in ("stock", "product_list")
-        show_product = key == "stock"
+        show_product = key in ("stock", "product_history")
         self.lbl_brand.setVisible(show_brand)
         self.f_brand.setVisible(show_brand)
         self.lbl_product.setVisible(show_product)
@@ -195,10 +208,24 @@ class ReportsView(QWidget):
             self.lbl_from.setText("Price as of:")
         if key == "stock":
             self.hint.setText("Filter by brand and/or product (optional).")
+        elif key == "product_history":
+            self.hint.setText("Pick a product and a date range to see its "
+                              "purchases, sales and returns.")
         elif key == "product_list":
             self.hint.setText("Pick a brand to print just that brand's list, or All brands.")
         else:
             self.hint.setText(hints.get(mode, ""))
+
+    def _selected_product_id(self):
+        """Resolve the (searchable) product filter to an id, or None for all.
+        Empty text or 'All products' means all; otherwise match the typed name."""
+        text = self.f_product.currentText().strip()
+        if not text or text.lower() == "all products":
+            return None
+        idx = self.f_product.findText(text, Qt.MatchFixedString)  # exact, case-insensitive
+        if idx >= 0:
+            return self.f_product.itemData(idx)
+        return self.f_product.currentData()
 
     # -- generate -----------------------------------------------------
     def _generate(self) -> None:
@@ -209,7 +236,12 @@ class ReportsView(QWidget):
             QMessageBox.warning(self, "Invalid range", "'To' date is before 'From' date.")
             return
         brand_id = self.f_brand.currentData() if key in ("stock", "product_list") else None
-        product_id = self.f_product.currentData() if key == "stock" else None
+        product_id = (self._selected_product_id()
+                      if key in ("stock", "product_history") else None)
+        if key == "product_history" and product_id is None:
+            QMessageBox.information(self, "Pick a product",
+                                    "Choose a product for the Product History report.")
+            return
         try:
             self._report = self.controller.build(key, d_from, d_to,
                                                  brand_id=brand_id, product_id=product_id)

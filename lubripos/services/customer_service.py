@@ -147,6 +147,35 @@ class CustomerService:
             (*params, int(limit), int(offset)))
         return {"rows": [dict(r) for r in rows], "total": total}
 
+    def list_totals(self, *, search: str = "", only_active: bool = True) -> dict[str, Any]:
+        """Grand totals across the WHOLE filtered set (not one page): count,
+        lifetime spend, money customers owe the shop (receivable) and money the
+        shop owes customers (credit). Matches the printed report's summary."""
+        clauses, params = [], []
+        if only_active:
+            clauses.append("c.is_active = 1")
+        if search:
+            like = f"%{search.strip()}%"
+            clauses.append("(c.name LIKE ? OR c.phone LIKE ?)")
+            params += [like, like]
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        bal = ("(c.opening_debt_minor "
+               "+ COALESCE((SELECT SUM(grand_total_minor) FROM sales "
+               "WHERE customer_id = c.id AND status='completed' "
+               "AND payment_method='Debt'),0) "
+               "- COALESCE((SELECT SUM(amount_minor) FROM customer_payments "
+               "WHERE customer_id = c.id),0))")
+        spent = ("COALESCE((SELECT SUM(grand_total_minor) FROM sales "
+                 "WHERE customer_id = c.id AND status='completed'),0)")
+        row = self.db.query_one(
+            f"SELECT COUNT(*) AS count, "
+            f"COALESCE(SUM({spent}),0) AS total_spent, "
+            f"COALESCE(SUM(CASE WHEN {bal} > 0 THEN {bal} ELSE 0 END),0) AS receivable, "
+            f"COALESCE(SUM(CASE WHEN {bal} < 0 THEN -({bal}) ELSE 0 END),0) AS credit "
+            f"FROM customers c {where}", tuple(params))
+        return dict(row) if row else {"count": 0, "total_spent": 0,
+                                      "receivable": 0, "credit": 0}
+
     def get(self, customer_id: int) -> dict[str, Any]:
         row = self.db.query_one("SELECT * FROM customers WHERE id = ?", (customer_id,))
         if not row:

@@ -70,10 +70,13 @@ class SaleController:
     def checkout(self, *, lines: list[dict[str, Any]], discount: float = 0,
                  payment_method: str = "cash", payment_account_id: int | None = None,
                  amount_paid: float = 0, customer_name: str | None = None,
-                 customer_phone: str | None = None):
+                 customer_phone: str | None = None, notes: str | None = None,
+                 allow_oversell: bool = False):
         """lines: [{product_id, qty, unit_price (decimal)}]. Live POS sale, stamped
-        today. Back-dated paper bills go through record_backdated_sale instead.
-        Returns (ok, msg, summary)."""
+        today. allow_oversell=True lets stock go negative (item sold from the
+        distribution warehouse before its purchase is booked); the POS asks the
+        cashier to confirm before setting it. Back-dated paper bills go through
+        record_backdated_sale instead. Returns (ok, msg, summary)."""
         _, mu = self.currency()
         items: list[dict[str, Any]] = []
         try:
@@ -81,6 +84,8 @@ class SaleController:
                 item = {"product_id": ln["product_id"], "qty": int(ln["qty"])}
                 if ln.get("unit_price") is not None:
                     item["unit_price_minor"] = money.to_minor(ln["unit_price"], mu)
+                if ln.get("discount") is not None:
+                    item["discount_minor"] = money.to_minor(ln["discount"], mu)
                 items.append(item)
             discount_minor = money.to_minor(discount or 0, mu)
             amount_paid_minor = money.to_minor(amount_paid or 0, mu)
@@ -108,7 +113,8 @@ class SaleController:
                 payment_account_id=payment_account_id,
                 amount_paid_minor=amount_paid_minor,
                 customer_id=customer_id, customer_name=cust_name,
-                user_id=user.id,
+                notes=(notes or "").strip() or None,
+                allow_negative_stock=allow_oversell, user_id=user.id,
             )
             return True, "ok", summary
         except LubriPosError as exc:
@@ -123,7 +129,8 @@ class SaleController:
                               payment_method: str = "Cash",
                               customer_id: int | None = None,
                               customer_name: str | None = None,
-                              customer_phone: str | None = None):
+                              customer_phone: str | None = None,
+                              notes: str | None = None):
         """Record one historical paper bill on its real date. Admin-only.
 
         lines: [{product_id, qty, unit_price (decimal)}]. sale_date is
@@ -171,6 +178,7 @@ class SaleController:
                 cashier_name=user.full_name or user.username,
                 discount_minor=discount_minor, payment_method=payment_method,
                 customer_id=customer_id, customer_name=cust_name,
+                notes=(notes or "").strip() or None,
                 sale_date=sale_date, allow_negative_stock=True,
                 mark_paid_in_full=not is_credit, user_id=user.id,
             )

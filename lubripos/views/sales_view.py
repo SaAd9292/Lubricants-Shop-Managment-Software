@@ -46,7 +46,7 @@ class SalesView(QWidget):
 
         filters = QHBoxLayout()
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search invoice no…")
+        self.search.setPlaceholderText("Search invoice no, paper/bill no, or customer…")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(lambda: self._debounce.start())
         self.f_status = QComboBox()

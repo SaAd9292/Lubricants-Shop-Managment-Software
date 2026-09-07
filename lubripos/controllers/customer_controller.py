@@ -35,6 +35,9 @@ class CustomerController:
     def list(self, **kwargs) -> dict[str, Any]:
         return self.customers.list_customers(**kwargs)
 
+    def list_totals(self, **kwargs) -> dict[str, Any]:
+        return self.customers.list_totals(**kwargs)
+
     def get(self, customer_id: int) -> dict[str, Any]:
         return self.customers.get(customer_id)
 

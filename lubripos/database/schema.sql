@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS products (
     -- auto-derived as cost*(1+markup) on every purchase. 0 = manual pricing
     -- (sale price is never auto-changed).
     markup_bps          INTEGER NOT NULL DEFAULT 0 CHECK (markup_bps >= 0),
-    stock_qty           INTEGER NOT NULL DEFAULT 0 CHECK (stock_qty >= 0),
+    stock_qty           INTEGER NOT NULL DEFAULT 0,  -- may go negative: shop can sell warehouse stock before its purchase is booked
     min_stock_level     INTEGER NOT NULL DEFAULT 0 CHECK (min_stock_level >= 0),
     -- Structured packing so the catalog can mirror a manufacturer price list.
     series              TEXT,                    -- product tier/line (Platinum, Gold, ...)
@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS purchases (
     supplier_id   INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
     supplier_invoice_no TEXT,                 -- supplier's own reference
     purchase_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
-    total_minor   INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),
+    discount_minor INTEGER NOT NULL DEFAULT 0 CHECK (discount_minor >= 0),  -- whole-bill discount (Rs off), on top of any per-line discounts
+    total_minor   INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),      -- after all discounts
     -- how much of `total_minor` was paid at purchase time; the remainder is a
     -- payable owed to the supplier. Later payments live in supplier_payments.
     amount_paid_minor INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_minor >= 0),
@@ -188,7 +189,8 @@ CREATE TABLE IF NOT EXISTS purchase_items (
     product_id      INTEGER NOT NULL REFERENCES products(id),
     qty             INTEGER NOT NULL CHECK (qty > 0),
     unit_cost_minor INTEGER NOT NULL CHECK (unit_cost_minor >= 0),
-    line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)
+    discount_minor  INTEGER NOT NULL DEFAULT 0 CHECK (discount_minor >= 0),  -- per-line discount (Rs off)
+    line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)          -- after the per-line discount
 );
 CREATE INDEX IF NOT EXISTS idx_pitems_purchase ON purchase_items(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_pitems_product  ON purchase_items(product_id);
@@ -258,6 +260,7 @@ CREATE TABLE IF NOT EXISTS sales (
     amount_paid_minor INTEGER NOT NULL DEFAULT 0,
     customer_id      INTEGER REFERENCES customers(id) ON DELETE SET NULL,
     customer_name    TEXT,                           -- snapshot (survives customer delete)
+    notes            TEXT,                           -- optional free-text note / description
     status           TEXT    NOT NULL DEFAULT 'completed'
                          CHECK (status IN ('completed','void')),
     created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
@@ -275,8 +278,9 @@ CREATE TABLE IF NOT EXISTS sale_items (
     qty              INTEGER NOT NULL CHECK (qty > 0),
     unit_price_minor INTEGER NOT NULL CHECK (unit_price_minor >= 0),
     unit_cost_minor  INTEGER NOT NULL DEFAULT 0,       -- snapshot cost for profit calc
+    discount_minor   INTEGER NOT NULL DEFAULT 0 CHECK (discount_minor >= 0),  -- per-line discount (Rs off)
     returned_qty     INTEGER NOT NULL DEFAULT 0 CHECK (returned_qty >= 0),  -- partial returns
-    line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)
+    line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)         -- after the per-line discount
 );
 CREATE INDEX IF NOT EXISTS idx_sitems_sale    ON sale_items(sale_id);
 CREATE INDEX IF NOT EXISTS idx_sitems_product ON sale_items(product_id);

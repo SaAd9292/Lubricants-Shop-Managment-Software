@@ -49,6 +49,7 @@ COLUMNS = [
     ("", None, False, False),          # per-row Save button (price-edit mode)
 ]
 _LOW_STOCK_TINT = QColor(180, 60, 60, 60)
+_NEG_STOCK_TINT = QColor(220, 38, 38, 90)   # stronger red: stock is below zero
 
 
 def _margin_text(cost_minor: int, sale_minor: int) -> str:
@@ -68,6 +69,7 @@ class ProductsView(QWidget):
         self._symbol, self._minor_units = self.controller.currency()
         self._decimals = max(0, len(str(self._minor_units)) - 1)
         self._edit_prices = False
+        self._undo = None          # (label, callable) for the single-level Undo
         self._page = 0
         self._total = 0
         self._sort_by = "sort_order"   # products default to the shop's custom order
@@ -196,10 +198,17 @@ class ProductsView(QWidget):
         self.hard_del_btn.setObjectName("Danger")
         self.hard_del_btn.clicked.connect(self._hard_delete_selected)
         self.hard_del_btn.setVisible(False)
+        self.undo_btn = QPushButton("↶ Undo")
+        self.undo_btn.setObjectName("Secondary")
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.setToolTip("Undo the last change on this screen")
+        self.undo_btn.clicked.connect(self._do_undo)
         footer.addWidget(edit_btn)
         footer.addWidget(adjust_btn)
         footer.addWidget(self.del_btn)
         footer.addWidget(self.hard_del_btn)
+        footer.addSpacing(12)
+        footer.addWidget(self.undo_btn)
         footer.addStretch(1)
 
         self.prev_btn = QPushButton("‹ Prev")
@@ -356,6 +365,7 @@ class ProductsView(QWidget):
         self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
         for r, p in enumerate(rows):
+            neg = p["stock_qty"] < 0
             low = p["min_stock_level"] > 0 and p["stock_qty"] <= p["min_stock_level"]
             values = [
                 str(p.get("sort_order") or 0),
@@ -382,8 +392,13 @@ class ProductsView(QWidget):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 if c == 0:
                     item.setData(Qt.UserRole, p["id"])  # stash product id
-                if low and p["is_active"]:
+                if p["is_active"] and neg:
+                    item.setBackground(_NEG_STOCK_TINT)
+                elif p["is_active"] and low:
                     item.setBackground(_LOW_STOCK_TINT)
+                if c == 11 and neg:                       # Stock cell: red + bold
+                    item.setForeground(QColor("#b91c1c"))
+                    f = item.font(); f.setBold(True); item.setFont(f)
                 self.table.setItem(r, c, item)
             if self._edit_prices:
                 self._add_price_editors(r, p)
@@ -451,14 +466,56 @@ class ProductsView(QWidget):
         self.table.setCellWidget(r, len(COLUMNS) - 1, btn)
 
     def _save_price(self, pid, ospin, pspin, sspin, mspin, btn) -> None:
+        before = self._edit_snapshot(pid)   # capture for undo before saving
         ok, msg, _ = self.controller.save(
             {"sort_order": int(ospin.value()), "purchase_price": pspin.value(),
              "sale_price": sspin.value(), "markup": mspin.value()}, pid)
         if ok:
             btn.setText("Saved ✓")
             QTimer.singleShot(1400, lambda: btn.setText("Save"))
+            if before is not None:
+                self._set_undo("price change",
+                               lambda: self.controller.restore(pid, before))
         else:
             QMessageBox.warning(self, "Could not update price", msg)
+
+    # -- single-level undo -------------------------------------------
+    def _edit_snapshot(self, pid: int) -> dict | None:
+        """The product's editable fields BEFORE a change (raw minor/bps), so an
+        edit or price change can be reverted. Stock is excluded (it changes via
+        sales/adjustments, not edits, so undo must never clobber it)."""
+        try:
+            p = self.controller.get(pid)
+        except Exception:
+            return None
+        keys = ("barcode", "name", "brand_id", "category_id", "unit_type",
+                "purchase_price_minor", "sale_price_minor", "markup_bps",
+                "min_stock_level", "sort_order", "series", "pack_size",
+                "units_per_carton")
+        return {k: p[k] for k in keys if k in p}
+
+    def _set_undo(self, label: str, fn) -> None:
+        self._undo = (label, fn)
+        self.undo_btn.setEnabled(True)
+        self.undo_btn.setToolTip(f"Undo: {label}")
+
+    def _clear_undo(self) -> None:
+        self._undo = None
+        self.undo_btn.setEnabled(False)
+        self.undo_btn.setToolTip("Undo the last change on this screen")
+
+    def _do_undo(self) -> None:
+        if not self._undo:
+            return
+        label, fn = self._undo
+        self._clear_undo()          # single-level: consume it either way
+        try:
+            ok, msg, _ = fn()
+        except Exception as exc:      # pragma: no cover
+            ok, msg = False, str(exc)
+        self._reload()
+        if not ok:
+            QMessageBox.warning(self, "Could not undo", msg)
 
     def _update_pagination(self) -> None:
         pages = max(1, (self._total + PAGE_SIZE - 1) // PAGE_SIZE)
@@ -531,17 +588,29 @@ class ProductsView(QWidget):
         if pid is None:
             QMessageBox.information(self, "Select a product", "Please select a row first.")
             return
+        before = self._edit_snapshot(pid)
         dlg = ProductEditDialog(self.controller, product_id=pid)
         if dlg.exec():
             self._reload()
+            if before is not None:
+                self._set_undo("edit product",
+                               lambda: self.controller.restore(pid, before))
 
     def _adjust_selected(self) -> None:
         pid = self._selected_id()
         if pid is None:
             QMessageBox.information(self, "Select a product", "Please select a row first.")
             return
+        try:
+            old_qty = int(self.controller.get(pid)["stock_qty"])
+        except Exception:
+            old_qty = None
         if StockAdjustDialog(self.controller, pid).exec():
             self._reload()
+            if old_qty is not None:
+                self._set_undo(
+                    "stock adjustment",
+                    lambda: self.controller.adjust_stock(pid, old_qty, "Undo adjustment"))
 
     def _delete_selected(self) -> None:
         pid = self._selected_id()
@@ -551,6 +620,7 @@ class ProductsView(QWidget):
         showing_inactive = self._showing_inactive()
         if showing_inactive:
             ok, msg, _ = self.controller.reactivate(pid)
+            undo = ("reactivate", lambda: self.controller.delete(pid))
         else:
             confirm = QMessageBox.question(
                 self, "Deactivate product",
@@ -562,8 +632,10 @@ class ProductsView(QWidget):
             if confirm != QMessageBox.Yes:
                 return
             ok, msg, _ = self.controller.delete(pid)
+            undo = ("deactivate", lambda: self.controller.reactivate(pid))
         if ok:
             self._reload()
+            self._set_undo(*undo)
         else:
             QMessageBox.warning(self, "Action failed", msg)
 

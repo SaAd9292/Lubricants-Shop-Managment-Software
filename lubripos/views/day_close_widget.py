@@ -79,6 +79,11 @@ class DayCloseWidget(QWidget):
         right.addWidget(self._h("Money received"))
         self.pay_tbl = self._table("No payments recorded.", 130)
         right.addWidget(self.pay_tbl)
+        right.addWidget(self._h("Customer debt repayments"))
+        self.repay_tbl = self._table("No debt repayments today.", 110)
+        right.addWidget(self.repay_tbl)
+        self.repay_total = self._total_label()
+        right.addWidget(self.repay_total)
         right.addWidget(self._h("Returns"))
         self.returns_tbl = self._table("No returns for this day.", 130)
         right.addWidget(self.returns_tbl)
@@ -142,6 +147,11 @@ class DayCloseWidget(QWidget):
                 total.setText(f"{sec['total_label']}:  {fmt(sec['total'])}")
         if secs.get("Money received"):
             self._fill_table(self.pay_tbl, secs["Money received"])
+        repay = secs.get("Customer debt repayments")
+        if repay is not None:
+            self._fill_table(self.repay_tbl, repay)
+            self.repay_total.setText(
+                f"{repay['total_label']}:  {fmt(repay['total'])}")
 
     # -- helpers ------------------------------------------------------
     def _fill_cards(self, layout, items) -> None:

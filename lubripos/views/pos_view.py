@@ -36,7 +36,7 @@ from .product_picker_dialog import ProductPickerDialog
 from .sale_receipt_dialog import SaleReceiptDialog
 
 # Cart columns
-C_NUM, C_ITEM, C_PRICE, C_QTY, C_TOTAL, C_ACTION = range(6)
+C_NUM, C_ITEM, C_PRICE, C_QTY, C_DISC, C_TOTAL, C_ACTION = range(7)
 _METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash", "Debt"]
 
 
@@ -190,9 +190,10 @@ class POSView(QWidget):
         self.status.setMinimumHeight(18)
         left.addWidget(self.status)
 
-        self.cart = QTableWidget(0, 6)
+        self.cart = QTableWidget(0, 7)
         self.cart.setHorizontalHeaderLabels(
-            ["#", tr("Item"), f"{tr('Price')} ({self._symbol})", tr("Qty"), tr("Line Total"), ""])
+            ["#", tr("Item"), f"{tr('Price')} ({self._symbol})", tr("Qty"),
+             f"{tr('Disc')} ({self._symbol})", tr("Line Total"), ""])
         self.cart.verticalHeader().setVisible(False)
         self.cart.verticalHeader().setDefaultSectionSize(50)
         self.cart.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -203,12 +204,13 @@ class POSView(QWidget):
         hdr.setStretchLastSection(False)
         hdr.setSectionResizeMode(C_NUM, QHeaderView.Fixed)
         hdr.setSectionResizeMode(C_ITEM, QHeaderView.Stretch)
-        for c in (C_PRICE, C_QTY, C_TOTAL, C_ACTION):
+        for c in (C_PRICE, C_QTY, C_DISC, C_TOTAL, C_ACTION):
             hdr.setSectionResizeMode(c, QHeaderView.Fixed)
         self.cart.setColumnWidth(C_NUM, 38)
-        self.cart.setColumnWidth(C_PRICE, 120)
-        self.cart.setColumnWidth(C_QTY, 120)
-        self.cart.setColumnWidth(C_TOTAL, 120)
+        self.cart.setColumnWidth(C_PRICE, 110)
+        self.cart.setColumnWidth(C_QTY, 116)
+        self.cart.setColumnWidth(C_DISC, 100)
+        self.cart.setColumnWidth(C_TOTAL, 116)
         self.cart.setColumnWidth(C_ACTION, 46)
         left.addWidget(self.cart, 1)
 
@@ -280,6 +282,11 @@ class POSView(QWidget):
         pl.addWidget(self.cust_hint)
         self.cust_name.textEdited.connect(lambda _=None: self.cust_hint.clear())
         self.cust_phone.textEdited.connect(lambda _=None: self.cust_hint.clear())
+
+        pl.addWidget(self._h2(tr("Description (optional)")))
+        self.sale_notes = QLineEdit()
+        self.sale_notes.setPlaceholderText(tr("Note for this sale (prints on the invoice)"))
+        pl.addWidget(self.sale_notes)
 
         pl.addWidget(self._h2(tr("Payment")))
         # payment method as selectable chips
@@ -413,16 +420,10 @@ class POSView(QWidget):
 
     def _add_product(self, p: dict, add_qty: int = 1) -> None:
         available = int(p.get("stock_qty") or 0)
-        if available <= 0:
-            self._flash(f"{p['name']} is out of stock.", error=True)
-            return
         row = self._find_row(p["id"])
         if row is not None:
             qty_w = self.cart.cellWidget(row, C_QTY)
-            if qty_w.value() >= qty_w.maximum():
-                self._flash(f"Only {qty_w.maximum()} of '{p['name']}' in stock.", error=True)
-                return
-            qty_w.setValue(min(qty_w.value() + add_qty, qty_w.maximum()))
+            qty_w.setValue(qty_w.value() + add_qty)   # no hard cap: overselling ok
             self._flash(f"{p['name']}  (qty {qty_w.value()})")
             return
 
@@ -434,9 +435,10 @@ class POSView(QWidget):
         num.setTextAlignment(Qt.AlignCenter)
         self.cart.setItem(row, C_NUM, num)
 
+        stock_color = "#dc2626" if available <= 0 else "#6b7280"
         name_lbl = QLabel(
             f"<b>{_esc(p['name'])}</b><br>"
-            f"<span style='color:#6b7280; font-size:11px;'>Stock: {available}</span>")
+            f"<span style='color:{stock_color}; font-size:11px;'>Stock: {available}</span>")
         name_lbl.setContentsMargins(6, 2, 6, 2)
         self.cart.setCellWidget(row, C_ITEM, name_lbl)
 
@@ -451,10 +453,23 @@ class POSView(QWidget):
             price.setReadOnly(True)
         self.cart.setCellWidget(row, C_PRICE, price)
 
-        qty = _QtyStepper(1, available, self._recompute)
+        qty = _QtyStepper(1, 1_000_000, self._recompute)  # no hard cap: overselling
+        qty.stock = available          # true shop stock, for the oversell check
+        qty.pname = p["name"]
         if add_qty > 1:
-            qty.setValue(min(add_qty, available))
+            qty.setValue(add_qty)
         self.cart.setCellWidget(row, C_QTY, qty)
+
+        disc = QDoubleSpinBox()
+        disc.setRange(0, 1_000_000_000)
+        disc.setDecimals(self._decimals)
+        disc.setGroupSeparatorShown(True)
+        disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        disc.setToolTip(tr("Discount off this line (amount)"))
+        disc.valueChanged.connect(self._recompute)
+        if not current_session.can("sale.discount"):
+            disc.setReadOnly(True)
+        self.cart.setCellWidget(row, C_DISC, disc)
 
         total = QTableWidgetItem("")
         total.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -475,7 +490,10 @@ class POSView(QWidget):
         self.cart.setCellWidget(row, C_ACTION, rm_cell)
 
         self._recompute()
-        self._flash(f"Added {p['name']}  ({available} in stock)")
+        if available <= 0:
+            self._flash(f"Added {p['name']} — out of shop stock; will sell from warehouse.")
+        else:
+            self._flash(f"Added {p['name']}  ({available} in stock)")
 
     def _find_row(self, pid: int):
         for r in range(self.cart.rowCount()):
@@ -496,6 +514,7 @@ class POSView(QWidget):
         self.cust_name.clear()
         self.cust_phone.clear()
         self.cust_hint.clear()
+        self.sale_notes.clear()
         self._recompute()
         self.barcode.setFocus()
 
@@ -552,10 +571,14 @@ class POSView(QWidget):
                 num_item.setText(str(r + 1))  # keep row numbers tidy after removals
             qty_w = self.cart.cellWidget(r, C_QTY)
             price_w = self.cart.cellWidget(r, C_PRICE)
+            disc_w = self.cart.cellWidget(r, C_DISC)
             if qty_w is None or price_w is None:
                 continue
             unit = money.to_minor(price_w.value(), self._minor_units)
-            line = qty_w.value() * unit
+            gross = qty_w.value() * unit
+            line_disc = money.to_minor(disc_w.value(), self._minor_units) if disc_w else 0
+            line_disc = min(line_disc, gross)      # never discount below zero
+            line = gross - line_disc
             subtotal += line
             self.cart.item(r, C_TOTAL).setText(
                 money.format_money(line, self._symbol, self._minor_units))
@@ -593,10 +616,12 @@ class POSView(QWidget):
             return
         lines = []
         for r in range(self.cart.rowCount()):
+            disc_w = self.cart.cellWidget(r, C_DISC)
             lines.append({
                 "product_id": self.cart.item(r, C_NUM).data(Qt.UserRole),
                 "qty": self.cart.cellWidget(r, C_QTY).value(),
                 "unit_price": self.cart.cellWidget(r, C_PRICE).value(),
+                "discount": disc_w.value() if disc_w else 0,
             })
         method = self._selected_method()
         if method == "Debt" and not self.cust_name.text().strip():
@@ -605,12 +630,39 @@ class POSView(QWidget):
                 "A debt (credit) sale must be put on a customer's tab.\n"
                 "Find an existing customer or type their name (and phone) first.")
             return
+
+        # Overselling: any line whose qty exceeds the shop's stock is being
+        # pulled from the distribution warehouse. Confirm before letting stock
+        # go negative (it nets back up when distribution's purchase is entered).
+        oversell = []
+        for r in range(self.cart.rowCount()):
+            qty_w = self.cart.cellWidget(r, C_QTY)
+            stock = int(getattr(qty_w, "stock", 0))
+            q = qty_w.value()
+            if q > stock:
+                oversell.append((getattr(qty_w, "pname", "item"), stock, q))
+        if oversell:
+            detail = "\n".join(
+                f"  •  {nm}:  have {st}, selling {q}  →  {st - q}"
+                for nm, st, q in oversell)
+            ans = QMessageBox.question(
+                self, "Sell from warehouse?",
+                "These items exceed the shop's stock and will go negative "
+                "(sold from the distribution warehouse):\n\n" + detail +
+                "\n\nEnter distribution's bill as a purchase later to bring stock "
+                "back up. Continue with the sale?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if ans != QMessageBox.Yes:
+                return
+
         ok, msg, summary = self.controller.checkout(
             lines=lines, discount=self.discount.value(),
             payment_method=method,
             payment_account_id=self.account.currentData(), amount_paid=0,
             customer_name=self.cust_name.text(),
             customer_phone=self.cust_phone.text(),
+            notes=self.sale_notes.text(),
+            allow_oversell=bool(oversell),
         )
         if not ok:
             QMessageBox.warning(self, "Sale not completed", msg)

@@ -94,6 +94,12 @@ class ProductController:
 
         return self._guarded(op)
 
+    def restore(self, product_id: int, fields: dict[str, Any]) -> tuple[bool, str, int | None]:
+        """Write already-normalised fields (minor units / bps) straight back —
+        used by the Products 'Undo' to revert an edit or price change."""
+        return self._guarded(
+            lambda uid: self.products.update(product_id, fields, user_id=uid) or product_id)
+
     def adjust_stock(self, product_id: int, new_qty: int,
                      reason: str) -> tuple[bool, str, int | None]:
         return self._guarded(

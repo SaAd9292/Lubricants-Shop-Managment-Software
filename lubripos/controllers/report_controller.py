@@ -61,6 +61,10 @@ class ReportController:
             return rs.tax(date_from, date_to)
         if key == "product_list":
             return rs.product_list(brand_id=brand_id, as_of=date_from)
+        if key == "product_history":
+            if not product_id:
+                raise ValueError("Pick a product for the Product History report.")
+            return rs.product_history(product_id, date_from, date_to)
         raise ValueError(f"Unknown report key: {key}")
 
     # -- export -------------------------------------------------------

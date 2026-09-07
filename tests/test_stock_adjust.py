@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lubripos.app_context import AppContext
 from lubripos.config import Config
-from lubripos.core.exceptions import ValidationError
 from lubripos.services.product_service import ProductService
 
 PASS, FAIL = "\033[92mPASS\033[0m", "\033[91mFAIL\033[0m"
@@ -39,12 +38,9 @@ def main() -> int:
           "audit records from/to/delta")
     check("count" in details["reason"].lower(), "audit records reason")
 
-    print("\n[stock-adjust] guards")
-    try:
-        products.adjust_stock(pid, -1, "bad", user_id=1)
-        check(False, "negative qty should raise")
-    except ValidationError:
-        check(True, "negative qty rejected")
+    print("\n[stock-adjust] negative target allowed (warehouse-owed opening balance)")
+    products.adjust_stock(pid, -2, "Opening balance (owed to warehouse)", user_id=1)
+    check(products.get(pid)["stock_qty"] == -2, "can set stock to a negative value")
 
     print("\n[audit] list + search")
     all_logs = ctx.audit.list_logs()

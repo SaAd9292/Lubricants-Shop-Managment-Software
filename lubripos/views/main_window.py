@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QSize, QTimer
+from PySide6.QtCore import Qt, QSize, QTimer, QEvent
 from PySide6.QtGui import QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox,
@@ -112,7 +112,49 @@ class MainWindow(QMainWindow):
         who = f"{user.full_name or user.username} ({user.role})" if user else "—"
         self.statusBar().showMessage(f"{shop_name}   |   Signed in as {who}")
 
+        self._setup_stock_badge()
         self._go("dashboard")
+
+    # -- negative-stock badge on the Products nav item ----------------
+    def _setup_stock_badge(self) -> None:
+        """A small red dot on the Products nav button whenever any product is at
+        negative stock (sold from the warehouse, awaiting its purchase)."""
+        from ..services.dashboard_service import DashboardService
+        self._dash_svc = DashboardService(self.ctx.db)
+        self._prod_badge = None
+        btn = self._nav_buttons.get("products")
+        if btn is None:
+            return
+        badge = QLabel(btn)
+        badge.setFixedSize(10, 10)
+        badge.setStyleSheet("background:#dc2626; border-radius:5px;")
+        badge.hide()
+        self._prod_badge = badge
+        btn.installEventFilter(self)
+        self._position_prod_badge()
+
+    def _position_prod_badge(self) -> None:
+        btn = self._nav_buttons.get("products")
+        if btn is not None and self._prod_badge is not None:
+            self._prod_badge.move(btn.width() - 18, 11)
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
+        if (getattr(self, "_prod_badge", None) is not None
+                and obj is self._nav_buttons.get("products")
+                and event.type() in (QEvent.Resize, QEvent.Move, QEvent.Show)):
+            self._position_prod_badge()
+        return super().eventFilter(obj, event)
+
+    def _refresh_stock_badge(self) -> None:
+        if getattr(self, "_prod_badge", None) is None:
+            return
+        try:
+            n = self._dash_svc.negative_stock_count()
+        except Exception:
+            n = 0
+        self._prod_badge.setVisible(n > 0)
+        if n > 0:
+            self._prod_badge.raise_()
 
     # -- sidebar ------------------------------------------------------
     def _build_sidebar(self) -> QWidget:
@@ -299,6 +341,7 @@ class MainWindow(QMainWindow):
             return
         self.stack.setCurrentIndex(idx)
         self._refresh_page(self.stack.widget(idx))
+        self._refresh_stock_badge()   # stock may have changed (e.g. a sale)
         btn = self._nav_buttons.get(key)
         if btn is not None:
             btn.setChecked(True)

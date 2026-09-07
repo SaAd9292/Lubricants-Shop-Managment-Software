@@ -48,6 +48,7 @@ class SaleService:
         amount_paid_minor: int = 0,
         customer_id: int | None = None,
         customer_name: str | None = None,
+        notes: str | None = None,
         sale_date: str | None = None,
         allow_negative_stock: bool = False,
         mark_paid_in_full: bool = False,
@@ -113,31 +114,33 @@ class SaleService:
                 "subtotal_minor, discount_minor, tax_label, tax_rate_bps, tax_minor, "
                 "grand_total_minor, payment_method, payment_account_id, "
                 "payment_account_name, amount_paid_minor, customer_id, customer_name, "
-                "status) "
+                "notes, status) "
                 "VALUES (?, COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')), "
-                "?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
+                "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'completed')",
                 (invoice_no, sale_date, cashier_id, cashier_name, subtotal, discount_minor,
                  tax_label, tax_rate_bps, tax_minor, grand_total, payment_method,
                  payment_account_id, account_name, amount_paid_minor,
-                 customer_id, (customer_name or None)),
+                 customer_id, (customer_name or None), (notes or None)),
             )
             sale_id = cur.lastrowid
 
             for ln in lines:
                 conn.execute(
                     "INSERT INTO sale_items (sale_id, product_id, product_name, "
-                    "barcode, qty, unit_price_minor, unit_cost_minor, line_total_minor) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "barcode, qty, unit_price_minor, unit_cost_minor, discount_minor, "
+                    "line_total_minor) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
                     (sale_id, ln["product_id"], ln["product_name"], ln["barcode"],
                      ln["qty"], ln["unit_price_minor"], ln["unit_cost_minor"],
-                     ln["line_total_minor"]),
+                     ln.get("discount_minor", 0), ln["line_total_minor"]),
                 )
-                # MAX(0, …) guards the DB's stock_qty >= 0 invariant. On the live
-                # path _resolve_lines already proved qty <= stock, so this is a
-                # no-op there; on the back-dated path (allow_negative_stock) a
-                # short line floors stock at 0 instead of aborting the whole bill.
+                # Stock may go negative when allow_negative_stock is set (an
+                # oversell / back-dated bill): the shop sold warehouse stock
+                # before its purchase was booked, so -1 is correct and nets back
+                # up when that purchase is entered. Live sales still can't reach
+                # here short (guarded in _resolve_lines) unless explicitly allowed.
                 conn.execute(
-                    "UPDATE products SET stock_qty = MAX(0, stock_qty - ?) WHERE id = ?",
+                    "UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?",
                     (ln["qty"], ln["product_id"]),
                 )
 
@@ -259,8 +262,12 @@ class SaleService:
     ) -> dict[str, Any]:
         clauses, params = [], []
         if search:
-            clauses.append("s.invoice_no LIKE ?")
-            params.append(f"%{search.strip()}%")
+            # match the invoice number, the note/description (holds the shop's
+            # paper bill number), or the customer name
+            like = f"%{search.strip()}%"
+            clauses.append("(s.invoice_no LIKE ? OR s.notes LIKE ? "
+                           "OR s.customer_name LIKE ?)")
+            params += [like, like, like]
         if date_from:
             clauses.append("s.sale_date >= ?")
             params.append(date_from)
@@ -310,6 +317,7 @@ class SaleService:
         # merge duplicate product lines (same product scanned twice)
         merged: dict[int, int] = {}
         overrides: dict[int, int] = {}
+        discounts: dict[int, int] = {}
         order: list[int] = []
         for it in items:
             pid = it.get("product_id")
@@ -324,6 +332,7 @@ class SaleService:
             merged[pid] += qty
             if it.get("unit_price_minor") is not None:
                 overrides[pid] = int(it["unit_price_minor"])
+            discounts[pid] = discounts.get(pid, 0) + int(it.get("discount_minor") or 0)
 
         lines = []
         for pid in order:
@@ -348,11 +357,17 @@ class SaleService:
             unit_price = overrides.get(pid, row["sale_price_minor"])
             if unit_price < 0:
                 raise ValidationError("Unit price cannot be negative.")
+            gross = qty * unit_price
+            line_discount = max(0, int(discounts.get(pid, 0)))
+            if line_discount > gross:
+                raise ValidationError(
+                    f"Discount on '{row['name']}' exceeds its line total.")
             lines.append({
                 "product_id": pid, "product_name": row["name"], "barcode": row["barcode"],
                 "qty": qty, "unit_price_minor": unit_price,
                 "unit_cost_minor": row["purchase_price_minor"],
-                "line_total_minor": qty * unit_price,
+                "discount_minor": line_discount,
+                "line_total_minor": gross - line_discount,
                 "short": short,
             })
         return lines

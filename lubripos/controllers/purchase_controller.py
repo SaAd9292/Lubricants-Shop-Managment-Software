@@ -48,8 +48,10 @@ class PurchaseController:
     # -- create -------------------------------------------------------
     def create(self, *, supplier_id: int | None, lines: list[dict[str, Any]],
                purchase_date: str | None = None, supplier_invoice_no: str | None = None,
-               notes: str | None = None, amount_paid: float | None = None):
-        """lines: [{product_id, qty, unit_cost (decimal)}]. Converts cost->minor.
+               notes: str | None = None, amount_paid: float | None = None,
+               discount: float = 0):
+        """lines: [{product_id, qty, unit_cost (decimal), discount (decimal)?}].
+        discount (decimal) = whole-bill discount on top of any per-line discounts.
         amount_paid (decimal) = paid to the supplier now; None means paid in full."""
         _, mu = self.currency()
         items: list[dict[str, Any]] = []
@@ -59,17 +61,20 @@ class PurchaseController:
                     "product_id": ln["product_id"],
                     "qty": int(ln["qty"]),
                     "unit_cost_minor": money.to_minor(ln["unit_cost"], mu),
+                    "discount_minor": money.to_minor(ln.get("discount") or 0, mu),
                 })
             amount_paid_minor = (None if amount_paid is None
                                  else money.to_minor(amount_paid, mu))
+            discount_minor = money.to_minor(discount or 0, mu)
         except (ValueError, ArithmeticError, KeyError):
-            return False, "Invalid line data (check quantities, costs, amount paid).", None
+            return False, "Invalid line data (check quantities, costs, discounts, amount paid).", None
 
         def op(uid):
             return self.purchases.create_purchase(
                 supplier_id=supplier_id, items=items, purchase_date=purchase_date,
                 supplier_invoice_no=supplier_invoice_no, notes=notes,
-                amount_paid_minor=amount_paid_minor, user_id=uid,
+                amount_paid_minor=amount_paid_minor, discount_minor=discount_minor,
+                user_id=uid,
             )
         return self._guarded(op)
 

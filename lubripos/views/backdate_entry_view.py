@@ -9,7 +9,7 @@ Enter on Amount adds the line to the bill and jumps back to Product for the next
 item; Enter on an empty Product box saves the whole bill (Ctrl+Enter also saves,
 Esc-style Reset clears it). Every bill is recorded on its real date via
 SaleController.record_backdated_sale, which decrements stock without blocking on
-shortfalls (a short line floors at 0 until its purchase is keyed) and reports
+shortfalls (a short line goes negative until its purchase is keyed) and reports
 any short line. Admin-only; only ever mounted inside the Admin Panel.
 """
 from __future__ import annotations
@@ -65,7 +65,7 @@ class BackdateEntryView(QWidget):
         hint = QLabel(tr("Press Enter to move to the next field. Enter on Amount "
                          "adds the item; Enter on an empty Product box (or "
                          "Ctrl+Enter) saves the bill. Stock reduces as normal; a "
-                         "short line floors at 0 and is flagged."))
+                         "short line goes negative and is flagged."))
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -108,6 +108,11 @@ class BackdateEntryView(QWidget):
         self.cust_name.setCompleter(self._cust_suggest)
         self._cust_suggest.activated[str].connect(self._on_cust_pick)
         form.addRow(tr("Customer"), self.cust_name)
+
+        # Description / paper bill number (optional; searchable in Sales History)
+        self.notes = QLineEdit()
+        self.notes.setPlaceholderText(tr("Paper/bill number or note (optional)"))
+        form.addRow(tr("Description"), self.notes)
 
         # Product (type-ahead)
         self.prod = QLineEdit()
@@ -391,6 +396,7 @@ class BackdateEntryView(QWidget):
         self._cart = []
         self.discount.setValue(0)
         self.cust_name.clear()
+        self.notes.clear()
         self.prod.clear()
         self.qty.setValue(1)
         self.price.setValue(0)
@@ -426,7 +432,7 @@ class BackdateEntryView(QWidget):
         ok, msg, summary = self.controller.record_backdated_sale(
             lines=lines, sale_date=sale_date, discount=disc,
             payment_method=method, customer_id=customer_id,
-            customer_name=customer)
+            customer_name=customer, notes=self.notes.text() or None)
         if not ok:
             QMessageBox.warning(self, tr("Bill not saved"), msg)
             return
@@ -435,14 +441,15 @@ class BackdateEntryView(QWidget):
         short = summary.get("short_lines") or []
         note = ""
         if short:
-            note = "  " + tr("Stock floored at 0 for: ") + ", ".join(short) + \
-                   " " + tr("(enter its purchase, or fix with a final stock count).")
+            note = "  " + tr("Stock went negative for: ") + ", ".join(short) + \
+                   " " + tr("(it nets back up when that purchase is entered).")
         self._say(tr("Saved bill ") + f"{inv} · {sale_date} · {total_txt}" + note)
         self._refresh_customers()   # a newly-created credit customer is now pickable
         # keep the date + payment for the next bill; clear the rest, back to Product
         self._cart = []
         self.discount.setValue(0)
         self.cust_name.clear()
+        self.notes.clear()
         self._render_cart()
         self._update_totals()
         self.prod.clear()
