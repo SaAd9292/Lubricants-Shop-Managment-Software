@@ -217,6 +217,32 @@ class SaleController:
             log.exception("Return failed")
             return False, f"Unexpected error: {exc}", None
 
+    def create_no_receipt_return(self, *, lines: list[dict[str, Any]],
+                                 method: str | None = None, notes: str = ""):
+        """A return with no original sale. lines: [{product_id, qty, refund
+        (decimal)}]. The UI also requires the admin password before calling this.
+        Returns (ok, msg, {return_id, refund_minor})."""
+        _, mu = self.currency()
+        try:
+            user = current_session.require_permission("sale.void")
+            items = []
+            for ln in lines:
+                items.append({
+                    "product_id": ln["product_id"],
+                    "qty": int(ln["qty"]),
+                    "refund_minor": money.to_minor(ln.get("refund") or 0, mu),
+                })
+            data = self.sales.create_no_receipt_return(
+                items, method=method, notes=notes, user_id=user.id)
+            return True, "ok", data
+        except (ValueError, ArithmeticError, KeyError):
+            return False, "Invalid return data (check quantities and refund amounts).", None
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("No-receipt return failed")
+            return False, f"Unexpected error: {exc}", None
+
     def void(self, sale_id: int):
         try:
             user = current_session.require_permission("sale.void")

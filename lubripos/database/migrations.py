@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 26
+CURRENT_VERSION = 27
 
 
 def run_migrations(db: Database) -> None:
@@ -41,6 +41,7 @@ def run_migrations(db: Database) -> None:
     _migration_24_allow_negative_stock(db)
     _migration_25_sale_notes(db)
     _migration_26_discounts(db)
+    _migration_27_noreceipt_returns(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -414,6 +415,49 @@ def _migration_25_sale_notes(db: Database) -> None:
     if not _column_exists(db, "sales", "notes"):
         db.execute("ALTER TABLE sales ADD COLUMN notes TEXT")
     log.info("Migration: added sales.notes")
+
+
+def _migration_27_noreceipt_returns(db: Database) -> None:
+    """v27: support returns with NO receipt — sale_returns.sale_id becomes
+    nullable (an unlinked return) and a `method` column records how the refund
+    was paid out. Adding the column is a simple ALTER; making sale_id nullable
+    needs a table rebuild (SQLite can't drop NOT NULL in place), done from the
+    table's own CREATE statement so every other constraint/FK is preserved."""
+    if not _column_exists(db, "sale_returns", "method"):
+        db.execute("ALTER TABLE sale_returns ADD COLUMN method TEXT")
+
+    info = db.query("PRAGMA table_info(sale_returns)")
+    sale_id_notnull = any(r["name"] == "sale_id" and r["notnull"] for r in info)
+    if not sale_id_notnull:
+        log.info("Migration: sale_returns.sale_id already nullable")
+        return
+
+    row = db.query_one(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sale_returns'")
+    if row is None:
+        return
+    # drop NOT NULL from the sale_id column only, and rename for the rebuild
+    new_sql = re.sub(r"(sale_id\s+INTEGER)\s+NOT\s+NULL", r"\1", row["sql"],
+                     count=1, flags=re.IGNORECASE)
+    new_sql = re.sub(r'(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)"?sale_returns"?',
+                     r"\1sale_returns_new", new_sql, count=1, flags=re.IGNORECASE)
+    index_sqls = [r["sql"] for r in db.query(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='sale_returns' "
+        "AND sql IS NOT NULL")]
+    cols = ", ".join(r["name"] for r in db.query("PRAGMA table_info(sale_returns)"))
+    db.execute("PRAGMA foreign_keys=OFF")
+    try:
+        with db.transaction() as conn:
+            conn.execute(new_sql)
+            conn.execute(f"INSERT INTO sale_returns_new ({cols}) "
+                         f"SELECT {cols} FROM sale_returns")
+            conn.execute("DROP TABLE sale_returns")
+            conn.execute("ALTER TABLE sale_returns_new RENAME TO sale_returns")
+            for isql in index_sqls:
+                conn.execute(isql)
+    finally:
+        db.execute("PRAGMA foreign_keys=ON")
+    log.info("Migration: sale_returns.sale_id made nullable (+ method)")
 
 
 def _migration_26_discounts(db: Database) -> None:

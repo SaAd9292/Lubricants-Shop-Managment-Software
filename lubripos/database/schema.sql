@@ -292,9 +292,10 @@ CREATE INDEX IF NOT EXISTS idx_sitems_product ON sale_items(product_id);
 -- net returns out via this ledger (Net = gross sales - refunds).
 CREATE TABLE IF NOT EXISTS sale_returns (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    sale_id      INTEGER NOT NULL REFERENCES sales(id) ON DELETE CASCADE,
+    sale_id      INTEGER REFERENCES sales(id) ON DELETE CASCADE,  -- NULL = return with no receipt (unlinked)
     return_date  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     refund_minor INTEGER NOT NULL DEFAULT 0 CHECK (refund_minor >= 0),
+    method       TEXT,                       -- how the refund was paid out (Cash/Bank/...); NULL treated as Cash
     notes        TEXT,
     created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))

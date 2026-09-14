@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..controllers.sale_controller import SaleController
 from ..core.session import current_session
+from .no_receipt_return_dialog import NoReceiptReturnDialog
 
 COLUMNS = ["Product", "Sold", "Returned", "Return", "Unit Price", "Refund"]
 C_PRODUCT, C_SOLD, C_RETURNED, C_RETURN, C_PRICE, C_REFUND = range(6)
@@ -103,8 +104,14 @@ class ReturnsView(QWidget):
         self.invoice.returnPressed.connect(self._fetch)
         fetch_btn = QPushButton("Fetch invoice")
         fetch_btn.clicked.connect(self._fetch)
+        self.noreceipt_btn = QPushButton("Return without receipt")
+        self.noreceipt_btn.setObjectName("Secondary")
+        self.noreceipt_btn.clicked.connect(self._no_receipt_return)
+        if not current_session.can("sale.void"):
+            self.noreceipt_btn.setToolTip("You do not have the return/void privilege")
         lookup.addWidget(self.invoice, 1)
         lookup.addWidget(fetch_btn)
+        lookup.addWidget(self.noreceipt_btn)
         root.addLayout(lookup)
 
         self.meta = QLabel("Enter an invoice number to look it up.")
@@ -272,3 +279,14 @@ class ReturnsView(QWidget):
             self._fetch()   # refresh remaining quantities
         else:
             QMessageBox.warning(self, "Could not return", msg)
+
+    # -- no-receipt return -------------------------------------------
+    def _no_receipt_return(self) -> None:
+        """Open the unlinked-return dialog. Still gated by the return/void
+        privilege, but no admin-password re-confirm."""
+        if not current_session.can("sale.void"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the return/void privilege.")
+            return
+        dlg = NoReceiptReturnDialog(self.ctx, self.controller, self)
+        dlg.exec()

@@ -142,8 +142,15 @@ class ReportService:
         net = gross - refunds_total - expense_total
 
         # Cash in hand = the cash left from the day: cash sales received, minus
-        # refunds and expenses. All expenses are paid out of the cash till.
-        cash_in_hand = method_totals.get("Cash", 0) - refunds_total - expense_total
+        # the refunds paid OUT IN CASH and expenses. Refunds paid back by bank/
+        # wallet don't touch the till, so only cash-method refunds are subtracted
+        # (a refund with no method recorded is treated as cash, as before).
+        cash_refunds = self.db.query_one(
+            "SELECT COALESCE(SUM(sri.line_total_minor),0) v "
+            "FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id "
+            "WHERE sr.return_date LIKE ? AND COALESCE(sr.method,'Cash')='Cash'",
+            (like,))["v"]
+        cash_in_hand = method_totals.get("Cash", 0) - cash_refunds - expense_total
 
         # per-method map so the UI can show a card per channel even at zero
         by_method = method_totals

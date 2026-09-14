@@ -248,6 +248,60 @@ class SaleService:
         log.info("Return recorded for sale=%s refund_minor=%s", sale_id, refund)
         return {"return_id": return_id, "refund_minor": refund}
 
+    def create_no_receipt_return(self, items: list[dict[str, Any]], *,
+                                 method: str | None = None, notes: str = "",
+                                 user_id: int | None = None) -> dict[str, Any]:
+        """Record a return with NO original sale (unlinked). items:
+        [{product_id, qty, refund_minor}] where refund_minor is the amount to give
+        back for that line (the operator decides it — there is no sale to price
+        against). Each item's stock is restored; the refund uses the product's
+        current cost as the profit snapshot. method = how the money went out."""
+        if not items:
+            raise ValidationError("Add at least one product to return.")
+        with self.db.transaction() as conn:
+            picked, refund = [], 0
+            for it in items:
+                pid = it.get("product_id")
+                qty = int(it.get("qty", 0))
+                line_refund = int(it.get("refund_minor", 0))
+                if not pid or qty <= 0:
+                    continue
+                if line_refund < 0:
+                    raise ValidationError("Refund amount cannot be negative.")
+                prow = conn.execute(
+                    "SELECT name, purchase_price_minor FROM products WHERE id = ?",
+                    (pid,)).fetchone()
+                if prow is None:
+                    raise NotFoundError(f"Product {pid} not found")
+                picked.append((pid, prow["name"], qty, line_refund,
+                               prow["purchase_price_minor"]))
+                refund += line_refund
+            if not picked:
+                raise ValidationError("Add at least one product to return.")
+
+            cur = conn.execute(
+                "INSERT INTO sale_returns (sale_id, refund_minor, method, notes, "
+                "created_by) VALUES (NULL, ?, ?, ?, ?)",
+                (refund, (method or None), (notes or None), user_id))
+            return_id = cur.lastrowid
+            for pid, name, qty, line_refund, cost in picked:
+                unit_refund = line_refund // qty if qty else 0
+                conn.execute(
+                    "INSERT INTO sale_return_items (return_id, sale_item_id, "
+                    "product_id, product_name, qty, unit_price_minor, "
+                    "unit_cost_minor, line_total_minor) VALUES (?,NULL,?,?,?,?,?,?)",
+                    (return_id, pid, name, qty, unit_refund, cost, line_refund))
+                conn.execute(
+                    "UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?",
+                    (qty, pid))
+
+        self.audit.record(action="RETURN_NO_RECEIPT", user_id=user_id,
+                          entity_type="sale_return", entity_id=return_id,
+                          details={"refund_minor": refund, "method": method or "Cash",
+                                   "lines": len(picked)})
+        log.warning("No-receipt return recorded id=%s refund_minor=%s", return_id, refund)
+        return {"return_id": return_id, "refund_minor": refund}
+
     # -- reads --------------------------------------------------------
     def list_sales(
         self,
