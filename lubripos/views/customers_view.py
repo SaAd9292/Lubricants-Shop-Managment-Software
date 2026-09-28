@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -20,10 +20,9 @@ from PySide6.QtWidgets import (
 
 from ..app_context import AppContext
 from ..controllers.customer_controller import CustomerController
-from ..controllers.payment_account_controller import PaymentAccountController
 from ..reports.report_exporter import to_pdf, to_xlsx
 from ..services.column_presets import ColumnPresetStore
-from ..ui.widgets import DataTable, FlowLayout, number_rows
+from ..ui.widgets import DataTable, number_rows
 from .column_select_dialog import ColumnSelectDialog
 
 PAGE_SIZE = 25
@@ -118,7 +117,7 @@ class CustomersView(QWidget):
         root.addLayout(hint_row)
 
         footer = QHBoxLayout()
-        hist_btn = QPushButton("View history")
+        hist_btn = QPushButton("Purchase history")
         hist_btn.setObjectName("Secondary")
         hist_btn.clicked.connect(self._open_history)
         edit_btn = QPushButton("Edit")
@@ -127,7 +126,7 @@ class CustomersView(QWidget):
         self.del_btn = QPushButton("Remove")
         self.del_btn.setObjectName("Secondary")
         self.del_btn.clicked.connect(self._delete_selected)
-        debt_btn = QPushButton("Debts / payments")
+        debt_btn = QPushButton("Ledger")
         debt_btn.setObjectName("Secondary")
         debt_btn.clicked.connect(self._open_ledger)
         footer.addWidget(hist_btn)
@@ -475,19 +474,24 @@ class CustomerHistoryDialog(QDialog):
 
 
 class CustomerLedgerDialog(QDialog):
-    """Shows one customer's credit (udhaar) ledger — every unpaid 'Debt' sale
-    and every repayment — with the current balance owed, plus a small form to
-    record a new repayment against the tab."""
+    """Read-only MONEY ledger for one customer, in classic Debit / Credit form.
 
-    _METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
+    Debit  = amount charged to the customer (credit/udhaar sales + any opening
+             balance) — increases what they owe.
+    Credit = amount received from the customer (recoveries/payments) —
+             decreases what they owe.
+    Balance = the running amount owed after each entry.
+
+    This is purely the money view; a customer's PURCHASE history (what products
+    they bought) is a separate screen. Recording a recovery lives on the Cash
+    Recovery sidebar screen."""
 
     def __init__(self, parent, controller: CustomerController, customer_id: int) -> None:
         super().__init__(parent)
         self.controller = controller
-        self.pay_ctl = PaymentAccountController(controller.ctx)
         self.customer_id = customer_id
-        self.setWindowTitle("Debts / payments")
-        self.resize(680, 560)
+        self.setWindowTitle("Customer ledger")
+        self.resize(720, 520)
         self._build()
         self._refresh()
 
@@ -500,89 +504,42 @@ class CustomerLedgerDialog(QDialog):
         self.balance_lbl.setStyleSheet("font-size:16px; font-weight:700;")
         root.addWidget(self.balance_lbl)
 
-        root.addWidget(QLabel("Ledger (charges on credit, and repayments)"))
-        self.tbl = QTableWidget(0, 4)
-        self.tbl.setHorizontalHeaderLabels(["Date", "Type", "Detail", "Amount"])
+        root.addWidget(QLabel("Ledger — debit (charged) and credit (paid)"))
+        self.tbl = QTableWidget(0, 5)
+        self.tbl.setHorizontalHeaderLabels(
+            ["Date", "Details", "Debit", "Credit", "Balance"])
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl.setSelectionMode(QAbstractItemView.NoSelection)
-        self.tbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         root.addWidget(self.tbl, 1)
 
-        # -- record a repayment (laid out like the Sale screen's Payment panel) --
-        pay_title = QLabel("Record payment")
-        pay_title.setStyleSheet("font-size:14px; font-weight:700; margin-top:6px;")
-        root.addWidget(pay_title)
+        # totals strip under the table
+        self.totals_lbl = QLabel("")
+        self.totals_lbl.setObjectName("Muted")
+        root.addWidget(self.totals_lbl)
 
-        # payment method as selectable chips, exactly like the POS
-        self._method_group = QButtonGroup(self)
-        self._method_group.setExclusive(True)
-        chips = FlowLayout(spacing=6)
-        for m in self._METHODS:
-            chip = QPushButton(m)
-            chip.setObjectName("Chip")
-            chip.setCheckable(True)
-            chip.setMinimumWidth(chip.sizeHint().width())
-            if m == "Cash":
-                chip.setChecked(True)
-            self._method_group.addButton(chip)
-            chips.addWidget(chip)
-        root.addLayout(chips)
-        self._method_group.buttonClicked.connect(lambda _b: self._reload_pay_accounts())
-
-        form = QFormLayout()
-        self.account = QComboBox()
-        self.amount = QDoubleSpinBox()
-        self.amount.setMaximum(99_999_999)
-        self.amount.setDecimals(2)
-        self.amount.setButtonSymbols(QDoubleSpinBox.NoButtons)
-        self.pay_notes = QLineEdit()
-        self.pay_notes.setPlaceholderText("Optional note")
-        self._acct_label = QLabel("Account:")
-        form.addRow(self._acct_label, self.account)
-        form.addRow("Amount paid:", self.amount)
-        form.addRow("Note:", self.pay_notes)
-        root.addLayout(form)
-        self._reload_pay_accounts()
+        hint = QLabel("To record a payment, use the Cash Recovery screen in the "
+                      "sidebar.")
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
 
         bar = QHBoxLayout()
+        print_btn = QPushButton("Print / PDF")
+        print_btn.setObjectName("Secondary")
+        print_btn.clicked.connect(lambda: self._export("pdf"))
+        excel_btn = QPushButton("Export Excel")
+        excel_btn.setObjectName("Secondary")
+        excel_btn.clicked.connect(lambda: self._export("xlsx"))
+        bar.addWidget(print_btn)
+        bar.addWidget(excel_btn)
         bar.addStretch(1)
-        pay_btn = QPushButton("Record payment")
-        pay_btn.setObjectName("Success")
-        pay_btn.clicked.connect(self._record)
         close_btn = QPushButton("Close")
         close_btn.setObjectName("Secondary")
         close_btn.clicked.connect(self.accept)
-        bar.addWidget(pay_btn)
         bar.addWidget(close_btn)
         root.addLayout(bar)
-
-    def _selected_method(self) -> str:
-        btn = self._method_group.checkedButton()
-        return btn.text() if btn else "Cash"
-
-    def _reload_pay_accounts(self) -> None:
-        """Bank / EasyPaisa / JazzCash need a specific account (like the POS);
-        Cash has none. Each item carries (account_id, account_name)."""
-        m = self._selected_method()
-        self.account.clear()
-        if m == "Cash":
-            # cash needs no account — hide the whole row so it's not asked for
-            self._acct_label.setVisible(False)
-            self.account.setVisible(False)
-            self.account.addItem("", (None, None))
-            return
-        self._acct_label.setVisible(True)
-        self.account.setVisible(True)
-        accts = self.pay_ctl.list(method=m, active_only=True)
-        if not accts:
-            self.account.addItem("(no accounts — add in Settings)", (None, None))
-            self.account.setEnabled(False)
-            return
-        self.account.setEnabled(True)
-        for a in accts:
-            label = a["name"] + (f" — {a['account_no']}" if a.get("account_no") else "")
-            self.account.addItem(label, (a["id"], a["name"]))
 
     def _refresh(self) -> None:
         data = self.controller.ledger(self.customer_id)
@@ -596,55 +553,102 @@ class CustomerLedgerDialog(QDialog):
             "font-size:16px; font-weight:700; color:%s;"
             % ("#dc2626" if bal > 0 else "#16a34a"))
 
-        # merge charges (+) and payments (-) into one date-ordered view
+        entries = self._ledger_entries(data)
+        self.tbl.setRowCount(len(entries))
+        running = 0
+        for r, (dt, details, debit, credit) in enumerate(entries):
+            running += debit - credit
+            self.tbl.setItem(r, 0, QTableWidgetItem(dt))
+            self.tbl.setItem(r, 1, QTableWidgetItem(details))
+            dcell = _money_item(fmt(debit) if debit else "")
+            if debit:
+                dcell.setForeground(QColor("#dc2626"))
+            self.tbl.setItem(r, 2, dcell)
+            ccell = _money_item(fmt(credit) if credit else "")
+            if credit:
+                ccell.setForeground(QColor("#16a34a"))
+            self.tbl.setItem(r, 3, ccell)
+            bcell = _money_item(fmt(running))
+            bcell.setForeground(QColor("#dc2626" if running > 0 else "#16a34a"))
+            self.tbl.setItem(r, 4, bcell)
+
+        self.totals_lbl.setText(
+            f"Total debit (charged):  {fmt(data.get('charged_total', 0))}"
+            f"      Total credit (paid):  {fmt(data.get('paid_total', 0))}"
+            f"      Balance owed:  {fmt(bal)}")
+
+    @staticmethod
+    def _ledger_entries(data: dict) -> list[tuple]:
+        """One date-ordered list of (date, details, debit_minor, credit_minor):
+        charges are debits (owe more), payments are credits (owe less)."""
         entries = []
         for c in data["charges"]:
-            entries.append((c["date"], "Purchase (credit)",
-                            f"Invoice {c['ref']}", c["amount"], "#dc2626"))
+            ref = c.get("ref") or ""
+            details = ref if ref.startswith("Opening") else f"Purchase — Invoice {ref}"
+            entries.append((c["date"], details, int(c["amount"]), 0))
         for p in data["payments"]:
-            detail = p.get("method") or ""
+            detail = p.get("method") or "Payment"
             if p.get("notes"):
                 detail = (detail + " — " + p["notes"]).strip(" —")
-            entries.append((p["date"], "Payment", detail or "Repayment",
-                            -p["amount"], "#16a34a"))
+            entries.append((p["date"], detail, 0, int(p["amount"])))
         entries.sort(key=lambda e: e[0])
-        self.tbl.setRowCount(len(entries))
-        for r, (dt, typ, detail, amt, color) in enumerate(entries):
-            self.tbl.setItem(r, 0, QTableWidgetItem(dt))
-            self.tbl.setItem(r, 1, QTableWidgetItem(typ))
-            self.tbl.setItem(r, 2, QTableWidgetItem(detail))
-            it = _money_item(("-" if amt < 0 else "") + fmt(abs(amt)))
-            it.setForeground(QColor(color))
-            self.tbl.setItem(r, 3, it)
+        return entries
 
-    def _record(self) -> None:
-        amt = self.amount.value()
-        if amt <= 0:
-            QMessageBox.information(self, "Enter amount",
-                                    "Enter a payment amount greater than zero.")
-            return
-        method = self._selected_method()
-        acct_id, acct_name = self.account.currentData() or (None, None)
-        if method != "Cash" and acct_id is None:
-            QMessageBox.information(
-                self, "Choose an account",
-                f"Select which {method} account received the money "
-                "(or add one in Settings → Payment Accounts).")
-            return
-        ok, msg, pay_id = self.controller.record_payment(
-            self.customer_id, amt, method=method, account_id=acct_id,
-            account_name=acct_name, notes=self.pay_notes.text())
-        if not ok:
-            QMessageBox.warning(self, "Could not record payment", msg)
-            return
-        self.amount.setValue(0)
-        self.pay_notes.clear()
-        self._refresh()
-        # give the customer a printable receipt
-        rok, rmsg, path = self.controller.payment_receipt(pay_id)
-        if rok:
+    # -- print / export ----------------------------------------------
+    def _report(self) -> dict:
+        """Build a generic report dict (printable PDF / Excel) for this
+        customer's ledger. Debit/Credit/Balance are pre-formatted strings so the
+        zero side of each row prints blank rather than 'Rs 0.00'."""
+        data = self.controller.ledger(self.customer_id)
+        cust = data["customer"]
+        fmt = self.controller.fmt
+        rows, running = [], 0
+        for dt, details, debit, credit in self._ledger_entries(data):
+            running += debit - credit
+            rows.append({
+                "date": dt, "details": details,
+                "debit": fmt(debit) if debit else "",
+                "credit": fmt(credit) if credit else "",
+                "balance": fmt(running),
+            })
+        columns = [
+            {"key": "date", "label": "Date"},
+            {"key": "details", "label": "Details"},
+            {"key": "debit", "label": "Debit", "align": "right"},
+            {"key": "credit", "label": "Credit", "align": "right"},
+            {"key": "balance", "label": "Balance", "align": "right"},
+        ]
+        sub = cust["name"] + (f"  ·  {cust['phone']}" if cust.get("phone") else "")
+        return {
+            "key": "customer_ledger", "title": "Customer Ledger",
+            "subtitle": sub, "columns": columns, "rows": rows,
+            "orientation": "portrait",
+            "summary": [
+                {"label": "Total debit (charged)", "value": data.get("charged_total", 0),
+                 "money": True},
+                {"label": "Total credit (paid)", "value": data.get("paid_total", 0),
+                 "money": True},
+                {"label": "Balance owed", "value": data.get("balance", 0), "money": True},
+            ],
+        }
+
+    def _export(self, fmt: str) -> None:
+        company = self.controller.ctx.company.get_company()
+        report = self._report()
+        cust = report["subtitle"].split("  ·  ")[0].replace(" ", "_")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            if fmt == "xlsx":
+                suggested = str(Path.home() / f"ledger_{cust}_{stamp}.xlsx")
+                chosen, _ = QFileDialog.getSaveFileName(
+                    self, "Save ledger as", suggested, "Excel files (*.xlsx)")
+                if not chosen:
+                    return
+                path = to_xlsx(report, company, chosen)
+                QMessageBox.information(self, "Exported", f"Saved to:\n{path}")
+            else:   # pdf -> open for printing
+                path = to_pdf(report, company, os.path.join(
+                    tempfile.gettempdir(), f"ledger_{cust}_{stamp}.pdf"))
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QMessageBox.information(
-                self, "Payment saved",
-                "Payment recorded, but the receipt could not be created:\n" + rmsg)
+        except Exception as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))

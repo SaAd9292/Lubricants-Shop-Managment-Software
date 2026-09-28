@@ -7,16 +7,16 @@ hover read-out.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QDate, QRectF, Qt
 from PySide6.QtGui import (
     QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
 )
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
-    QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QDateEdit, QFrame, QGraphicsDropShadowEffect, QGridLayout,
+    QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ..app_context import AppContext
 from ..core.logging_config import get_logger
@@ -436,7 +436,6 @@ class DashboardView(QWidget):
         self.ctx = ctx
         self.navigate = navigate
         self.svc = DashboardService(ctx.db)
-        self._period = "today"
         self._build_ui()
         self.refresh()
 
@@ -466,18 +465,32 @@ class DashboardView(QWidget):
         greet_box.addWidget(self._greeting_sub)
         header.addLayout(greet_box)
         header.addStretch(1)
-        self._period_group = QButtonGroup(self)
-        self._period_group.setExclusive(True)
-        for _key, _lbl in (("today", "Today"), ("week", "Week"), ("month", "Month")):
+        # date RANGE — the dashboard shows analytics for [From, To]. Quick
+        # presets (Today / Week / Month) just fill the two pickers.
+        today = QDate.currentDate()
+        header.addWidget(QLabel("From"))
+        self._from = QDateEdit()
+        self._from.setCalendarPopup(True)
+        self._from.setDisplayFormat("dd MMM yyyy")
+        self._from.setMaximumDate(today)
+        self._from.setDate(today)
+        self._from.dateChanged.connect(lambda _=None: self.refresh())
+        header.addWidget(self._from)
+        header.addSpacing(4)
+        header.addWidget(QLabel("To"))
+        self._to = QDateEdit()
+        self._to.setCalendarPopup(True)
+        self._to.setDisplayFormat("dd MMM yyyy")
+        self._to.setMaximumDate(today)
+        self._to.setDate(today)
+        self._to.dateChanged.connect(lambda _=None: self.refresh())
+        header.addWidget(self._to)
+        header.addSpacing(8)
+        for _lbl, _preset in (("Today", "today"), ("Week", "week"), ("Month", "month")):
             chip = QPushButton(_lbl)
             chip.setObjectName("Chip")
-            chip.setCheckable(True)
-            chip.setProperty("period", _key)
-            if _key == self._period:
-                chip.setChecked(True)
-            self._period_group.addButton(chip)
+            chip.clicked.connect(lambda _=False, p=_preset: self._apply_preset(p))
             header.addWidget(chip)
-        self._period_group.buttonClicked.connect(self._on_period)
         header.addSpacing(10)
         # quick light/dark toggle — available to everyone, right on the dashboard
         self._mode = "dark" if str(
@@ -509,7 +522,8 @@ class DashboardView(QWidget):
             "border-radius:8px;padding:9px 14px;text-align:left;font-weight:600;}"
             "QPushButton:hover{background:#fee2e2;}")
         self._neg_banner.clicked.connect(
-            lambda: self.navigate("products") if self.navigate else None)
+            lambda: self.navigate("products", "negative_products")
+            if self.navigate else None)
         self._neg_banner.hide()
         root.addWidget(self._neg_banner)
 
@@ -520,6 +534,8 @@ class DashboardView(QWidget):
         specs = [
             ("card_sales", "Sales", "#2563eb", "bars", "sales"),
             ("card_profit", "Profit", "#16a34a", "up", "reports"),
+            ("card_cash", "Cash in Hand (system)", "#0f766e", "bars", "reports"),
+            ("card_actual", "Actual Cash (last count)", "#b45309", "bars", "reports"),
             ("card_expenses", "Expenses", "#ef4444", "down", "expenses"),
             ("card_stock", "Total Stock Value", "#7c3aed", "box", "products"),
             ("card_low", "Low Stock Alerts", "#f59e0b", "warn", "products"),
@@ -533,6 +549,17 @@ class DashboardView(QWidget):
             grid.setColumnStretch(col, 1)
         root.addLayout(grid)
 
+        # end-of-day drawer count action
+        count_row = QHBoxLayout()
+        count_row.addStretch(1)
+        self._count_btn = QPushButton("  Count drawer (end of day)")
+        self._count_btn.setObjectName("Secondary")
+        self._count_btn.setToolTip("Enter the cash counted in the drawer and "
+                                   "compare it to the system")
+        self._count_btn.clicked.connect(self._open_cash_count)
+        count_row.addWidget(self._count_btn)
+        root.addLayout(count_row)
+
         chart_card = QFrame()
         chart_card.setObjectName("DashCard")
         chart_card.setStyleSheet(_CARD_QSS)
@@ -543,8 +570,9 @@ class DashboardView(QWidget):
         cl = QVBoxLayout(chart_card)
         cl.setContentsMargins(20, 16, 20, 14)
         cl.setSpacing(2)
-        ct = QLabel("Sales — last 7 days")
-        ct.setStyleSheet(f"font-size:15px;font-weight:700;color:{_INK};")
+        self._chart_title = QLabel("Sales")
+        self._chart_title.setStyleSheet(f"font-size:15px;font-weight:700;color:{_INK};")
+        ct = self._chart_title
         self._chart_sub = QLabel("")
         self._chart_sub.setStyleSheet(f"color:{_FAINT};font-size:11px;")
         cl.addWidget(ct)
@@ -570,8 +598,26 @@ class DashboardView(QWidget):
     def clear_update_banner(self) -> None:
         self._update_banner.hide()
 
-    def _on_period(self, btn) -> None:
-        self._period = btn.property("period")
+    def _open_cash_count(self) -> None:
+        from .cash_count_dialog import CashCountDialog
+        CashCountDialog(self.ctx, self).exec()
+        self.refresh()   # a saved count doesn't change cash, but keep the view fresh
+
+    def _apply_preset(self, preset: str) -> None:
+        """Fill the From/To pickers from a quick preset, then refresh once."""
+        today = QDate.currentDate()
+        if preset == "week":                       # this week to date (Mon–today)
+            start = today.addDays(-(today.dayOfWeek() - 1))
+        elif preset == "month":                    # this month to date (1st–today)
+            start = QDate(today.year(), today.month(), 1)
+        else:                                      # today
+            start = today
+        self._from.blockSignals(True)
+        self._to.blockSignals(True)
+        self._from.setDate(start)
+        self._to.setDate(today)
+        self._from.blockSignals(False)
+        self._to.blockSignals(False)
         self.refresh()
 
     def _sync_theme_btn(self) -> None:
@@ -609,10 +655,13 @@ class DashboardView(QWidget):
         def m(v):
             return format_money(v, sym, mu)
 
-        s = self.svc.summary(self._period)
-        d = self.svc.deltas(self._period)
-        plabel = {"today": "today", "week": "last 7 days",
-                  "month": "this month"}.get(self._period, "today")
+        # pass both dates; the service orders them, so an inverted pair is safe
+        d_from = self._from.date().toString("yyyy-MM-dd")
+        d_to = self._to.date().toString("yyyy-MM-dd")
+        s = self.svc.summary(d_from, d_to)
+        d = self.svc.deltas(d_from, d_to)
+        win_lbl = self._window_label(s.get("window_start"), s.get("window_end"))
+        plabel = f"in {win_lbl}"
 
         def trend(pct, *, up_is_good=True):
             """(hint text, colour) for a delta. up_is_good flips the colour for
@@ -629,6 +678,24 @@ class DashboardView(QWidget):
         h, hc = trend(d["profit_pct"])
         self.card_profit.set_value(m(s["today_profit_minor"]), h,
                                    color="#16a34a", hint_color=hc)
+        ends_today = self._to.date() == QDate.currentDate()
+        cash_hint = "total business cash" if ends_today else f"as of {s.get('window_end')}"
+        self.card_cash.set_value(m(s.get("cash_in_hand_minor", 0)),
+                                 cash_hint, color="#0f766e")
+        # Actual vs system: the last physical drawer count and its difference
+        lc = self.svc.last_cash_count()
+        if lc:
+            diff = lc["difference_minor"]
+            when = lc.get("count_date") or ""
+            if diff == 0:
+                hint, col = f"balanced · {when}", "#16a34a"
+            else:
+                word = "over" if diff > 0 else "short"
+                hint = f"{word} {m(abs(diff))} · {when}"
+                col = "#b45309" if diff > 0 else "#dc2626"
+            self.card_actual.set_value(m(lc["counted_minor"]), hint, color=col)
+        else:
+            self.card_actual.set_value("—", "no count yet — use Count drawer")
         h, hc = trend(d["expenses_pct"], up_is_good=False)
         self.card_expenses.set_value(m(s["today_expenses_minor"]), h,
                                      color="#ef4444" if s["today_expenses_minor"] else None,
@@ -639,16 +706,16 @@ class DashboardView(QWidget):
                                 color="#b45309" if low_n else None)
         self.card_products.set_value(str(s["inactive_product_count"]), "inactive")
 
-        top = self.svc.top_sellers(self._period, 6)
+        top = self.svc.top_sellers(d_from, d_to, 6)
         self.top_card.set_rows(
             [(t["name"], f"{t['qty']} sold") for t in top],
             f"No sales {plabel}.")
 
-        sales = self.svc.recent_sales(6)
+        sales = self.svc.sales_in_window(d_from, d_to, 6)
         self.recent_card.set_rows(
             [(f"{r['invoice_no']}   ·   {(r.get('sale_date') or '')[:16]}",
               m(r["grand_total_minor"])) for r in sales],
-            "No sales yet today.")
+            f"No sales {plabel}.")
 
         # negative-stock alert banner + fold negatives into the low-stock list
         neg = self.svc.negative_stock(8)
@@ -670,7 +737,29 @@ class DashboardView(QWidget):
                  for r in low]
         self.low_card.set_rows(rows[:8], "Nothing low on stock.")
 
-        series = self.svc.sales_series(7)
+        series = self.svc.chart_series(d_from, d_to)
         total = sum(x.get("total", 0) for x in series)
-        self._chart_sub.setText(f"Daily gross sales  ·  total {m(total)}")
+        self._chart_title.setText(f"Sales — {win_lbl}")
+        self._chart_sub.setText(f"Gross sales per {'month' if len(series) > 62 else 'day'}"
+                                f"  ·  total {m(total)}")
         self.chart.set_series(series, sym, mu)
+
+    @staticmethod
+    def _window_label(start: str | None, end: str | None) -> str:
+        """Human label for the selected range: a single date ('12 Jan 2026'), a
+        full calendar month ('January 2026'), or a plain range ('12 Jan – 20 Jan
+        2026')."""
+        if not start or not end:
+            return "this period"
+        try:
+            sd = datetime.strptime(start, "%Y-%m-%d")
+            ed = datetime.strptime(end, "%Y-%m-%d")
+        except ValueError:
+            return "this period"
+        if start == end:
+            return sd.strftime("%d %b %Y")
+        if sd.day == 1 and (ed + timedelta(days=1)).day == 1 and sd.month == ed.month \
+                and sd.year == ed.year:
+            return sd.strftime("%B %Y")
+        left = sd.strftime("%d %b") + (sd.strftime(" %Y") if sd.year != ed.year else "")
+        return f"{left} – {ed.strftime('%d %b %Y')}"

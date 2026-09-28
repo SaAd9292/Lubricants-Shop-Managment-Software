@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 27
+CURRENT_VERSION = 29
 
 
 def run_migrations(db: Database) -> None:
@@ -42,6 +42,8 @@ def run_migrations(db: Database) -> None:
     _migration_25_sale_notes(db)
     _migration_26_discounts(db)
     _migration_27_noreceipt_returns(db)
+    _migration_28_cash_opening(db)
+    _migration_29_cash_counts(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -415,6 +417,52 @@ def _migration_25_sale_notes(db: Database) -> None:
     if not _column_exists(db, "sales", "notes"):
         db.execute("ALTER TABLE sales ADD COLUMN notes TEXT")
     log.info("Migration: added sales.notes")
+
+
+def _migration_28_cash_opening(db: Database) -> None:
+    """v28: a persistent, carry-over cash-in-hand balance. The drawer no longer
+    resets to zero each day — it starts from an opening float the admin sets once
+    and then moves with every cash event (cash sales/repayments in; cash refunds,
+    expenses, and supplier/purchase payments out).
+
+    cash_opening_minor  = the physical cash in the drawer on the day the shop
+                          starts tracking (baked-in history up to that point).
+    cash_opening_date   = the 'as of' date (YYYY-MM-DD); only cash movements on
+                          or after this date are added to the float, so history
+                          before it isn't double-counted.
+    """
+    if not _column_exists(db, "company_settings", "cash_opening_minor"):
+        db.execute("ALTER TABLE company_settings ADD COLUMN "
+                   "cash_opening_minor INTEGER NOT NULL DEFAULT 0")
+    if not _column_exists(db, "company_settings", "cash_opening_date"):
+        db.execute("ALTER TABLE company_settings ADD COLUMN cash_opening_date TEXT")
+    log.info("Migration: added company_settings.cash_opening_minor + date")
+
+
+def _migration_29_cash_counts(db: Database) -> None:
+    """v29: end-of-day drawer counts. Each row is one physical cash count: what
+    the cashier counted, what the system expected (TODAY'S cash takings — the
+    single-day drawer figure, not the total business Cash in Hand), and the
+    difference (counted - expected; positive = over, negative = short). Purely a
+    record/verification — it does NOT adjust Cash in Hand, so a real shortage
+    stays visible until an admin reconciles it."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS cash_counts ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " count_date       TEXT,"                 # the day this count reconciles
+        " counted_minor    INTEGER NOT NULL,"
+        " expected_minor   INTEGER NOT NULL,"
+        " difference_minor INTEGER NOT NULL,"     # counted - expected
+        " notes            TEXT,"
+        " created_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+        " counted_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+        ")")
+    # a DB that created cash_counts before count_date existed gets it added
+    if not _column_exists(db, "cash_counts", "count_date"):
+        db.execute("ALTER TABLE cash_counts ADD COLUMN count_date TEXT")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_cashcounts_date "
+               "ON cash_counts(count_date)")
+    log.info("Migration: added cash_counts table")
 
 
 def _migration_27_noreceipt_returns(db: Database) -> None:

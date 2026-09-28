@@ -89,6 +89,11 @@ class DayCloseWidget(QWidget):
         right.addWidget(self.returns_tbl)
         self.returns_total = self._total_label()
         right.addWidget(self.returns_total)
+        right.addWidget(self._h("Cash drawer"))
+        self.cash_tbl = self._table("No cash movement recorded.", 130)
+        right.addWidget(self.cash_tbl)
+        self.cash_total = self._total_label()
+        right.addWidget(self.cash_total)
         right.addStretch(1)
         body.addLayout(right, 1)
 
@@ -124,6 +129,7 @@ class DayCloseWidget(QWidget):
         self._fill_cards(self.kpi_row, [
             ("Gross sales", fmt(summ.get("Gross sales", 0)), _ACCENT),
             ("Money received", fmt(summ.get("Money received", 0)), _GREEN),
+            ("Opening cash", fmt(summ.get("Opening cash", 0)), _MUTED),
             ("Cash in hand", fmt(summ.get("Cash in hand", 0)), "#0f172a"),
             ("Refunds", fmt(summ.get("Refunds", 0)), _RED),
             ("Expenses", fmt(summ.get("Expenses", 0)), _RED),
@@ -152,6 +158,11 @@ class DayCloseWidget(QWidget):
             self._fill_table(self.repay_tbl, repay)
             self.repay_total.setText(
                 f"{repay['total_label']}:  {fmt(repay['total'])}")
+        cash = secs.get("Cash drawer")
+        if cash is not None:
+            self._fill_table(self.cash_tbl, cash)
+            self.cash_total.setText(
+                f"{cash['total_label']}:  {fmt(cash['total'])}")
 
     # -- helpers ------------------------------------------------------
     def _fill_cards(self, layout, items) -> None:

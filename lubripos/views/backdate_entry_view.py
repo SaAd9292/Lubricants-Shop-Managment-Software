@@ -18,8 +18,8 @@ from PySide6.QtCore import QDate, QEvent, Qt, QStringListModel
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QComboBox, QCompleter, QDoubleSpinBox,
-    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
+    QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QScrollArea, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -55,8 +55,27 @@ class BackdateEntryView(QWidget):
 
     # -- ui -----------------------------------------------------------
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(28, 22, 28, 22)
+        # dialog-style: a centred fixed-width card inside a scroll area so the
+        # tall form stays usable on small windows.
+        page = QVBoxLayout(self)
+        page.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        holder = QWidget()
+        hb = QHBoxLayout(holder)
+        hb.setContentsMargins(24, 20, 24, 20)
+        card = QFrame()
+        card.setObjectName("Card")
+        card.setFixedWidth(880)
+        hb.addStretch(1)
+        hb.addWidget(card)
+        hb.addStretch(1)
+        scroll.setWidget(holder)
+        page.addWidget(scroll)
+
+        root = QVBoxLayout(card)
+        root.setContentsMargins(26, 22, 26, 22)
         root.setSpacing(12)
 
         title = QLabel(tr("Past-Date Sale"))
@@ -197,9 +216,10 @@ class BackdateEntryView(QWidget):
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._save)
         QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._save)
 
-        # Enter-to-advance focus chain (no mouse required)
+        # Enter-to-advance focus chain (no mouse required). Description sits
+        # between Customer and Product so Enter no longer skips it.
         self._chain = [self.d_day, self.d_month, self.d_year, self.method,
-                       self.cust_name, self.prod, self.qty, self.price]
+                       self.cust_name, self.notes, self.prod, self.qty, self.price]
         for w in self._chain:
             self._install_enter(w)
 
@@ -304,11 +324,12 @@ class BackdateEntryView(QWidget):
         self._cust_suggest.setModel(QStringListModel(names, self._cust_suggest))
 
     def _on_cust_pick(self, text: str) -> None:
-        """A saved customer was chosen from the type-ahead -> take it and move on."""
+        """A saved customer was chosen from the type-ahead -> take it and move on
+        to Description (not Product, so the paper/bill number isn't skipped)."""
         c = self._cust_index.get((text or "").strip().lower())
         if c:
             self.cust_name.setText(c["name"])
-            self._focus(self.prod)
+            self._focus(self.notes)
 
     def _resolve_customer_id(self) -> int | None:
         """Match the typed name to a saved customer (exact, case-insensitive)."""

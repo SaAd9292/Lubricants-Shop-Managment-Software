@@ -57,6 +57,8 @@ class ReportController:
             return rs.purchases(date_from, date_to)
         if key == "expenses":
             return rs.expenses(date_from, date_to)
+        if key == "cash_ledger":
+            return rs.cash_ledger(date_from, date_to)
         if key == "tax":
             return rs.tax(date_from, date_to)
         if key == "product_list":

@@ -11,8 +11,10 @@ from datetime import date
 from typing import Any
 
 from ..core.exceptions import NotFoundError
+from ..core.money import format_money
 from ..core.packs import split_packs
 from ..database.connection import Database
+from .cash_service import CashService
 
 
 def _col(key, label, align="left", money=False):
@@ -141,16 +143,26 @@ class ReportService:
         gross = agg["total"]
         net = gross - refunds_total - expense_total
 
-        # Cash in hand = the cash left from the day: cash sales received, minus
-        # the refunds paid OUT IN CASH and expenses. Refunds paid back by bank/
-        # wallet don't touch the till, so only cash-method refunds are subtracted
-        # (a refund with no method recorded is treated as cash, as before).
-        cash_refunds = self.db.query_one(
-            "SELECT COALESCE(SUM(sri.line_total_minor),0) v "
-            "FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id "
-            "WHERE sr.return_date LIKE ? AND COALESCE(sr.method,'Cash')='Cash'",
-            (like,))["v"]
-        cash_in_hand = method_totals.get("Cash", 0) - cash_refunds - expense_total
+        # Cash in hand is now a RUNNING drawer balance that carries across days
+        # (opening float + every cash movement since), not a same-day figure.
+        # CashService is the single source of truth; here we pull the day's
+        # reconciliation so the sheet reads opening -> movements -> closing.
+        recon = CashService(self.db).reconciliation(day)
+        cash_in_hand = recon["closing"]        # cash in the drawer at day end
+
+        # Cash-drawer reconciliation section (out-flows shown negative so the
+        # column visibly nets down to the closing balance).
+        cash_rows = [{"item": "Opening balance", "amount": recon["opening"]}]
+        for label, key, sign in (
+            ("Cash sales", "cash_sales", 1),
+            ("Debt repayments (cash)", "repayments", 1),
+            ("Refunds paid (cash)", "refunds", -1),
+            ("Expenses", "expenses", -1),
+            ("Purchase payments", "purchase_payments", -1),
+            ("Supplier payments", "supplier_payments", -1),
+        ):
+            if recon[key]:
+                cash_rows.append({"item": label, "amount": sign * recon[key]})
 
         # per-method map so the UI can show a card per channel even at zero
         by_method = method_totals
@@ -196,6 +208,11 @@ class ReportService:
                              _col("amount", "Amount", "right", True)],
                  "rows": pay_detail_rows,
                  "total_label": "Total received", "total": total_received},
+                {"name": "Cash drawer",
+                 "columns": [_col("item", "Cash drawer"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": cash_rows,
+                 "total_label": "Closing cash in hand", "total": recon["closing"]},
             ],
             "payments": by_method,
             "summary": [
@@ -206,10 +223,65 @@ class ReportService:
                 {"label": "Expenses", "value": expense_total, "money": True},
                 {"label": "Refunds", "value": refunds_total, "money": True},
                 {"label": "Money received", "value": total_received, "money": True},
+                {"label": "Opening cash", "value": recon["opening"], "money": True},
                 {"label": "Cash in hand", "value": cash_in_hand, "money": True},
                 {"label": "On credit (unpaid)", "value": debt_today, "money": True},
                 {"label": "Debt repayments", "value": repay_today, "money": True},
                 {"label": "Net", "value": net, "money": True},
+            ],
+        }
+
+    # ---- Cash in Hand Ledger (cash book) ---------------------------
+    def cash_ledger(self, date_from: str, date_to: str) -> dict[str, Any]:
+        """A printable cash book: opening balance, every individual cash movement
+        in the range (cash sales & recoveries IN; refunds, expenses, purchase &
+        supplier payments OUT), and a running balance that closes to the current
+        Cash in Hand. Debit/Credit here are 'Cash In' / 'Cash Out'."""
+        df, dt = date_from[:10], date_to[:10]
+        cash = CashService(self.db)
+        opening = cash.opening_before(df)
+        moves = cash.movements(df, dt)
+
+        crow = self.db.query_one(
+            "SELECT currency_symbol s, currency_minor_units mu "
+            "FROM company_settings WHERE id = 1")
+        sym = (crow["s"] if crow else None) or "Rs"
+        mu = (crow["mu"] if crow else None) or 100
+
+        def fmt(v):
+            return format_money(int(v or 0), sym, mu)
+
+        rows = [{"date": df, "details": "Opening balance",
+                 "cash_in": "", "cash_out": "", "balance": fmt(opening)}]
+        running = opening
+        total_in = total_out = 0
+        for mv in moves:
+            running += mv["cash_in"] - mv["cash_out"]
+            total_in += mv["cash_in"]
+            total_out += mv["cash_out"]
+            rows.append({
+                "date": (mv["date"] or "")[:16],
+                "details": mv["details"],
+                "cash_in": fmt(mv["cash_in"]) if mv["cash_in"] else "",
+                "cash_out": fmt(mv["cash_out"]) if mv["cash_out"] else "",
+                "balance": fmt(running),
+            })
+
+        return {
+            "key": "cash_ledger", "title": "Cash in Hand Ledger",
+            "subtitle": f"{df} to {dt}", "orientation": "portrait",
+            "columns": [
+                _col("date", "Date"), _col("details", "Details"),
+                _col("cash_in", "Cash In", "right"),
+                _col("cash_out", "Cash Out", "right"),
+                _col("balance", "Balance", "right"),
+            ],
+            "rows": rows,
+            "summary": [
+                {"label": "Opening balance", "value": opening, "money": True},
+                {"label": "Total cash in", "value": total_in, "money": True},
+                {"label": "Total cash out", "value": total_out, "money": True},
+                {"label": "Closing (Cash in Hand)", "value": running, "money": True},
             ],
         }
 

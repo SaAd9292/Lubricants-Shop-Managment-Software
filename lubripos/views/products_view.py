@@ -132,6 +132,9 @@ class ProductsView(QWidget):
 
         self.f_low = QCheckBox("Low stock only")
         self.f_low.stateChanged.connect(self._reset_and_reload)
+        self.f_negative = QCheckBox("Negative only")
+        self.f_negative.setToolTip("Show only products at negative stock")
+        self.f_negative.stateChanged.connect(self._reset_and_reload)
         # Active / Inactive "folder" toggle — the filter bar works within each.
         self.seg_active = QPushButton("Active")
         self.seg_active.setObjectName("Chip")
@@ -151,6 +154,7 @@ class ProductsView(QWidget):
         filters.addWidget(self.f_brand, 1)
         filters.addWidget(self.f_barcode, 1)
         filters.addWidget(self.f_low)
+        filters.addWidget(self.f_negative)
         filters.addWidget(self.seg_active)
         filters.addWidget(self.seg_inactive)
         root.addLayout(filters)
@@ -257,6 +261,7 @@ class ProductsView(QWidget):
             only_active=not self._showing_inactive(),
             inactive_only=self._showing_inactive(),
             low_stock_only=self.f_low.isChecked(),
+            negative_only=self.f_negative.isChecked(),
             has_barcode=self.f_barcode.currentData(),
             sort_by=self._sort_by, sort_dir=self._sort_dir,
             limit=1_000_000, offset=0)
@@ -338,6 +343,19 @@ class ProductsView(QWidget):
         self._page = 0
         self._reload()
 
+    def show_negative_only(self) -> None:
+        """Focus the list on negative-stock items only (used when the dashboard's
+        negative-stock alert is clicked). Clears other filters so nothing hides a
+        negative item, switches to the Active folder, and reloads."""
+        self.search.clear()
+        self.f_category.setCurrentIndex(0)
+        self.f_brand.setCurrentIndex(0)
+        self.f_barcode.setCurrentIndex(0)
+        self.f_low.setChecked(False)
+        if self._showing_inactive():
+            self.seg_active.setChecked(True)   # back to the Active folder
+        self.f_negative.setChecked(True)       # triggers _reset_and_reload
+
     def _reload(self) -> None:
         result = self.controller.list(
             search=self.search.text(),
@@ -346,6 +364,7 @@ class ProductsView(QWidget):
             only_active=not self._showing_inactive(),
             inactive_only=self._showing_inactive(),
             low_stock_only=self.f_low.isChecked(),
+            negative_only=self.f_negative.isChecked(),
             has_barcode=self.f_barcode.currentData(),
             sort_by=self._sort_by,
             sort_dir=self._sort_dir,

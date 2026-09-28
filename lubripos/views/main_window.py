@@ -39,6 +39,7 @@ from .reports_view import ReportsView
 from .sales_view import SalesView
 from .returns_view import ReturnsView
 from .customers_view import CustomersView
+from .cash_recovery_view import CashRecoveryView
 from .suppliers_view import SuppliersView
 from .taxonomy_view import TaxonomyView
 
@@ -52,6 +53,7 @@ NAV_ITEMS = [
     ("Sales History", "sales", False),
     ("Returns", "returns", False),
     ("Customers", "customers", False),
+    ("Cash Recovery", "cash_recovery", False),
     ("Products", "products", False),
     ("Categories & Brands", "taxonomy", False),
     ("Suppliers", "suppliers", False),
@@ -105,7 +107,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        layout.addWidget(self._build_sidebar())
+        self._sidebar = self._build_sidebar()
+        layout.addWidget(self._sidebar)
         layout.addWidget(self._build_content(shop_name), 1)
 
         user = current_session.user
@@ -113,7 +116,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{shop_name}   |   Signed in as {who}")
 
         self._setup_stock_badge()
-        self._go("dashboard")
+        # Esc brings the menu (sidebar) back from any screen.
+        QShortcut(QKeySequence("Escape"), self, activated=self._show_sidebar)
+        # Start on the menu (sidebar visible); picking an item drills in.
+        self._go("dashboard", collapse=False)
 
     # -- negative-stock badge on the Products nav item ----------------
     def _setup_stock_badge(self) -> None:
@@ -203,8 +209,12 @@ class MainWindow(QMainWindow):
             if admin_only:
                 if not is_admin:          # sensitive screens: admins only
                     continue
-            elif not (is_admin or current_session.can(key)):
-                continue                  # grantable screen the user lacks
+            else:
+                # Cash Recovery rides on the Customers privilege (it's a customer
+                # debt action), so it doesn't need its own grantable key.
+                perm = "customers" if key == "cash_recovery" else key
+                if not (is_admin or current_session.can(perm)):
+                    continue              # grantable screen the user lacks
             btn = QPushButton(tr(label))
             btn.setCheckable(True)
             page = self._make_page(key, label)
@@ -257,6 +267,16 @@ class MainWindow(QMainWindow):
         header.setFixedHeight(64)
         hl = QHBoxLayout(header)
         hl.setContentsMargins(24, 10, 20, 10)
+
+        # "Back to menu" button — shown only while drilled into a screen (the
+        # sidebar is hidden). Clicking it brings the sidebar back.
+        self._menu_btn = QPushButton("☰  Menu")
+        self._menu_btn.setObjectName("Secondary")
+        self._menu_btn.setToolTip("Show the menu (Esc)")
+        self._menu_btn.clicked.connect(self._show_sidebar)
+        self._menu_btn.hide()
+        hl.addWidget(self._menu_btn)
+        hl.addSpacing(14)
 
         title_box = QVBoxLayout()
         title_box.setSpacing(1)
@@ -317,6 +337,8 @@ class MainWindow(QMainWindow):
             return ReturnsView(self.ctx)
         if key == "customers":
             return CustomersView(self.ctx)
+        if key == "cash_recovery":
+            return CashRecoveryView(self.ctx)
         if key == "reports":
             return ReportsView(self.ctx)
         if key == "taxonomy":
@@ -327,7 +349,7 @@ class MainWindow(QMainWindow):
         return PlaceholderView(label)
 
     # -- navigation ---------------------------------------------------
-    def _go(self, key: str) -> None:
+    def _go(self, key: str, *, collapse: bool = True) -> None:
         """Switch page by key: set stack + check the matching nav button.
 
         Every data view is built once and cached in the stack, so its table
@@ -335,6 +357,9 @@ class MainWindow(QMainWindow):
         stock that doesn't drop after a sale until re-login). Re-pull the
         target page's data on each navigation so every screen reflects the
         latest committed state instantly.
+
+        collapse=True (a real user pick) drills into the screen full-width and
+        hides the sidebar; the header 'Menu' button brings it back.
         """
         idx = self._pages.get(key)
         if idx is None:
@@ -345,6 +370,23 @@ class MainWindow(QMainWindow):
         btn = self._nav_buttons.get(key)
         if btn is not None:
             btn.setChecked(True)
+        if collapse:
+            self._collapse_sidebar()
+
+    def _collapse_sidebar(self) -> None:
+        """Drill in: hide the sidebar, reveal the header 'Menu' button."""
+        if getattr(self, "_sidebar", None) is not None:
+            self._sidebar.hide()
+        if getattr(self, "_menu_btn", None) is not None:
+            self._menu_btn.show()
+
+    def _show_sidebar(self) -> None:
+        """Back to the menu: reveal the sidebar, hide the 'Menu' button. The
+        current screen stays put behind it."""
+        if getattr(self, "_sidebar", None) is not None:
+            self._sidebar.show()
+        if getattr(self, "_menu_btn", None) is not None:
+            self._menu_btn.hide()
 
     @staticmethod
     def _refresh_page(widget) -> None:
@@ -359,9 +401,17 @@ class MainWindow(QMainWindow):
                     log.exception("Refresh failed for %s", type(widget).__name__)
                 return
 
-    def _navigate_to(self, key: str) -> None:
-        """Used by clickable dashboard cards."""
+    def _navigate_to(self, key: str, action: str | None = None) -> None:
+        """Used by clickable dashboard cards and alerts. `action` lets a caller
+        ask the target screen to focus itself — e.g. the negative-stock alert
+        opens Products filtered to only the negative items."""
         self._go(key)
+        if action == "negative_products":
+            idx = self._pages.get("products")
+            if idx is not None:
+                w = self.stack.widget(idx)
+                if hasattr(w, "show_negative_only"):
+                    w.show_negative_only()
 
     # -- auto-update (admin only) -------------------------------------
     def check_for_updates(self) -> None:

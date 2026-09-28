@@ -13,14 +13,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QInputDialog, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
     QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .. import __version__
 from ..app_context import AppContext
+from ..core import money
 from ..core.session import current_session
 from ..ui.toast import show_toast
 from .payment_accounts_dialog import PaymentAccountsDialog
@@ -166,6 +168,34 @@ class SettingsView(QWidget):
         pay_row.addWidget(manage_btn)
         pay_row.addStretch(1)
         pay_lay.addLayout(pay_row)
+
+        # Opening cash: the physical cash in the drawer the day the shop starts
+        # tracking. The running Cash-in-Hand builds from here.
+        cash_hdr = QLabel("Cash drawer")
+        cash_hdr.setStyleSheet("font-weight:700; margin-top:10px;")
+        pay_lay.addWidget(cash_hdr)
+        cash_form = QFormLayout()
+        self.cash_opening = QDoubleSpinBox()
+        self.cash_opening.setRange(0, 1_000_000_000)
+        self.cash_opening.setDecimals(2)
+        self.cash_opening.setMaximumWidth(220)
+        self.cash_opening_date = QDateEdit()
+        self.cash_opening_date.setCalendarPopup(True)
+        self.cash_opening_date.setDisplayFormat("yyyy-MM-dd")
+        self.cash_opening_date.setMaximumDate(QDate.currentDate())
+        self.cash_opening_date.setMaximumWidth(220)
+        cash_form.addRow("Opening cash in drawer", self.cash_opening)
+        cash_form.addRow("As of date", self.cash_opening_date)
+        pay_lay.addLayout(cash_form)
+        cash_hint = QLabel(
+            "Set the cash physically in the drawer on the 'as of' date. "
+            "Cash in Hand then carries across days — cash sales and cash debt "
+            "repayments add to it; cash refunds, expenses, and supplier payments "
+            "subtract from it. Only movements on or after this date are counted.")
+        cash_hint.setWordWrap(True)
+        cash_hint.setObjectName("Muted")
+        pay_lay.addWidget(cash_hint)
+
         pay_lay.addStretch(1)
         self.tabs.addTab(self._scrolled(pay), "Payment Accounts")
 
@@ -258,6 +288,13 @@ class SettingsView(QWidget):
         self.theme.setCurrentIndex(max(0, self.theme.findData(
             "dark" if str(c.get("theme") or "light").lower() == "dark" else "light")))
         self.touch_mode.setChecked(bool(c.get("touch_mode", 0)))
+        mu = c.get("currency_minor_units", 100) or 100
+        sym = c.get("currency_symbol") or "Rs"
+        self.cash_opening.setPrefix(f"{sym} ")
+        self.cash_opening.setValue((c.get("cash_opening_minor") or 0) / mu)
+        odate = c.get("cash_opening_date")
+        qd = QDate.fromString(odate, "yyyy-MM-dd") if odate else QDate()
+        self.cash_opening_date.setDate(qd if qd.isValid() else QDate.currentDate())
 
         t = self.ctx.company.get_tax()
         self.tax_enabled.setChecked(bool(t.get("tax_enabled", 1)))
@@ -291,6 +328,9 @@ class SettingsView(QWidget):
             "language": self.language.currentData(),
             "touch_mode": 1 if self.touch_mode.isChecked() else 0,
             "theme": self.theme.currentData(),
+            "cash_opening_minor": money.to_minor(
+                self.cash_opening.value(), self.minor_units.currentData() or 100),
+            "cash_opening_date": self.cash_opening_date.date().toString("yyyy-MM-dd"),
         }, user_id=uid)
 
         self.ctx.company.update_tax({

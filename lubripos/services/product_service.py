@@ -70,6 +70,7 @@ class ProductService:
         only_active: bool = True,
         inactive_only: bool = False,      # show ONLY deactivated products
         low_stock_only: bool = False,
+        negative_only: bool = False,      # show ONLY products at negative stock
         has_barcode: str | None = None,   # None / "with" / "without"
         sort_by: str = "name",
         sort_dir: str = "asc",
@@ -78,7 +79,7 @@ class ProductService:
     ) -> dict[str, Any]:
         where, params = self._build_where(
             search, category_id, brand_id, only_active, low_stock_only,
-            has_barcode, inactive_only
+            has_barcode, inactive_only, negative_only
         )
         sort_expr = _SORT_COLUMNS.get(sort_by, "p.name")
         direction = "DESC" if str(sort_dir).lower() == "desc" else "ASC"
@@ -263,7 +264,7 @@ class ProductService:
 
     # -- helpers ------------------------------------------------------
     def _build_where(self, search, category_id, brand_id, only_active, low_stock_only,
-                     has_barcode=None, inactive_only=False):
+                     has_barcode=None, inactive_only=False, negative_only=False):
         clauses: list[str] = []
         params: list[Any] = []
         if inactive_only:
@@ -282,6 +283,8 @@ class ProductService:
             params.append(brand_id)
         if low_stock_only:
             clauses.append("p.min_stock_level > 0 AND p.stock_qty <= p.min_stock_level")
+        if negative_only:
+            clauses.append("p.stock_qty < 0")
         if has_barcode == "with":
             clauses.append("(p.barcode IS NOT NULL AND TRIM(p.barcode) != '')")
         elif has_barcode == "without":
