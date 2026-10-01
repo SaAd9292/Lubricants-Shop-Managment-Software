@@ -202,9 +202,11 @@ QTableWidget, QTableView {{
     gridline-color: {t['grid']}; border: 1px solid {t['table_border']};
     selection-background-color: {t['accent_soft']}; selection-color: {t['ink']};
     alternate-background-color: {t['table_alt']};
+    outline: none;
 }}
-QTableView::item {{ padding: 3px 4px; }}
+QTableView::item {{ padding: 3px 4px; border: none; }}
 QTableView::item:selected {{ color: {t['ink']}; }}
+QTableView::item:focus {{ outline: none; border: none; }}
 QTableCornerButton::section {{ background: {t['thead_bg']}; border: none; }}
 
 /* ---------- Dialogs ---------- */

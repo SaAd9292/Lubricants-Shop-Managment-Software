@@ -53,9 +53,15 @@ class SupplierService:
         total = self.db.query_one(
             f"SELECT COUNT(*) AS n FROM suppliers {where}", tuple(params)
         )["n"]
+        # balance owed to a supplier = opening debt + unpaid purchases - payments
+        bal = ("(COALESCE(s.opening_debt_minor,0) "
+               "+ COALESCE((SELECT SUM(total_minor - amount_paid_minor) FROM purchases "
+               "WHERE supplier_id = s.id),0) "
+               "- COALESCE((SELECT SUM(amount_minor) FROM supplier_payments "
+               "WHERE supplier_id = s.id),0)) AS balance_owed")
         rows = self.db.query(
             f"SELECT s.*, (SELECT COUNT(*) FROM purchases p WHERE p.supplier_id = s.id) "
-            f"AS purchase_count FROM suppliers s {where} "
+            f"AS purchase_count, {bal} FROM suppliers s {where} "
             f"ORDER BY {sort_expr} {direction}, s.id LIMIT ? OFFSET ?",
             (*params, int(limit), int(offset)),
         )

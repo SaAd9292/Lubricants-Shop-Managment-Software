@@ -23,6 +23,10 @@ class SupplierController:
         c = self.ctx.company.get_company()
         return c.get("currency_symbol", "Rs"), c.get("currency_minor_units", 100)
 
+    def fmt(self, minor: int) -> str:
+        sym, mu = self.currency()
+        return money.format_money(int(minor or 0), sym, mu)
+
     def list(self, **kwargs) -> dict[str, Any]:
         return self.suppliers.list_suppliers(**kwargs)
 

@@ -41,6 +41,13 @@ class PayableController:
     def total_outstanding(self) -> int:
         return self.payables.total_outstanding()
 
+    def payments(self, *, date_from: str | None = None,
+                 date_to: str | None = None) -> dict[str, Any]:
+        return self.payables.list_payments(date_from=date_from, date_to=date_to)
+
+    def payments_min_date(self) -> str | None:
+        return self.payables.payments_min_date()
+
     # -- writes -------------------------------------------------------
     def record_payment(self, supplier_id: int, amount: float, *,
                        method: str | None = None, notes: str | None = None,

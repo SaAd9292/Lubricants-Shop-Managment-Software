@@ -19,13 +19,16 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QComboBox, QCompleter, QDoubleSpinBox,
     QFormLayout, QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QTableWidgetItem, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
 from ..core import money
 from ..core.i18n import tr
+from ..core.packs import fmt_packs
 from ..controllers.sale_controller import SaleController
+from ..ui.toast import show_toast
 from ..ui.widgets import DataTable, enable_tabular_figures, number_rows
 
 CART_COLS = ["Product", "Qty", "Amount", "Line total", ""]
@@ -81,10 +84,10 @@ class BackdateEntryView(QWidget):
         title = QLabel(tr("Past-Date Sale"))
         title.setObjectName("PageTitle")
         root.addWidget(title)
-        hint = QLabel(tr("Press Enter to move to the next field. Enter on Amount "
-                         "adds the item; Enter on an empty Product box (or "
-                         "Ctrl+Enter) saves the bill. Stock reduces as normal; a "
-                         "short line goes negative and is flagged."))
+        hint = QLabel(tr("Enter moves to the next field. Enter on Amount adds the "
+                         "item; Enter on an empty Product box (or Ctrl+Enter) saves "
+                         "the bill. Alt+←/→ changes the day. Select a cart row and "
+                         "press Delete to remove it."))
         hint.setObjectName("Muted")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -145,11 +148,24 @@ class BackdateEntryView(QWidget):
         self._suggest.activated[str].connect(self._on_pick)
         form.addRow(tr("Product"), self.prod)
 
-        # Qty
+        # Qty + unit (Piece / Carton). Carton multiplies by the product's
+        # units-per-carton; price stays per piece. Stock is always pieces.
         self.qty = QSpinBox()
         self.qty.setRange(1, 1_000_000)
         self.qty.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        form.addRow(tr("Qty"), self.qty)
+        self.unit = QComboBox()
+        self.unit.addItem(tr("Piece"), "piece")
+        self.unit.addItem(tr("Carton"), "carton")
+        self.unit.setMaximumWidth(120)
+        self.unit.currentIndexChanged.connect(self._update_unit_hint)
+        self.unit_hint = QLabel("")
+        self.unit_hint.setObjectName("Muted")
+        qty_row = QHBoxLayout()
+        qty_row.addWidget(self.qty, 1)
+        qty_row.addWidget(self.unit)
+        qty_row.addWidget(self.unit_hint)
+        qty_wrap = QWidget(); qty_wrap.setLayout(qty_row)
+        form.addRow(tr("Qty"), qty_wrap)
 
         # Amount (price each)
         sym, _ = self.controller.currency()
@@ -167,42 +183,48 @@ class BackdateEntryView(QWidget):
         form.addRow(tr("Amount (each)"), amount_wrap)
         root.addLayout(form)
 
-        # cart of items on this bill
+        # cart of items on this bill. Kept SHORT so an empty bill doesn't make
+        # the whole form long — it grows a little with items and then scrolls.
         self.cart = DataTable(0, len(CART_COLS))
         self.cart.placeholder = tr("No items yet — add products above.")
         self.cart.setHorizontalHeaderLabels([tr(c) for c in CART_COLS])
         self.cart.verticalHeader().setVisible(True)
         self.cart.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.cart.setSelectionMode(QAbstractItemView.SingleSelection)
         self.cart.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.cart.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.cart.setColumnWidth(4, 40)
+        self.cart.setMinimumHeight(84)
+        self.cart.setMaximumHeight(200)
+        self.cart.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self.cart.cellClicked.connect(self._on_cell)
+        self.cart.installEventFilter(self)      # Delete key removes a line
         enable_tabular_figures(self.cart)
-        root.addWidget(self.cart, 1)
+        root.addWidget(self.cart)               # no stretch: form stays compact
 
-        # discount + total
-        foot = QHBoxLayout()
-        foot.addWidget(QLabel(tr("Discount:")))
+        # One compact footer: status · Total · Discount (last field, by the
+        # total) · Reset · Save.
+        self.flash = QLabel("")
+        self.flash.setWordWrap(True)
+        root.addWidget(self.flash)
+
+        actions = QHBoxLayout()
+        actions.addStretch(1)
+        self.lbl_total = QLabel("")
+        self.lbl_total.setObjectName("PageTitle")
+        enable_tabular_figures(self.lbl_total)
+        actions.addWidget(self.lbl_total)
+        actions.addSpacing(18)
+        actions.addWidget(QLabel(tr("Discount:")))
         self.discount = QDoubleSpinBox()
         self.discount.setRange(0, 100_000_000)
         self.discount.setDecimals(2)
         self.discount.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.discount.setPrefix(f"{sym} ")
-        self.discount.setMaximumWidth(160)
+        self.discount.setMaximumWidth(150)
         self.discount.valueChanged.connect(self._update_totals)
-        foot.addWidget(self.discount)
-        foot.addStretch(1)
-        self.lbl_total = QLabel("")
-        self.lbl_total.setObjectName("PageTitle")
-        enable_tabular_figures(self.lbl_total)
-        foot.addWidget(self.lbl_total)
-        root.addLayout(foot)
-
-        # status + Save / Reset
-        actions = QHBoxLayout()
-        self.flash = QLabel("")
-        self.flash.setWordWrap(True)
-        actions.addWidget(self.flash, 1)
+        actions.addWidget(self.discount)
+        actions.addSpacing(18)
         self.reset_btn = QPushButton(tr("Reset"))
         self.reset_btn.setObjectName("Secondary")
         self.reset_btn.clicked.connect(self._reset)
@@ -215,6 +237,9 @@ class BackdateEntryView(QWidget):
 
         QShortcut(QKeySequence("Ctrl+Return"), self, activated=self._save)
         QShortcut(QKeySequence("Ctrl+Enter"), self, activated=self._save)
+        # one-key day change (no re-typing D/M/Y) — Alt+Right = next day, Alt+Left = prev
+        QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: self._shift_date(1))
+        QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: self._shift_date(-1))
 
         # Enter-to-advance focus chain (no mouse required). Description sits
         # between Customer and Product so Enter no longer skips it.
@@ -222,6 +247,21 @@ class BackdateEntryView(QWidget):
                        self.cust_name, self.notes, self.prod, self.qty, self.price]
         for w in self._chain:
             self._install_enter(w)
+
+        # A clean keyboard path OUT of the item row into the footer, and Enter on
+        # a focused button/field fires it (this isn't a QDialog, so Qt won't do
+        # it for us). Tab: price -> cart -> discount -> Reset -> Save.
+        add_btn.setFocusPolicy(Qt.NoFocus)          # Enter-on-Amount already adds
+        self.setTabOrder(self.price, self.cart)
+        self.setTabOrder(self.cart, self.discount)
+        self.setTabOrder(self.discount, self.reset_btn)
+        self.setTabOrder(self.reset_btn, self.save_btn)
+        self.reset_btn.installEventFilter(self)     # Enter clicks the button
+        self.save_btn.installEventFilter(self)
+        # Enter in the Discount box moves on to Save (its inner editor eats Enter)
+        dle = self.discount.lineEdit()
+        if dle is not None:
+            dle.returnPressed.connect(self.save_btn.setFocus)
 
         self._on_method_changed()
         self._update_totals()
@@ -240,12 +280,27 @@ class BackdateEntryView(QWidget):
             self._watch[le] = field
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
-        if (event.type() == QEvent.KeyPress
-                and event.key() in (Qt.Key_Return, Qt.Key_Enter)):
-            field = self._watch.get(obj)
-            if field is not None:
-                self._advance(field)
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            # Delete / Backspace on a selected cart row removes that line (no mouse)
+            if obj is self.cart and key in (Qt.Key_Delete, Qt.Key_Backspace):
+                row = self.cart.currentRow()
+                if 0 <= row < len(self._cart):
+                    self._cart.pop(row)
+                    self._render_cart()
+                    self._update_totals()
+                    if self._cart:
+                        self.cart.selectRow(min(row, len(self._cart) - 1))
                 return True
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                # Enter on a focused button clicks it (this isn't a QDialog).
+                if obj in (self.reset_btn, self.save_btn):
+                    obj.click()
+                    return True
+                field = self._watch.get(obj)
+                if field is not None:
+                    self._advance(field)
+                    return True
         return super().eventFilter(obj, event)
 
     def _advance(self, field: QWidget) -> None:
@@ -261,6 +316,7 @@ class BackdateEntryView(QWidget):
                 self._say(tr("Pick a product from the list first."), error=True)
                 return
             self.price.setValue((p.get("sale_price_minor") or 0) / self._mu())
+            self._update_unit_hint()
             self.qty.setFocus()
             self.qty.selectAll()
             return
@@ -291,6 +347,28 @@ class BackdateEntryView(QWidget):
         if not d.isValid() or d > QDate.currentDate():
             return None
         return d.toString("yyyy-MM-dd")
+
+    def _shift_date(self, days: int) -> None:
+        """Bump the date by whole days (Alt+Left/Right), so moving to the next
+        day is one keystroke instead of re-typing D/M/Y. Clamps to a valid date
+        and never goes into the future."""
+        d = QDate(self.d_year.value(), self.d_month.value(), self.d_day.value())
+        if not d.isValid():
+            d = QDate.currentDate()
+        d = d.addDays(days)
+        today = QDate.currentDate()
+        if d > today:
+            d = today
+        if d.year() < 2000:
+            return
+        for w in (self.d_day, self.d_month, self.d_year):
+            w.blockSignals(True)
+        self.d_year.setValue(d.year())
+        self.d_month.setValue(d.month())
+        self.d_day.setValue(d.day())
+        for w in (self.d_day, self.d_month, self.d_year):
+            w.blockSignals(False)
+        self._say(tr("Date: ") + d.toString("dd MMM yyyy"))
 
     # -- product lookup ----------------------------------------------
     def _refresh_products(self) -> None:
@@ -348,8 +426,21 @@ class BackdateEntryView(QWidget):
         p = self._name_index.get((text or "").strip().lower())
         if p:
             self.price.setValue((p.get("sale_price_minor") or 0) / self._mu())
+            self._update_unit_hint()
             self.qty.setFocus()
             self.qty.selectAll()
+
+    def _update_unit_hint(self) -> None:
+        """Show the carton size (pieces per carton) of the selected product next
+        to the unit selector, so the operator knows what a carton means."""
+        p = self._current_product()
+        upc = int((p or {}).get("units_per_carton") or 1)
+        if upc > 1:
+            self.unit_hint.setText(tr("1 carton = ") + f"{upc} " + tr("pcs"))
+        elif self.unit.currentData() == "carton":
+            self.unit_hint.setText(tr("(not sold in cartons)"))
+        else:
+            self.unit_hint.setText("")
 
     def _mu(self) -> int:
         _, mu = self.controller.currency()
@@ -363,10 +454,14 @@ class BackdateEntryView(QWidget):
             self.prod.setFocus()
             return
         mu = self._mu()
-        up_minor = money.to_minor(self.price.value(), mu)
+        up_minor = money.to_minor(self.price.value(), mu)   # price is per PIECE
+        upc = max(1, int(p.get("units_per_carton") or 1))
+        entered = int(self.qty.value())
+        # Carton qty converts to pieces; price stays per piece. Stock is pieces.
+        pieces = entered * upc if self.unit.currentData() == "carton" else entered
         self._cart.append({
             "product_id": p["id"], "name": p["name"],
-            "qty": int(self.qty.value()), "up_minor": up_minor,
+            "qty": pieces, "up_minor": up_minor, "upc": upc,
         })
         self._render_cart()
         self._update_totals()
@@ -382,7 +477,7 @@ class BackdateEntryView(QWidget):
         for r, ln in enumerate(self._cart):
             line_minor = ln["qty"] * ln["up_minor"]
             cells = [
-                ln["name"], str(ln["qty"]),
+                ln["name"], fmt_packs(ln["qty"], ln.get("upc", 1)),
                 self.controller.fmt(ln["up_minor"]),
                 self.controller.fmt(line_minor), "✕",
             ]
@@ -465,6 +560,7 @@ class BackdateEntryView(QWidget):
             note = "  " + tr("Stock went negative for: ") + ", ".join(short) + \
                    " " + tr("(it nets back up when that purchase is entered).")
         self._say(tr("Saved bill ") + f"{inv} · {sale_date} · {total_txt}" + note)
+        show_toast(self, tr("Saved") + f"  ·  {inv}  ·  {total_txt}")
         self._refresh_customers()   # a newly-created credit customer is now pickable
         # keep the date + payment for the next bill; clear the rest, back to Product
         self._cart = []
@@ -476,7 +572,7 @@ class BackdateEntryView(QWidget):
         self.prod.clear()
         self.qty.setValue(1)
         self.price.setValue(0)
-        self.prod.setFocus()
+        self.notes.setFocus()       # next bill starts at Description
 
     def _say(self, text: str, *, error: bool = False) -> None:
         self.flash.setText(text)

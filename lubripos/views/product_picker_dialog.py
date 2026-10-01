@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLineEdit,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDialog, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout,
 )
 
 
@@ -81,10 +82,15 @@ class ProductPickerDialog(QDialog):
             self.btn_bottle = QPushButton("Add bottle")
             self.btn_bottle.setObjectName("Secondary")
             self.btn_bottle.clicked.connect(lambda: self._choose(carton=False))
+            actions.addWidget(self.btn_bottle)
+            actions.addWidget(QLabel("Cartons:"))
+            self.carton_qty = QSpinBox()
+            self.carton_qty.setRange(1, 1_000_000)
+            self.carton_qty.setButtonSymbols(QAbstractSpinBox.PlusMinus)
+            actions.addWidget(self.carton_qty)
             self.btn_carton = QPushButton("Add carton")
             self.btn_carton.clicked.connect(lambda: self._choose(carton=True))
             self.btn_carton.setEnabled(False)
-            actions.addWidget(self.btn_bottle)
             actions.addWidget(self.btn_carton)
             root.addLayout(actions)
             self.table.itemSelectionChanged.connect(self._update_carton_btn)
@@ -132,5 +138,9 @@ class ProductPickerDialog(QDialog):
         if p is None:
             return
         self.selected = p
-        self.add_qty = int(p.get("units_per_carton") or 1) if carton else 1
+        if carton:
+            upc = int(p.get("units_per_carton") or 1)
+            self.add_qty = max(1, int(self.carton_qty.value())) * upc
+        else:
+            self.add_qty = 1
         self.accept()

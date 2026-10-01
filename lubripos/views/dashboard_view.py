@@ -549,9 +549,14 @@ class DashboardView(QWidget):
             grid.setColumnStretch(col, 1)
         root.addLayout(grid)
 
-        # end-of-day drawer count action
+        # quick actions: Day Close report + end-of-day drawer count
         count_row = QHBoxLayout()
         count_row.addStretch(1)
+        self._dsr_btn = QPushButton("  Day Close (DSR)")
+        self._dsr_btn.setObjectName("Secondary")
+        self._dsr_btn.setToolTip("Open the Daily Sales Report for a chosen day")
+        self._dsr_btn.clicked.connect(self._open_day_close)
+        count_row.addWidget(self._dsr_btn)
         self._count_btn = QPushButton("  Count drawer (end of day)")
         self._count_btn.setObjectName("Secondary")
         self._count_btn.setToolTip("Enter the cash counted in the drawer and "
@@ -602,6 +607,10 @@ class DashboardView(QWidget):
         from .cash_count_dialog import CashCountDialog
         CashCountDialog(self.ctx, self).exec()
         self.refresh()   # a saved count doesn't change cash, but keep the view fresh
+
+    def _open_day_close(self) -> None:
+        from .day_close_dialog import DayCloseDialog
+        DayCloseDialog(self.ctx, self).exec()
 
     def _apply_preset(self, preset: str) -> None:
         """Fill the From/To pickers from a quick preset, then refresh once."""

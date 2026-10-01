@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..app_context import AppContext
-from ..ui.widgets import DataTable, number_rows
+from ..ui.widgets import DataTable
 from ..controllers.expense_controller import ExpenseController
 from ..ui.icons import make_icon
 from .expense_edit_dialog import ExpenseEditDialog
@@ -82,6 +82,9 @@ class ExpensesView(QWidget):
         self.table.verticalHeader().setVisible(False)
         # rows carry inline edit/delete buttons; keep them from clipping
         self.table.verticalHeader().setDefaultSectionSize(40)
+        # fixed-height rows: never let the last row stretch to fill empty space
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self.table.setWordWrap(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -149,7 +152,6 @@ class ExpensesView(QWidget):
         # reset first so per-row action widgets from a previous render are freed
         self.table.setRowCount(0)
         self.table.setRowCount(len(rows))
-        number_rows(self.table, self._page * PAGE_SIZE + 1)
         for r, e in enumerate(rows):
             values = [
                 (e.get("expense_date") or "")[:10], e.get("category") or "",

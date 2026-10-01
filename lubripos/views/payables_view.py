@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..core.session import current_session
 from ..controllers.payable_controller import PayableController
-from ..ui.widgets import DataTable, number_rows
+from ..ui.widgets import DataTable
 
 _METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
 # label, key, right-aligned?
@@ -46,6 +46,10 @@ class PayablesView(QWidget):
         self._build_ui()
         self._reload()
 
+    def _open_payments(self) -> None:
+        from .supplier_payments_dialog import SupplierPaymentsDialog
+        SupplierPaymentsDialog(self.ctx, self).exec()
+
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 28, 28, 28)
@@ -71,6 +75,11 @@ class PayablesView(QWidget):
         self.f_outstanding.stateChanged.connect(self._reload)
         filters.addWidget(self.search, 1)
         filters.addWidget(self.f_outstanding)
+        payments_btn = QPushButton("Payment history")
+        payments_btn.setObjectName("Secondary")
+        payments_btn.setToolTip("List and print all payments made to suppliers")
+        payments_btn.clicked.connect(self._open_payments)
+        filters.addWidget(payments_btn)
         refresh = QPushButton("Refresh")
         refresh.setObjectName("Secondary")
         refresh.clicked.connect(self._reload)
@@ -83,6 +92,9 @@ class PayablesView(QWidget):
         self.table.verticalHeader().setVisible(False)
         # rows carry a "Record payment" button; give them height so it isn't clipped
         self.table.verticalHeader().setDefaultSectionSize(44)
+        # fixed-height rows: never let the last row stretch to fill empty space
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        self.table.setWordWrap(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -108,7 +120,6 @@ class PayablesView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
-        number_rows(self.table, 1)
         for r, s in enumerate(rows):
             name = QTableWidgetItem(s["name"])
             name.setData(Qt.UserRole, s["id"])

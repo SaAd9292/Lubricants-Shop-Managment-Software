@@ -106,6 +106,32 @@ class PayableService:
                 "purchased": purchased, "paid": paid, "opening": opening,
                 "balance": opening + purchased - paid}
 
+    def list_payments(self, *, date_from: str | None = None,
+                      date_to: str | None = None) -> dict[str, Any]:
+        """Every payment made to suppliers, newest first, optionally within a
+        date range (inclusive, by date part). Returns {rows, total}."""
+        conds, params = [], []
+        if date_from:
+            conds.append("substr(sp.payment_date,1,10) >= ?"); params.append(date_from[:10])
+        if date_to:
+            conds.append("substr(sp.payment_date,1,10) <= ?"); params.append(date_to[:10])
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        rows = [dict(r) for r in self.db.query(
+            "SELECT substr(sp.payment_date,1,16) AS date, "
+            "COALESCE(s.name,'(removed)') AS supplier, sp.amount_minor AS amount, "
+            "COALESCE(sp.method,'Cash') AS method, COALESCE(sp.notes,'') AS notes "
+            "FROM supplier_payments sp LEFT JOIN suppliers s ON s.id = sp.supplier_id "
+            f"{where} ORDER BY sp.payment_date DESC, sp.id DESC", tuple(params))]
+        total = sum(r["amount"] for r in rows)
+        return {"rows": rows, "total": total}
+
+    def payments_min_date(self) -> str | None:
+        """Earliest supplier-payment date (YYYY-MM-DD), for a sensible default
+        'from' on the payments list; None if there are no payments yet."""
+        row = self.db.query_one(
+            "SELECT substr(MIN(payment_date),1,10) AS d FROM supplier_payments")
+        return row["d"] if row and row["d"] else None
+
     # -- writes -------------------------------------------------------
     def record_payment(self, supplier_id: int, amount_minor: int, *,
                        method: str | None = None, notes: str | None = None,
