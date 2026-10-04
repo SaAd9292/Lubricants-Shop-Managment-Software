@@ -143,6 +143,19 @@ class ReportService:
                LEFT JOIN customers c ON c.id = cp.customer_id
                WHERE cp.payment_date LIKE ? ORDER BY cp.id""", (like,))]
 
+        # supplier payments today, itemised by WHO was paid (each on its own row,
+        # then summed) — mirrors the debt-repayments section. No account columns so
+        # it works on older DBs.
+        sup_pay_rows = [dict(r) for r in self.db.query(
+            """SELECT substr(sp.payment_date,12,5) AS time,
+                  COALESCE(s.name,'(removed)') AS supplier,
+                  COALESCE(sp.method,'Cash') AS method,
+                  sp.amount_minor AS amount
+               FROM supplier_payments sp
+               LEFT JOIN suppliers s ON s.id = sp.supplier_id
+               WHERE sp.payment_date LIKE ? ORDER BY sp.id""", (like,))]
+        sup_pay_total = sum(r["amount"] for r in sup_pay_rows)
+
         # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
             """SELECT COUNT(*) n, COALESCE(SUM(subtotal_minor),0) sub,
@@ -218,6 +231,12 @@ class ReportService:
                              _col("amount", "Amount", "right", True)],
                  "rows": repay_rows,
                  "total_label": "Total repayments", "total": repay_today},
+                {"name": "Supplier payments",
+                 "columns": [_col("time", "Time"), _col("supplier", "Supplier"),
+                             _col("method", "Method"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": sup_pay_rows,
+                 "total_label": "Total supplier payments", "total": sup_pay_total},
                 {"name": "Money received",
                  "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],
