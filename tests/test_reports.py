@@ -68,10 +68,11 @@ def main() -> int:
     check(sm["Invoices"] == 1 and sm["Gross sales"] == 101790 and sm["Tax collected"] == 14790,
           "day-close summary totals")
     secs = {s["name"]: s for s in d["sections"]}
-    check(secs["Cash & paid sales"]["total"] == 87000, "paid sales lines subtotal 87000")
-    check(len(secs["Cash & paid sales"]["rows"]) == 2
-          and "invoice" in secs["Cash & paid sales"]["rows"][0],
-          "DSR lists each paid sale line separately with invoice no")
+    cps = secs["Cash & paid sales (by bill)"]
+    check(cps["total"] == 101790, "paid sales totalled BY BILL = bill grand total (incl tax)")
+    check(len(cps["rows"]) == 1 and "invoice" in cps["rows"][0]
+          and "amount" in cps["rows"][0],
+          "DSR lists one row per bill (not per product)")
     check("Udhaar (credit sales) — not in cash" in secs,
           "DSR has a separate udhaar (credit) section")
     check(secs["Money received"]["total"] == 101790, "money received total 101790")

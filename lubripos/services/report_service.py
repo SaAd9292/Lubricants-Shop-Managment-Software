@@ -49,11 +49,21 @@ class ReportService:
                LEFT JOIN products p ON p.id = si.product_id
                WHERE s.status='completed' AND s.sale_date LIKE ?
                ORDER BY s.id, si.id""", (like,))]
-        cash_line_rows = [r for r in line_rows if r.get("method") != "Debt"]
+        # credit lines stay itemised (customer + product) in the udhaar section
         credit_line_rows = [r for r in line_rows if r.get("method") == "Debt"]
-        items_subtotal = sum(r["amount"] for r in line_rows)
-        cash_items_subtotal = sum(r["amount"] for r in cash_line_rows)
         credit_items_subtotal = sum(r["amount"] for r in credit_line_rows)
+
+        # Per-BILL totals (one row per invoice, net of its discount) — this is how
+        # the shop counts the drawer: by the bill's final amount, not line by line.
+        # The discount is already inside each grand_total, so these sum to the real
+        # cash collected (no separate discount line to reconcile).
+        cash_bill_rows = [dict(r) for r in self.db.query(
+            """SELECT invoice_no AS invoice, substr(sale_date,12,5) AS time,
+                  COALESCE(NULLIF(TRIM(customer_name),''),'Walk-in') AS customer,
+                  grand_total_minor AS amount
+               FROM sales WHERE status='completed' AND sale_date LIKE ?
+                 AND payment_method != 'Debt' ORDER BY id""", (like,))]
+        cash_bills_total = sum(r["amount"] for r in cash_bill_rows)
 
         # -- section 2: expenses for the day --
         exp_rows = [dict(r) for r in self.db.query(
@@ -202,13 +212,13 @@ class ReportService:
             ],
             "rows": line_rows,
             "sections": [
-                {"name": "Cash & paid sales",
+                {"name": "Cash & paid sales (by bill)",
                  "columns": [_col("invoice", "Invoice"), _col("time", "Time"),
-                             _col("product", "Product"), _col("qty", "Qty", "right"),
-                             _col("price", "Price", "right", True),
-                             _col("amount", "Amount", "right", True)],
-                 "rows": cash_line_rows,
-                 "total_label": "Paid sales subtotal", "total": cash_items_subtotal},
+                             _col("customer", "Customer"),
+                             _col("amount", "Bill total", "right", True)],
+                 "rows": cash_bill_rows,
+                 "total_label": "Paid sales total (net of discount)",
+                 "total": cash_bills_total},
                 {"name": "Udhaar (credit sales) — not in cash",
                  "columns": [_col("customer", "Customer"), _col("invoice", "Invoice"),
                              _col("product", "Product"), _col("qty", "Qty", "right"),
