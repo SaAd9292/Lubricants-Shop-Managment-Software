@@ -74,6 +74,25 @@ class CustomerController:
     def recoveries_min_date(self):
         return self.customers.recoveries_min_date()
 
+    def get_recovery(self, payment_id: int):
+        """Full detail of one recovery (for prefilling the edit dialog)."""
+        return self.customers.get_payment(payment_id)
+
+    def edit_recovery(self, payment_id: int, *, customer_id=None, amount_major=None,
+                      method=None, account_id=None, account_name=None,
+                      payment_date=None, notes=None):
+        """Correct a recovery in place (customer/amount/method/account/date/note).
+        amount_major is in currency units. Fields left None are unchanged.
+        (ok, msg, data)."""
+        def op(uid):
+            _, mu = self.currency()
+            amt = None if amount_major is None else money.to_minor(amount_major, mu)
+            return self.customers.update_payment(
+                payment_id, customer_id=customer_id, amount_minor=amt, method=method,
+                account_id=account_id, account_name=account_name,
+                payment_date=payment_date, notes=notes, user_id=uid)
+        return self._guarded(op)
+
     def reverse_recovery(self, payment_id: int):
         """Undo a recovery (gated by the Customers privilege). (ok, msg, data)."""
         return self._guarded(

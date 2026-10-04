@@ -352,8 +352,10 @@ class SaleService:
     def return_detail(self, return_id: int) -> dict[str, Any]:
         """One return with its line items, for a confirm/preview before reversing."""
         head = self.db.query_one(
-            "SELECT r.id, substr(r.return_date,1,16) AS date, s.invoice_no AS invoice, "
-            "r.refund_minor AS refund, COALESCE(r.method,'Cash') AS method "
+            "SELECT r.id, r.return_date AS return_date_full, "
+            "substr(r.return_date,1,16) AS date, s.invoice_no AS invoice, "
+            "r.refund_minor AS refund, COALESCE(r.method,'Cash') AS method, "
+            "COALESCE(r.notes,'') AS notes "
             "FROM sale_returns r LEFT JOIN sales s ON s.id = r.sale_id WHERE r.id = ?",
             (return_id,))
         if not head:
@@ -363,6 +365,31 @@ class SaleService:
             "WHERE return_id = ? ORDER BY id", (return_id,))]
         d = dict(head); d["items"] = items
         return d
+
+    def update_return(self, return_id: int, *, return_date: str | None = None,
+                      method: str | None = None, notes: str | None = None,
+                      user_id: int | None = None) -> dict[str, Any]:
+        """Correct a return's metadata only — its date, refund method, and note.
+        Quantities and products are deliberately NOT editable here: changing
+        those means re-doing stock math, so a wrong quantity is fixed by
+        reversing the return and entering it again. Any field left None is
+        unchanged."""
+        row = self.db.query_one("SELECT * FROM sale_returns WHERE id = ?", (return_id,))
+        if row is None:
+            raise NotFoundError(f"Return {return_id} not found")
+        new_date = row["return_date"] if return_date is None \
+            else _norm_return_date(return_date)
+        new_method = row["method"] if method is None else ((method or "").strip() or None)
+        new_notes = row["notes"] if notes is None else ((notes or "").strip() or None)
+        self.db.execute(
+            "UPDATE sale_returns SET return_date=?, method=?, notes=? WHERE id=?",
+            (new_date, new_method, new_notes, return_id))
+        self.audit.record(action="EDIT_RETURN", user_id=user_id,
+                          entity_type="sale_return", entity_id=return_id,
+                          details={"return_date": new_date, "method": new_method})
+        log.info("Edited return id=%s (date=%s, method=%s)",
+                 return_id, new_date, new_method)
+        return {"return_id": return_id}
 
     def reverse_return(self, return_id: int, *, user_id: int | None = None) -> dict[str, Any]:
         """Undo a return entirely: pull the restocked quantity back off each

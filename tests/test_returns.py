@@ -88,6 +88,16 @@ def main() -> int:
           "back-dated return shows under its chosen date")
     check(ps.get(pid2)["stock_qty"] == 17, "1 returned -> stock 17")
 
+    print("\n[returns] edit a return's date + method (not quantities)")
+    ss.update_return(rb["return_id"], return_date="2026-08-01", method="Bank")
+    aug = ss.list_returns(date_from="2026-08-01", date_to="2026-08-31")
+    check(len(aug["rows"]) == 1 and aug["rows"][0]["method"] == "Bank",
+          "edited return moves to its new date with the new method")
+    check(len(ss.list_returns(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
+          "no longer under the old September date")
+    check(ps.get(pid2)["stock_qty"] == 17, "editing metadata leaves stock untouched (17)")
+    ss.update_return(rb["return_id"], return_date="2026-09-15")  # move back for reverse test
+
     print("\n[returns] reverse a return undoes stock + ledger")
     ss.reverse_return(rb["return_id"])
     check(ps.get(pid2)["stock_qty"] == 16, "reverse pulls the returned unit back -> 16")

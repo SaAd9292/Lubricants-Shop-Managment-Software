@@ -369,6 +369,49 @@ class CustomerService:
             "SELECT substr(MIN(payment_date),1,10) AS d FROM customer_payments")
         return row["d"] if row and row["d"] else None
 
+    def update_payment(self, payment_id: int, *, customer_id: int | None = None,
+                       amount_minor: int | None = None, method: str | None = None,
+                       account_id: int | None = None, account_name: str | None = None,
+                       notes: str | None = None, payment_date: str | None = None,
+                       user_id: int | None = None) -> dict[str, Any]:
+        """Correct a recovery in place. Any field left as None is unchanged.
+        Safe because the customer's balance and Cash-in-Hand are derived from
+        this row — reassigning the customer moves the credit automatically.
+        Pass account_name='' to clear the account (e.g. switching to Cash)."""
+        row = self.db.query_one(
+            "SELECT * FROM customer_payments WHERE id = ?", (payment_id,))
+        if not row:
+            raise NotFoundError(f"Payment {payment_id} not found")
+        old_customer = row["customer_id"]
+        new_customer = old_customer if customer_id is None else int(customer_id)
+        self.get(new_customer)   # validate the (possibly new) customer exists
+        amt = row["amount_minor"] if amount_minor is None else int(amount_minor)
+        if amt <= 0:
+            raise ValidationError("Payment amount must be greater than zero.")
+        new_method = row["method"] if method is None else ((method or "").strip() or None)
+        # account is handled as a unit: both None -> unchanged; otherwise set as
+        # given (so switching to Cash, which passes id=None + name='', clears it).
+        if account_id is None and account_name is None:
+            new_acct_id, new_acct_name = row["account_id"], row["account_name"]
+        else:
+            new_acct_id = account_id
+            new_acct_name = (account_name or "").strip() or None
+        new_notes = row["notes"] if notes is None else ((notes or "").strip() or None)
+        new_date = row["payment_date"] if payment_date is None \
+            else _norm_payment_date(payment_date)
+        self.db.execute(
+            "UPDATE customer_payments SET customer_id=?, amount_minor=?, method=?, "
+            "account_id=?, account_name=?, notes=?, payment_date=? WHERE id=?",
+            (new_customer, amt, new_method, new_acct_id, new_acct_name,
+             new_notes, new_date, payment_id))
+        self.audit.record(action="EDIT_PAYMENT", user_id=user_id,
+                          entity_type="customer_payment", entity_id=payment_id,
+                          details={"from_customer": old_customer,
+                                   "to_customer": new_customer, "amount": amt})
+        log.info("Edited customer payment id=%s (customer %s->%s, amount=%s)",
+                 payment_id, old_customer, new_customer, amt)
+        return {"payment_id": payment_id, "customer_id": new_customer}
+
     def reverse_payment(self, payment_id: int, *, user_id: int | None = None) -> dict[str, Any]:
         """Undo a recovery: delete the payment row. The customer's balance and
         Cash-in-Hand both self-correct because they are derived from this ledger.

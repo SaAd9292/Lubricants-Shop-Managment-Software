@@ -266,6 +266,20 @@ class SaleController:
     def return_detail(self, return_id: int):
         return self.sales.return_detail(return_id)
 
+    def edit_return(self, return_id: int, *, return_date=None, method=None, notes=None):
+        """Edit a return's date/method/note (not its quantities). (ok, msg, data)."""
+        try:
+            user = current_session.require_permission("sale.void")
+            data = self.sales.update_return(
+                return_id, return_date=return_date, method=method, notes=notes,
+                user_id=user.id)
+            return True, "ok", data
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("Edit return failed")
+            return False, f"Unexpected error: {exc}", None
+
     def reverse_return(self, return_id: int):
         """Undo a return (gated by the same privilege that creates one).
         Returns (ok, msg, data)."""

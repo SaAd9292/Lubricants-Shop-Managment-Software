@@ -105,6 +105,23 @@ def main() -> int:
     rlist = cs.list_recoveries(date_from="2026-09-01", date_to="2026-09-30")
     check(len(rlist["rows"]) == 1 and rlist["rows"][0]["date"].startswith("2026-09-20"),
           "recovery shows under its back-dated date")
+    print("\n[recovery] edit a recovery: amount + reassign to another customer")
+    # a second udhaar customer, also owing 10000
+    rc2 = cs.create({"name": "Second Udhaar"})
+    rcid2 = rc2["id"] if isinstance(rc2, dict) else rc2
+    ss.create_sale(items=[{"product_id": pa, "qty": 1}], cashier_id=1,
+                   cashier_name="Cashier", payment_method="Debt",
+                   customer_id=rcid2, customer_name="Second Udhaar")
+    # change the amount 4000 -> 7000 on the original recovery
+    cs.update_payment(payid, amount_minor=7000)
+    check(cs.balance_owed(rcid) == 3000, "amount edit (7000) lowers original balance to 3000")
+    # now it was charged to the WRONG customer — move it to rcid2
+    cs.update_payment(payid, customer_id=rcid2)
+    check(cs.balance_owed(rcid) == 10000, "old customer's balance restored after reassign")
+    check(cs.balance_owed(rcid2) == 3000, "new customer's balance reduced by the 7000")
+    # put it back on the original customer for the reverse test
+    cs.update_payment(payid, customer_id=rcid, amount_minor=4000)
+
     cs.reverse_payment(payid)
     check(cs.balance_owed(rcid) == 10000, "reverse restores the full balance")
     check(len(cs.list_recoveries(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,

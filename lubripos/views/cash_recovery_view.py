@@ -281,7 +281,7 @@ class CashRecoveryView(QWidget):
 
     # -- history ------------------------------------------------------
     def _open_history(self) -> None:
-        dlg = RecoveryHistoryDialog(self.controller, self)
+        dlg = RecoveryHistoryDialog(self.controller, self.pay_ctl, self)
         dlg.exec()
         # a reversal changes balances — refresh the current customer view
         self._refresh_customers()
@@ -293,9 +293,11 @@ class RecoveryHistoryDialog(QDialog):
 
     _COLS = ["Date", "Customer", "Amount", "Method", "Account", "Note"]
 
-    def __init__(self, controller: CustomerController, parent=None) -> None:
+    def __init__(self, controller: CustomerController, pay_ctl=None,
+                 parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
+        self.pay_ctl = pay_ctl
         self.setWindowTitle("Recovery history")
         self.resize(760, 520)
         root = QVBoxLayout(self)
@@ -337,6 +339,13 @@ class RecoveryHistoryDialog(QDialog):
         root.addWidget(self.table, 1)
 
         btns = QHBoxLayout()
+        self.edit_btn = QPushButton("Edit selected recovery")
+        self.edit_btn.setObjectName("Secondary")
+        self.edit_btn.setToolTip("Correct this recovery — customer, amount, "
+                                 "method, date or note")
+        self.edit_btn.clicked.connect(self._edit)
+        self.edit_btn.setEnabled(False)
+        btns.addWidget(self.edit_btn)
         self.reverse_btn = QPushButton("Reverse selected recovery")
         self.reverse_btn.setObjectName("Secondary")
         self.reverse_btn.setToolTip("Undo the selected recovery: the customer's "
@@ -355,8 +364,42 @@ class RecoveryHistoryDialog(QDialog):
         self._reload()
 
     def _sync_btn(self) -> None:
-        self.reverse_btn.setEnabled(
-            current_session.can("customers") and self.table.currentRow() >= 0)
+        on = current_session.can("customers") and self.table.currentRow() >= 0
+        self.reverse_btn.setEnabled(on)
+        self.edit_btn.setEnabled(on)
+
+    def _selected_id(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        return it.data(Qt.UserRole) if it else None
+
+    def _edit(self) -> None:
+        if not current_session.can("customers"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the Customers privilege.")
+            return
+        pid = self._selected_id()
+        if pid is None:
+            return
+        try:
+            detail = self.controller.get_recovery(pid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not open", str(exc))
+            return
+        dlg = RecoveryEditDialog(self.controller, self.pay_ctl, detail, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        ok, msg, _ = self.controller.edit_recovery(
+            pid, customer_id=v["customer_id"], amount_major=v["amount"],
+            method=v["method"], account_id=v["account_id"],
+            account_name=v["account_name"], payment_date=v["date"], notes=v["notes"])
+        if ok:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not save", msg)
 
     def _reload(self) -> None:
         d_from = self.d_from.date().toString("yyyy-MM-dd")
@@ -382,6 +425,7 @@ class RecoveryHistoryDialog(QDialog):
                 self.table.setItem(r, c, it)
         self.total_lbl.setText(f"{len(rows)} recovery(ies) · {self.controller.fmt(total)}")
         self.reverse_btn.setEnabled(False)
+        self.edit_btn.setEnabled(False)
 
     def _reverse(self) -> None:
         if not current_session.can("customers"):
@@ -412,3 +456,119 @@ class RecoveryHistoryDialog(QDialog):
             self._reload()
         else:
             QMessageBox.warning(self, "Could not reverse", msg)
+
+
+class RecoveryEditDialog(QDialog):
+    """Correct a recovery: reassign the customer, fix the amount, method/account,
+    date or note. Balances recompute automatically on save."""
+
+    def __init__(self, controller: CustomerController, pay_ctl, detail: dict,
+                 parent=None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.pay_ctl = pay_ctl
+        self.setWindowTitle("Edit recovery")
+        self.setMinimumWidth(420)
+        form = QFormLayout(self)
+
+        # customer (editable combo of every customer, preselected)
+        self.cust = QComboBox()
+        self.cust.setEditable(True)
+        self.cust.setInsertPolicy(QComboBox.NoInsert)
+        self.cust.completer().setCompletionMode(QCompleter.PopupCompletion)
+        self.cust.completer().setCaseSensitivity(Qt.CaseInsensitive)
+        try:
+            rows = controller.list(search="", limit=100000)["rows"]
+        except Exception:
+            rows = []
+        want = detail.get("customer_id")
+        sel = 0
+        for i, c in enumerate(rows):
+            self.cust.addItem(c["name"], c["id"])
+            if c["id"] == want:
+                sel = i
+        self.cust.setCurrentIndex(sel)
+        form.addRow("Customer", self.cust)
+
+        sym, self._mu = controller.currency()
+        self.amount = QDoubleSpinBox()
+        self.amount.setMaximum(99_999_999)
+        self.amount.setDecimals(2)
+        self.amount.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self.amount.setPrefix(f"{sym} ")
+        self.amount.setValue((detail.get("amount_minor") or 0) / (self._mu or 100))
+        form.addRow("Amount", self.amount)
+
+        self.method = QComboBox()
+        self.method.addItems(_METHODS)
+        mi = self.method.findText(detail.get("method") or "Cash")
+        self.method.setCurrentIndex(mi if mi >= 0 else 0)
+        self.method.currentTextChanged.connect(self._reload_accounts)
+        form.addRow("Method", self.method)
+
+        self.account = QComboBox()
+        form.addRow("Account", self.account)
+        self._preset_account = (detail.get("account_id"), detail.get("account_name"))
+        self._reload_accounts()
+
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        full = (detail.get("payment_date") or "")[:10]
+        qd = QDate.fromString(full, "yyyy-MM-dd")
+        self.date.setDate(qd if qd.isValid() else QDate.currentDate())
+        form.addRow("Date", self.date)
+
+        self.note = QLineEdit(detail.get("notes") or "")
+        form.addRow("Note", self.note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _reload_accounts(self) -> None:
+        m = self.method.currentText()
+        self.account.clear()
+        if m == "Cash" or self.pay_ctl is None:
+            self.account.addItem("—", (None, None))
+            self.account.setEnabled(False)
+            return
+        self.account.setEnabled(True)
+        accts = self.pay_ctl.list(method=m, active_only=True)
+        if not accts:
+            self.account.addItem("(no accounts — add in Settings)", (None, None))
+            return
+        want_id = self._preset_account[0]
+        sel = 0
+        for i, a in enumerate(accts):
+            label = a["name"] + (f" — {a['account_no']}" if a.get("account_no") else "")
+            self.account.addItem(label, (a["id"], a["name"]))
+            if a["id"] == want_id:
+                sel = i
+        self.account.setCurrentIndex(sel)
+
+    def _on_accept(self) -> None:
+        if self.cust.currentData() is None:
+            QMessageBox.information(self, "Pick a customer",
+                                    "Choose a customer from the list.")
+            return
+        if self.amount.value() <= 0:
+            QMessageBox.information(self, "Enter amount",
+                                    "Amount must be greater than zero.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        method = self.method.currentText()
+        if method == "Cash":
+            acct_id, acct_name = None, ""
+        else:
+            acct_id, acct_name = self.account.currentData() or (None, None)
+            acct_name = acct_name or ""
+        return {"customer_id": self.cust.currentData(),
+                "amount": self.amount.value(), "method": method,
+                "account_id": acct_id, "account_name": acct_name,
+                "date": self.date.date().toString("yyyy-MM-dd"),
+                "notes": self.note.text().strip()}
