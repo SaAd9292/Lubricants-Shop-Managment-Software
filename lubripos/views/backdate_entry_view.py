@@ -131,6 +131,27 @@ class BackdateEntryView(QWidget):
         self._cust_suggest.activated[str].connect(self._on_cust_pick)
         form.addRow(tr("Customer"), self.cust_name)
 
+        # Partial payment: for a credit (udhaar) bill, how much the customer paid
+        # at the counter now. The rest goes on their tab. Only shown for credit.
+        _sym, _ = self.controller.currency()
+        self.paid_now = QDoubleSpinBox()
+        self.paid_now.setMaximum(1_000_000_000)
+        self.paid_now.setDecimals(2)
+        self.paid_now.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.paid_now.setPrefix(f"{_sym} ")
+        self.paid_method = QComboBox()
+        for _m in ("Cash", "Bank", "EasyPaisa", "JazzCash"):
+            self.paid_method.addItem(_m, _m)
+        _paid_wrap = QWidget()
+        _pr = QHBoxLayout(_paid_wrap)
+        _pr.setContentsMargins(0, 0, 0, 0)
+        _pr.setSpacing(6)
+        _pr.addWidget(self.paid_now, 1)
+        _pr.addWidget(self.paid_method)
+        self._paid_label = QLabel(tr("Paid now"))
+        self._paid_wrap = _paid_wrap
+        form.addRow(self._paid_label, _paid_wrap)
+
         # Description / paper bill number (optional; searchable in Sales History)
         self.notes = QLineEdit()
         self.notes.setPlaceholderText(tr("Paper/bill number or note (optional)"))
@@ -339,6 +360,11 @@ class BackdateEntryView(QWidget):
         credit = self.method.currentData() == "Debt"
         self.cust_name.setPlaceholderText(
             tr("Customer name (required)") if credit else tr("Walk-in"))
+        # 'Paid now' (partial payment) only makes sense for a credit bill
+        self._paid_label.setVisible(credit)
+        self._paid_wrap.setVisible(credit)
+        if not credit:
+            self.paid_now.setValue(0)
 
     def _bill_date(self) -> str | None:
         """Build 'YYYY-MM-DD' from the D/M/Y steppers, or None if the day is not
@@ -511,6 +537,7 @@ class BackdateEntryView(QWidget):
         next bill is fast); cursor back to the Day field."""
         self._cart = []
         self.discount.setValue(0)
+        self.paid_now.setValue(0)
         self.cust_name.clear()
         self.notes.clear()
         self.prod.clear()
@@ -545,10 +572,13 @@ class BackdateEntryView(QWidget):
         customer_id = self._resolve_customer_id()
         lines = [{"product_id": ln["product_id"], "qty": ln["qty"],
                   "unit_price": ln["up_minor"] / self._mu()} for ln in self._cart]
+        paid_now = self.paid_now.value() if method == "Debt" else 0
         ok, msg, summary = self.controller.record_backdated_sale(
             lines=lines, sale_date=sale_date, discount=disc,
             payment_method=method, customer_id=customer_id,
-            customer_name=customer, notes=self.notes.text() or None)
+            customer_name=customer, notes=self.notes.text() or None,
+            down_payment=paid_now,
+            down_payment_method=self.paid_method.currentData())
         if not ok:
             QMessageBox.warning(self, tr("Bill not saved"), msg)
             return
@@ -565,6 +595,7 @@ class BackdateEntryView(QWidget):
         # keep the date + payment for the next bill; clear the rest, back to Product
         self._cart = []
         self.discount.setValue(0)
+        self.paid_now.setValue(0)
         self.cust_name.clear()
         self.notes.clear()
         self._render_cart()

@@ -71,7 +71,9 @@ class SaleController:
                  payment_method: str = "cash", payment_account_id: int | None = None,
                  amount_paid: float = 0, customer_name: str | None = None,
                  customer_phone: str | None = None, notes: str | None = None,
-                 allow_oversell: bool = False):
+                 allow_oversell: bool = False, down_payment: float = 0,
+                 down_payment_method: str | None = None,
+                 down_payment_account_id: int | None = None):
         """lines: [{product_id, qty, unit_price (decimal)}]. Live POS sale, stamped
         today. allow_oversell=True lets stock go negative (item sold from the
         distribution warehouse before its purchase is booked); the POS asks the
@@ -89,6 +91,7 @@ class SaleController:
                 items.append(item)
             discount_minor = money.to_minor(discount or 0, mu)
             amount_paid_minor = money.to_minor(amount_paid or 0, mu)
+            down_payment_minor = money.to_minor(down_payment or 0, mu)
         except (ValueError, ArithmeticError, KeyError):
             return False, "Invalid cart data (check quantities, prices, amounts).", None
 
@@ -114,7 +117,10 @@ class SaleController:
                 amount_paid_minor=amount_paid_minor,
                 customer_id=customer_id, customer_name=cust_name,
                 notes=(notes or "").strip() or None,
-                allow_negative_stock=allow_oversell, user_id=user.id,
+                allow_negative_stock=allow_oversell,
+                down_payment_minor=down_payment_minor,
+                down_payment_method=down_payment_method,
+                down_payment_account_id=down_payment_account_id, user_id=user.id,
             )
             return True, "ok", summary
         except LubriPosError as exc:
@@ -130,7 +136,9 @@ class SaleController:
                               customer_id: int | None = None,
                               customer_name: str | None = None,
                               customer_phone: str | None = None,
-                              notes: str | None = None):
+                              notes: str | None = None,
+                              down_payment: float = 0,
+                              down_payment_method: str | None = None):
         """Record one historical paper bill on its real date. Admin-only.
 
         lines: [{product_id, qty, unit_price (decimal)}]. sale_date is
@@ -158,6 +166,7 @@ class SaleController:
                     item["unit_price_minor"] = money.to_minor(ln["unit_price"], mu)
                 items.append(item)
             discount_minor = money.to_minor(discount or 0, mu)
+            down_payment_minor = money.to_minor(down_payment or 0, mu)
         except (ValueError, ArithmeticError, KeyError):
             return False, "Invalid line data (check quantities and prices).", None
 
@@ -180,7 +189,9 @@ class SaleController:
                 customer_id=customer_id, customer_name=cust_name,
                 notes=(notes or "").strip() or None,
                 sale_date=sale_date, allow_negative_stock=True,
-                mark_paid_in_full=not is_credit, user_id=user.id,
+                mark_paid_in_full=not is_credit,
+                down_payment_minor=down_payment_minor,
+                down_payment_method=down_payment_method, user_id=user.id,
             )
             return True, "ok", summary
         except LubriPosError as exc:

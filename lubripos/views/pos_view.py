@@ -608,6 +608,7 @@ class POSView(QWidget):
         self.lbl_subtotal.setText(money.format_money(subtotal, self._symbol, self._minor_units))
         self.lbl_tax.setText(tax_text)
         self.lbl_total.setText(money.format_money(grand, self._symbol, self._minor_units))
+        self._grand_minor = grand   # remembered for the credit 'paid now' prompt
 
     # -- checkout -----------------------------------------------------
     def _complete(self) -> None:
@@ -655,6 +656,19 @@ class POSView(QWidget):
             if ans != QMessageBox.Yes:
                 return
 
+        # Credit sale: ask how much (if anything) the customer is paying now.
+        # 0 = full udhaar; a part-payment is recorded against their tab.
+        down_payment = 0.0
+        down_payment_method = None
+        down_payment_account_id = None
+        if method == "Debt":
+            dlg = _PartialPayDialog(self, self.controller,
+                                    getattr(self, "_grand_minor", 0),
+                                    self._symbol, self._minor_units, self.pay_ctl)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            down_payment, down_payment_method, down_payment_account_id = dlg.values()
+
         ok, msg, summary = self.controller.checkout(
             lines=lines, discount=self.discount.value(),
             payment_method=method,
@@ -663,6 +677,9 @@ class POSView(QWidget):
             customer_phone=self.cust_phone.text(),
             notes=self.sale_notes.text(),
             allow_oversell=bool(oversell),
+            down_payment=down_payment,
+            down_payment_method=down_payment_method,
+            down_payment_account_id=down_payment_account_id,
         )
         if not ok:
             QMessageBox.warning(self, "Sale not completed", msg)
@@ -784,3 +801,74 @@ class _ReorderDialog:
 
     def run(self) -> list[tuple]:
         return self._result if self.dlg.exec() == QDialog.Accepted else []
+
+
+class _PartialPayDialog(QDialog):
+    """On a credit (udhaar) sale, ask how much the customer is paying NOW.
+    0 = full credit; a part-payment is recorded against their tab, hitting cash
+    or bank by the chosen method."""
+
+    _METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
+
+    def __init__(self, parent, controller, total_minor, symbol, minor_units,
+                 pay_ctl) -> None:
+        super().__init__(parent)
+        self.pay_ctl = pay_ctl
+        self._mu = minor_units or 100
+        self.setWindowTitle("Credit sale — paid now?")
+        self.setMinimumWidth(380)
+        root = QVBoxLayout(self)
+        info = QLabel(
+            f"Bill total:  {money.format_money(total_minor, symbol, self._mu)}\n"
+            "How much is the customer paying now?  (leave 0 for full udhaar)")
+        info.setWordWrap(True)
+        root.addWidget(info)
+
+        row = QHBoxLayout()
+        self.amount = QDoubleSpinBox()
+        self.amount.setMaximum(max(0.0, total_minor / self._mu))
+        self.amount.setDecimals(2)
+        self.amount.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.amount.setPrefix(f"{symbol} ")
+        self.amount.setValue(0)
+        self.method = QComboBox()
+        for m in self._METHODS:
+            self.method.addItem(m, m)
+        self.method.currentTextChanged.connect(self._reload_accounts)
+        row.addWidget(self.amount, 1)
+        row.addWidget(self.method)
+        root.addLayout(row)
+
+        self.account = QComboBox()
+        root.addWidget(self.account)
+        self._reload_accounts()
+
+        btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Ok).setText("Complete sale")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _reload_accounts(self) -> None:
+        m = self.method.currentText()
+        self.account.clear()
+        if m == "Cash":
+            self.account.addItem("", None)
+            self.account.setEnabled(False)
+            return
+        self.account.setEnabled(True)
+        try:
+            accts = self.pay_ctl.list(method=m, active_only=True)
+        except Exception:
+            accts = []
+        if not accts:
+            self.account.addItem("(no accounts — add in Settings)", None)
+            return
+        for a in accts:
+            label = a["name"] + (f"  -  {a['account_no']}" if a.get("account_no") else "")
+            self.account.addItem(label, a["id"])
+
+    def values(self) -> tuple:
+        m = self.method.currentText()
+        acc = None if m == "Cash" else self.account.currentData()
+        return self.amount.value(), m, acc

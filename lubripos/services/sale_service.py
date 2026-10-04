@@ -66,6 +66,9 @@ class SaleService:
         sale_date: str | None = None,
         allow_negative_stock: bool = False,
         mark_paid_in_full: bool = False,
+        down_payment_minor: int = 0,
+        down_payment_method: str | None = None,
+        down_payment_account_id: int | None = None,
         user_id: int | None = None,
     ) -> dict[str, Any]:
         """items: [{product_id, qty, unit_price_minor?}].
@@ -157,6 +160,28 @@ class SaleService:
                     "UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?",
                     (ln["qty"], ln["product_id"]),
                 )
+
+            # Partial payment: the customer took the goods on credit (Debt) but
+            # paid PART of the bill now. Record that part as a payment against
+            # their tab so their balance = total - paid, and the cash/bank is
+            # counted by its own method (cash hits the till; bank does not).
+            dp = int(down_payment_minor or 0)
+            if dp > 0 and payment_method == "Debt" and customer_id:
+                if dp > grand_total:
+                    raise ValidationError("Amount paid now cannot exceed the bill total.")
+                dp_acc_name = None
+                if down_payment_account_id:
+                    _a = conn.execute("SELECT name FROM payment_accounts WHERE id = ?",
+                                      (down_payment_account_id,)).fetchone()
+                    dp_acc_name = _a["name"] if _a else None
+                conn.execute(
+                    "INSERT INTO customer_payments (customer_id, sale_id, amount_minor, "
+                    "method, account_id, account_name, notes, payment_date, created_by) "
+                    "VALUES (?,?,?,?,?,?,?, "
+                    "COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')), ?)",
+                    (customer_id, sale_id, dp, (down_payment_method or "Cash"),
+                     down_payment_account_id, dp_acc_name,
+                     f"Paid at sale {invoice_no}", sale_date, user_id))
 
         # Change is only meaningful for cash tendered; non-cash methods (Bank,
         # EasyPaisa, JazzCash) settle the exact amount, so change is always 0.

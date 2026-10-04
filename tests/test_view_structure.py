@@ -53,6 +53,7 @@ EXPECTED = [
       "_export"]),
     ("supplier_payments_dialog.py", "SupplierPaymentEditDialog",
      ["values", "_on_accept"]),
+    ("pos_view.py", "_PartialPayDialog", ["values", "_reload_accounts"]),
 ]
 
 
