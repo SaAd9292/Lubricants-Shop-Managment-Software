@@ -205,11 +205,12 @@ class SaleController:
             log.exception("PDF generation failed")
             return False, f"Could not create PDF: {exc}", None
 
-    def create_return(self, sale_id, lines, notes=""):
+    def create_return(self, sale_id, lines, notes="", return_date=None):
         """lines: [{sale_item_id, qty}]. Returns (ok, msg, {return_id, refund_minor})."""
         try:
             user = current_session.require_permission("sale.void")
-            data = self.sales.create_return(sale_id, lines, user_id=user.id, notes=notes)
+            data = self.sales.create_return(sale_id, lines, user_id=user.id,
+                                            notes=notes, return_date=return_date)
             return True, "ok", data
         except LubriPosError as exc:
             return False, str(exc), None
@@ -218,7 +219,8 @@ class SaleController:
             return False, f"Unexpected error: {exc}", None
 
     def create_no_receipt_return(self, *, lines: list[dict[str, Any]],
-                                 method: str | None = None, notes: str = ""):
+                                 method: str | None = None, notes: str = "",
+                                 return_date: str | None = None):
         """A return with no original sale. lines: [{product_id, qty, refund
         (decimal)}]. The UI also requires the admin password before calling this.
         Returns (ok, msg, {return_id, refund_minor})."""
@@ -233,7 +235,8 @@ class SaleController:
                     "refund_minor": money.to_minor(ln.get("refund") or 0, mu),
                 })
             data = self.sales.create_no_receipt_return(
-                items, method=method, notes=notes, user_id=user.id)
+                items, method=method, notes=notes, user_id=user.id,
+                return_date=return_date)
             return True, "ok", data
         except (ValueError, ArithmeticError, KeyError):
             return False, "Invalid return data (check quantities and refund amounts).", None
@@ -252,4 +255,26 @@ class SaleController:
             return False, str(exc), None
         except Exception as exc:  # pragma: no cover
             log.exception("Void failed")
+            return False, f"Unexpected error: {exc}", None
+
+    # -- returns history + reversal ----------------------------------
+    def returns(self, *, date_from=None, date_to=None, limit=500, offset=0):
+        """Return history for the Returns page (reads are open to the screen)."""
+        return self.sales.list_returns(date_from=date_from, date_to=date_to,
+                                       limit=limit, offset=offset)
+
+    def return_detail(self, return_id: int):
+        return self.sales.return_detail(return_id)
+
+    def reverse_return(self, return_id: int):
+        """Undo a return (gated by the same privilege that creates one).
+        Returns (ok, msg, data)."""
+        try:
+            user = current_session.require_permission("sale.void")
+            data = self.sales.reverse_return(return_id, user_id=user.id)
+            return True, "ok", data
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("Reverse return failed")
             return False, f"Unexpected error: {exc}", None

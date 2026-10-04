@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from ..core.exceptions import NotFoundError, ValidationError
@@ -17,6 +18,18 @@ from ..database.connection import Database
 from .audit_service import AuditService
 
 log = get_logger(__name__)
+
+
+def _norm_payment_date(value: str | None) -> str:
+    """Normalise a caller-supplied recovery date to 'YYYY-MM-DD HH:MM:SS'. A
+    date-only value keeps the current time; None means 'now'."""
+    now = datetime.now()
+    if not value:
+        return now.strftime("%Y-%m-%d %H:%M:%S")
+    v = value.strip()
+    if len(v) == 10:
+        return f"{v} {now.strftime('%H:%M:%S')}"
+    return v
 
 _SORT_COLUMNS = {
     "name": "c.name COLLATE NOCASE",
@@ -264,20 +277,22 @@ class CustomerService:
     def record_payment(self, customer_id: int, amount_minor: int, *,
                        method: str | None = None, account_id: int | None = None,
                        account_name: str | None = None, notes: str | None = None,
-                       user_id: int | None = None) -> int:
+                       user_id: int | None = None, payment_date: str | None = None) -> int:
         """Record a repayment against a customer's tab. Amount is in minor units
         and must be positive; it reduces their balance_owed. account_id/name
-        capture which specific account (bank / EasyPaisa) received the money."""
+        capture which specific account (bank / EasyPaisa) received the money.
+        payment_date lets the operator back-date the recovery (default now)."""
         self.get(customer_id)  # raises NotFoundError if missing
         amount_minor = int(amount_minor)
         if amount_minor <= 0:
             raise ValidationError("Payment amount must be greater than zero.")
         cur = self.db.execute(
             "INSERT INTO customer_payments (customer_id, amount_minor, method, "
-            "account_id, account_name, notes, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "account_id, account_name, notes, created_by, payment_date) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (customer_id, amount_minor, (method or "").strip() or None,
              account_id, (account_name or "").strip() or None,
-             (notes or "").strip() or None, user_id))
+             (notes or "").strip() or None, user_id, _norm_payment_date(payment_date)))
         pay_id = cur.lastrowid
         self.audit.record(action="CREATE", user_id=user_id,
                           entity_type="customer_payment", entity_id=pay_id,
@@ -323,6 +338,55 @@ class CustomerService:
         d = dict(row)
         d["balance_after"] = self.balance_owed(d["customer_id"])
         return d
+
+    def list_recoveries(self, *, date_from: str | None = None,
+                        date_to: str | None = None, limit: int = 500,
+                        offset: int = 0) -> dict[str, Any]:
+        """All recoveries (customer repayments), newest first, optionally within
+        an inclusive date range. Each row: id, date, customer, amount, method,
+        account, note."""
+        conds, params = [], []
+        if date_from:
+            conds.append("substr(cp.payment_date,1,10) >= ?"); params.append(date_from[:10])
+        if date_to:
+            conds.append("substr(cp.payment_date,1,10) <= ?"); params.append(date_to[:10])
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        rows = [dict(r) for r in self.db.query(
+            "SELECT cp.id, substr(cp.payment_date,1,16) AS date, "
+            "COALESCE(c.name,'(removed)') AS customer, cp.amount_minor AS amount, "
+            "COALESCE(cp.method,'Cash') AS method, "
+            "COALESCE(cp.account_name,'') AS account, COALESCE(cp.notes,'') AS notes "
+            "FROM customer_payments cp LEFT JOIN customers c ON c.id = cp.customer_id "
+            f"{where} ORDER BY cp.payment_date DESC, cp.id DESC LIMIT ? OFFSET ?",
+            tuple(params) + (limit, offset))]
+        total = self.db.query_one(
+            f"SELECT COUNT(*) AS n FROM customer_payments cp {where}", tuple(params))["n"]
+        paid = sum(r["amount"] for r in rows)
+        return {"rows": rows, "total": total, "sum_minor": paid}
+
+    def recoveries_min_date(self) -> str | None:
+        row = self.db.query_one(
+            "SELECT substr(MIN(payment_date),1,10) AS d FROM customer_payments")
+        return row["d"] if row and row["d"] else None
+
+    def reverse_payment(self, payment_id: int, *, user_id: int | None = None) -> dict[str, Any]:
+        """Undo a recovery: delete the payment row. The customer's balance and
+        Cash-in-Hand both self-correct because they are derived from this ledger.
+        Audited."""
+        row = self.db.query_one(
+            "SELECT customer_id, amount_minor FROM customer_payments WHERE id = ?",
+            (payment_id,))
+        if not row:
+            raise NotFoundError(f"Payment {payment_id} not found")
+        self.db.execute("DELETE FROM customer_payments WHERE id = ?", (payment_id,))
+        self.audit.record(action="REVERSE_PAYMENT", user_id=user_id,
+                          entity_type="customer_payment", entity_id=payment_id,
+                          details={"customer_id": row["customer_id"],
+                                   "amount": row["amount_minor"]})
+        log.warning("Customer payment id=%s reversed (deleted); balance restored",
+                    payment_id)
+        return {"payment_id": payment_id, "amount_minor": row["amount_minor"],
+                "customer_id": row["customer_id"]}
 
     # -- writes -------------------------------------------------------
     def update(self, customer_id: int, data: dict[str, Any],

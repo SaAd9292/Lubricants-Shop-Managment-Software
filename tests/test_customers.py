@@ -92,6 +92,24 @@ def main() -> int:
     check(a not in [x["id"] for x in cs.list_customers(only_active=True)["rows"]],
           "inactive hidden from active list")
 
+    print("\n[recovery] back-dated recovery, history list + reverse")
+    rc = cs.create({"name": "Udhaar Customer"})
+    rcid = rc["id"] if isinstance(rc, dict) else rc
+    ss.create_sale(items=[{"product_id": pa, "qty": 1}], cashier_id=1,
+                   cashier_name="Cashier", payment_method="Debt",
+                   customer_id=rcid, customer_name="Udhaar Customer")
+    owed = cs.balance_owed(rcid)
+    check(owed == 10000, "debt sale leaves Rs 100 owed")
+    payid = cs.record_payment(rcid, 4000, method="Cash", payment_date="2026-09-20")
+    check(cs.balance_owed(rcid) == 6000, "recovery of 4000 lowers balance to 6000")
+    rlist = cs.list_recoveries(date_from="2026-09-01", date_to="2026-09-30")
+    check(len(rlist["rows"]) == 1 and rlist["rows"][0]["date"].startswith("2026-09-20"),
+          "recovery shows under its back-dated date")
+    cs.reverse_payment(payid)
+    check(cs.balance_owed(rcid) == 10000, "reverse restores the full balance")
+    check(len(cs.list_recoveries(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
+          "reversed recovery no longer listed")
+
     ctx.shutdown()
     n = sum(_r); print(f"\n==== {n}/{len(_r)} checks passed ====")
     return 0 if n == len(_r) else 1

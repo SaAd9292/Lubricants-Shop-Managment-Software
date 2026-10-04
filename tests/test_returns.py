@@ -75,6 +75,27 @@ def main() -> int:
     ss.create_return(sale["id"], [{"sale_item_id": item_id, "qty": 3}])
     check(ps.get(pid)["stock_qty"] == 10, "all 5 returned -> stock back to 10")
 
+    print("\n[returns] manual return date + history list")
+    pid2 = ps.create({"name": "Grease", "sale_price_minor": 5000,
+                      "purchase_price_minor": 3000, "stock_qty": 20})
+    sale2 = ss.create_sale(items=[{"product_id": pid2, "qty": 4}], cashier_id=1,
+                           cashier_name="Saad", payment_method="Cash")
+    it2 = ss.get_sale(sale2["id"])["items"][0]["id"]
+    rb = ss.create_return(sale2["id"], [{"sale_item_id": it2, "qty": 1}],
+                          return_date="2026-09-15")
+    hist = ss.list_returns(date_from="2026-09-01", date_to="2026-09-30")
+    check(len(hist["rows"]) == 1 and hist["rows"][0]["date"].startswith("2026-09-15"),
+          "back-dated return shows under its chosen date")
+    check(ps.get(pid2)["stock_qty"] == 17, "1 returned -> stock 17")
+
+    print("\n[returns] reverse a return undoes stock + ledger")
+    ss.reverse_return(rb["return_id"])
+    check(ps.get(pid2)["stock_qty"] == 16, "reverse pulls the returned unit back -> 16")
+    check(ss.get_sale(sale2["id"])["items"][0]["returned_qty"] == 0,
+          "reverse clears returned_qty")
+    check(len(ss.list_returns(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
+          "reversed return no longer listed")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

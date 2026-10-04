@@ -12,9 +12,9 @@ cash-in-hand.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QEvent, QStringListModel
+from PySide6.QtCore import Qt, QDate, QEvent, QStringListModel
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QComboBox, QCompleter, QDialog,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -127,6 +127,12 @@ class NoReceiptReturnDialog(QDialog):
         for label, value in REFUND_METHODS:
             self.method.addItem(label, value)
         mrow.addRow("Refund via", self.method)
+        self.ret_date = QDateEdit()
+        self.ret_date.setCalendarPopup(True)
+        self.ret_date.setDisplayFormat("dd MMM yyyy")
+        self.ret_date.setMaximumDate(QDate.currentDate())
+        self.ret_date.setDate(QDate.currentDate())
+        mrow.addRow("Return date", self.ret_date)
         self.reason = QLineEdit()
         self.reason.setPlaceholderText("Reason / note (optional)")
         mrow.addRow("Reason", self.reason)
@@ -268,7 +274,8 @@ class NoReceiptReturnDialog(QDialog):
         lines = [{"product_id": ln["product_id"], "qty": ln["qty"],
                   "refund": ln["refund_minor"] / self._mu()} for ln in self._cart]
         ok, msg, data = self.controller.create_no_receipt_return(
-            lines=lines, method=method, notes=self.reason.text().strip())
+            lines=lines, method=method, notes=self.reason.text().strip(),
+            return_date=self.ret_date.date().toString("yyyy-MM-dd"))
         if ok:
             self.result_data = data
             QMessageBox.information(

@@ -12,11 +12,13 @@ the Day-Close report automatically.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QStringListModel, QUrl
+from PySide6.QtCore import Qt, QDate, QStringListModel, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDateEdit, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -45,9 +47,17 @@ class CashRecoveryView(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(28, 28, 28, 28)
 
+        title_row = QHBoxLayout()
         title = QLabel("Cash Recovery")
         title.setObjectName("PageTitle")
-        root.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
+        self.history_btn = QPushButton("Recovery history")
+        self.history_btn.setObjectName("Secondary")
+        self.history_btn.setToolTip("List all recoveries, filter by date, and reverse one")
+        self.history_btn.clicked.connect(self._open_history)
+        title_row.addWidget(self.history_btn)
+        root.addLayout(title_row)
 
         # centre a dialog-style card
         center = QHBoxLayout()
@@ -117,6 +127,14 @@ class CashRecoveryView(QWidget):
         self.amount.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.amount.setPrefix(f"{sym} ")
         form2.addRow("Amount recovered", self.amount)
+
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        self.date.setDate(QDate.currentDate())
+        self.date.setToolTip("Date to record this recovery on (back-date if needed)")
+        form2.addRow("Date", self.date)
 
         self.note = QLineEdit()
         self.note.setPlaceholderText("Optional note")
@@ -242,7 +260,8 @@ class CashRecoveryView(QWidget):
             return
         ok, msg, pay_id = self.controller.record_payment(
             self._customer["id"], amt, method=method, account_id=acct_id,
-            account_name=acct_name, notes=self.note.text())
+            account_name=acct_name, notes=self.note.text(),
+            payment_date=self.date.date().toString("yyyy-MM-dd"))
         if not ok:
             QMessageBox.warning(self, "Could not record recovery", msg)
             return
@@ -259,3 +278,137 @@ class CashRecoveryView(QWidget):
             QMessageBox.information(
                 self, "Recovery saved",
                 "Recovery recorded, but the receipt could not be created:\n" + rmsg)
+
+    # -- history ------------------------------------------------------
+    def _open_history(self) -> None:
+        dlg = RecoveryHistoryDialog(self.controller, self)
+        dlg.exec()
+        # a reversal changes balances — refresh the current customer view
+        self._refresh_customers()
+        self._sync_customer()
+
+
+class RecoveryHistoryDialog(QDialog):
+    """List every recovery with a From/To filter and a per-selection Reverse."""
+
+    _COLS = ["Date", "Customer", "Amount", "Method", "Account", "Note"]
+
+    def __init__(self, controller: CustomerController, parent=None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Recovery history")
+        self.resize(760, 520)
+        root = QVBoxLayout(self)
+
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("From"))
+        self.d_from = QDateEdit()
+        self.d_from.setCalendarPopup(True)
+        self.d_from.setDisplayFormat("dd MMM yyyy")
+        try:
+            lo = self.controller.recoveries_min_date()
+        except Exception:
+            lo = None
+        self.d_from.setDate(QDate.fromString(lo, "yyyy-MM-dd")
+                            if lo else QDate.currentDate().addMonths(-1))
+        self.d_from.dateChanged.connect(lambda _=None: self._reload())
+        bar.addWidget(self.d_from)
+        bar.addWidget(QLabel("To"))
+        self.d_to = QDateEdit()
+        self.d_to.setCalendarPopup(True)
+        self.d_to.setDisplayFormat("dd MMM yyyy")
+        self.d_to.setDate(QDate.currentDate())
+        self.d_to.dateChanged.connect(lambda _=None: self._reload())
+        bar.addWidget(self.d_to)
+        bar.addStretch(1)
+        self.total_lbl = QLabel("")
+        self.total_lbl.setStyleSheet("font-weight:700;")
+        bar.addWidget(self.total_lbl)
+        root.addLayout(bar)
+
+        self.table = QTableWidget(0, len(self._COLS))
+        self.table.setHorizontalHeaderLabels(self._COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self._sync_btn)
+        root.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        self.reverse_btn = QPushButton("Reverse selected recovery")
+        self.reverse_btn.setObjectName("Secondary")
+        self.reverse_btn.setToolTip("Undo the selected recovery: the customer's "
+                                    "balance and cash both self-correct")
+        self.reverse_btn.clicked.connect(self._reverse)
+        self.reverse_btn.setEnabled(False)
+        btns.addWidget(self.reverse_btn)
+        btns.addStretch(1)
+        close = QDialogButtonBox(QDialogButtonBox.Close)
+        close.rejected.connect(self.reject)
+        close.accepted.connect(self.accept)
+        close.button(QDialogButtonBox.Close).clicked.connect(self.accept)
+        btns.addWidget(close)
+        root.addLayout(btns)
+
+        self._reload()
+
+    def _sync_btn(self) -> None:
+        self.reverse_btn.setEnabled(
+            current_session.can("customers") and self.table.currentRow() >= 0)
+
+    def _reload(self) -> None:
+        d_from = self.d_from.date().toString("yyyy-MM-dd")
+        d_to = self.d_to.date().toString("yyyy-MM-dd")
+        try:
+            res = self.controller.recoveries(date_from=d_from, date_to=d_to)
+            rows = res["rows"]
+            total = res.get("sum_minor", 0)
+        except Exception:
+            rows, total = [], 0
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            cells = [row["date"], row["customer"],
+                     self.controller.fmt(row["amount"]), row["method"],
+                     row["account"], row["notes"]]
+            for c, val in enumerate(cells):
+                it = QTableWidgetItem(str(val))
+                if c == 0:
+                    it.setData(Qt.UserRole, row["id"])
+                if c == 2:
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(r, c, it)
+        self.total_lbl.setText(f"{len(rows)} recovery(ies) · {self.controller.fmt(total)}")
+        self.reverse_btn.setEnabled(False)
+
+    def _reverse(self) -> None:
+        if not current_session.can("customers"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the Customers privilege.")
+            return
+        row = self.table.currentRow()
+        if row < 0:
+            return
+        it = self.table.item(row, 0)
+        pid = it.data(Qt.UserRole) if it else None
+        if pid is None:
+            return
+        who = self.table.item(row, 1).text()
+        amt = self.table.item(row, 2).text()
+        confirm = QMessageBox.warning(
+            self, "Reverse recovery",
+            f"Reverse this recovery of {amt} from {who}?\n\n"
+            "The customer's balance will go back up and the cash be removed. "
+            "This cannot itself be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        ok, msg, _ = self.controller.reverse_recovery(pid)
+        if ok:
+            QMessageBox.information(self, "Reversed",
+                                    "The recovery was reversed.")
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not reverse", msg)

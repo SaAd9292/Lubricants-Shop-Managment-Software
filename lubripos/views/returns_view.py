@@ -11,11 +11,11 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt, QEvent
+from PySide6.QtCore import Qt, QDate, QEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QApplication, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QDateEdit, QFrame,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
@@ -127,7 +127,10 @@ class ReturnsView(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.horizontalHeader().setSectionResizeMode(C_PRODUCT, QHeaderView.Stretch)
-        root.addWidget(self.table, 1)
+        # the processing table is a working area, not the main content — cap it
+        # so the Returns-history panel below always has room.
+        self.table.setMaximumHeight(240)
+        root.addWidget(self.table)
 
         footer = QHBoxLayout()
         self.all_btn = QPushButton("Return all remaining")
@@ -135,6 +138,15 @@ class ReturnsView(QWidget):
         self.all_btn.clicked.connect(self._select_all)
         self.all_btn.setEnabled(False)
         footer.addWidget(self.all_btn)
+        footer.addSpacing(12)
+        footer.addWidget(QLabel("Return date"))
+        self.ret_date = QDateEdit()
+        self.ret_date.setCalendarPopup(True)
+        self.ret_date.setDisplayFormat("dd MMM yyyy")
+        self.ret_date.setMaximumDate(QDate.currentDate())
+        self.ret_date.setDate(QDate.currentDate())
+        self.ret_date.setToolTip("Date to record this return on (back-date if needed)")
+        footer.addWidget(self.ret_date)
         footer.addStretch(1)
         self.total_lbl = QLabel("")
         self.total_lbl.setStyleSheet("font-weight:700; font-size:15px;")
@@ -154,6 +166,54 @@ class ReturnsView(QWidget):
             self.return_btn.setToolTip("You do not have the return/void privilege")
         footer.addWidget(self.return_btn)
         root.addLayout(footer)
+
+        # ===== Returns history =====================================
+        sep = QFrame(); sep.setFrameShape(QFrame.HLine)
+        sep.setObjectName("Muted")
+        root.addWidget(sep)
+
+        hist_head = QHBoxLayout()
+        htitle = QLabel("Returns history")
+        htitle.setStyleSheet("font-size:15px;font-weight:700;")
+        hist_head.addWidget(htitle)
+        hist_head.addStretch(1)
+        hist_head.addWidget(QLabel("From"))
+        self.h_from = QDateEdit()
+        self.h_from.setCalendarPopup(True)
+        self.h_from.setDisplayFormat("dd MMM yyyy")
+        self.h_from.setDate(QDate.currentDate().addMonths(-1))
+        self.h_from.dateChanged.connect(lambda _=None: self._reload_history())
+        hist_head.addWidget(self.h_from)
+        hist_head.addWidget(QLabel("To"))
+        self.h_to = QDateEdit()
+        self.h_to.setCalendarPopup(True)
+        self.h_to.setDisplayFormat("dd MMM yyyy")
+        self.h_to.setDate(QDate.currentDate())
+        self.h_to.dateChanged.connect(lambda _=None: self._reload_history())
+        hist_head.addWidget(self.h_to)
+        self.reverse_btn = QPushButton("Reverse selected return")
+        self.reverse_btn.setObjectName("Secondary")
+        self.reverse_btn.setToolTip("Undo the selected return: pull the restocked "
+                                    "quantity back and reverse its refund")
+        self.reverse_btn.clicked.connect(self._reverse_selected)
+        self.reverse_btn.setEnabled(False)
+        hist_head.addWidget(self.reverse_btn)
+        root.addLayout(hist_head)
+
+        HCOLS = ["Date", "Invoice / Type", "Items", "Refund", "Method", "By"]
+        self.history = QTableWidget(0, len(HCOLS))
+        self.history.setHorizontalHeaderLabels(HCOLS)
+        self.history.verticalHeader().setVisible(False)
+        self.history.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.history.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.history.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.history.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.history.itemSelectionChanged.connect(
+            lambda: self.reverse_btn.setEnabled(
+                current_session.can("sale.void") and self.history.currentRow() >= 0))
+        root.addWidget(self.history, 1)
+
+        self._reload_history()
 
     # -- data ---------------------------------------------------------
     def _fetch(self) -> None:
@@ -270,13 +330,16 @@ class ReturnsView(QWidget):
             "This cannot be undone.")
         if confirm != QMessageBox.Yes:
             return
-        ok, msg, data = self.controller.create_return(self._sale["id"], lines)
+        rdate = self.ret_date.date().toString("yyyy-MM-dd")
+        ok, msg, data = self.controller.create_return(
+            self._sale["id"], lines, return_date=rdate)
         if ok:
             QMessageBox.information(
                 self, "Returned",
                 f"Return recorded: stock restored and "
                 f"{self.controller.fmt(data['refund_minor'])} refunded.")
-            self._fetch()   # refresh remaining quantities
+            self._fetch()         # refresh remaining quantities
+            self._reload_history()
         else:
             QMessageBox.warning(self, "Could not return", msg)
 
@@ -290,3 +353,61 @@ class ReturnsView(QWidget):
             return
         dlg = NoReceiptReturnDialog(self.ctx, self.controller, self)
         dlg.exec()
+        self._reload_history()
+
+    # -- returns history ---------------------------------------------
+    def _reload_history(self) -> None:
+        d_from = self.h_from.date().toString("yyyy-MM-dd")
+        d_to = self.h_to.date().toString("yyyy-MM-dd")
+        try:
+            res = self.controller.returns(date_from=d_from, date_to=d_to)
+            rows = res["rows"]
+        except Exception:
+            rows = []
+        self.history.setRowCount(0)
+        self.history.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            kind = row["invoice"] or "(no receipt)"
+            summary = f"{row['units']} item(s)"
+            cells = [row["date"], kind, summary,
+                     self.controller.fmt(row["refund"]), row["method"], row["by_name"]]
+            for c, val in enumerate(cells):
+                it = QTableWidgetItem(str(val))
+                if c == 0:
+                    it.setData(Qt.UserRole, row["id"])
+                if c in (2, 3):
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.history.setItem(r, c, it)
+        self.reverse_btn.setEnabled(False)
+
+    def _reverse_selected(self) -> None:
+        if not current_session.can("sale.void"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the return/void privilege.")
+            return
+        row = self.history.currentRow()
+        if row < 0:
+            return
+        it = self.history.item(row, 0)
+        rid = it.data(Qt.UserRole) if it else None
+        if rid is None:
+            return
+        refund = self.history.item(row, 3).text()
+        kind = self.history.item(row, 1).text()
+        confirm = QMessageBox.warning(
+            self, "Reverse return",
+            f"Reverse this return ({kind}, refund {refund})?\n\n"
+            "The restocked quantity will be pulled back off the product(s) and the "
+            "refund undone. This cannot itself be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        ok, msg, _ = self.controller.reverse_return(rid)
+        if ok:
+            QMessageBox.information(self, "Reversed",
+                                    "The return was reversed and stock corrected.")
+            self._reload_history()
+            if self._sale:
+                self._fetch()   # keep the open invoice's remaining quantities fresh
+        else:
+            QMessageBox.warning(self, "Could not reverse", msg)

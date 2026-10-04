@@ -19,6 +19,7 @@ Money is in integer minor units throughout. Tax rate is basis points.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from ..core.exceptions import InsufficientStockError, NotFoundError, ValidationError
@@ -28,6 +29,19 @@ from ..database.connection import Database
 from .audit_service import AuditService
 
 log = get_logger(__name__)
+
+
+def _norm_return_date(value: str | None) -> str:
+    """Normalise a caller-supplied return date to a full 'YYYY-MM-DD HH:MM:SS'
+    timestamp. A date-only value keeps the current wall-clock time so same-day
+    ordering stays natural; None means 'now'."""
+    now = datetime.now()
+    if not value:
+        return now.strftime("%Y-%m-%d %H:%M:%S")
+    v = value.strip()
+    if len(v) == 10:   # date only -> attach the current time
+        return f"{v} {now.strftime('%H:%M:%S')}"
+    return v
 
 
 class SaleService:
@@ -185,7 +199,8 @@ class SaleService:
         log.warning("Sale id=%s (%s) voided; stock restored", sale_id, sale["invoice_no"])
 
     def create_return(self, sale_id: int, lines: list[dict[str, Any]], *,
-                      user_id: int | None = None, notes: str = "") -> dict[str, Any]:
+                      user_id: int | None = None, notes: str = "",
+                      return_date: str | None = None) -> dict[str, Any]:
         """Return specific quantities from a completed sale.
 
         lines: [{sale_item_id, qty}]. Each returned quantity is restored to
@@ -222,8 +237,9 @@ class SaleService:
                 raise ValidationError("Select at least one quantity to return.")
 
             cur = conn.execute(
-                "INSERT INTO sale_returns (sale_id, refund_minor, notes, created_by) "
-                "VALUES (?,?,?,?)", (sale_id, refund, (notes or None), user_id))
+                "INSERT INTO sale_returns (sale_id, refund_minor, notes, created_by, "
+                "return_date) VALUES (?,?,?,?,?)",
+                (sale_id, refund, (notes or None), user_id, _norm_return_date(return_date)))
             return_id = cur.lastrowid
             for item, qty in picked:
                 conn.execute(
@@ -250,7 +266,8 @@ class SaleService:
 
     def create_no_receipt_return(self, items: list[dict[str, Any]], *,
                                  method: str | None = None, notes: str = "",
-                                 user_id: int | None = None) -> dict[str, Any]:
+                                 user_id: int | None = None,
+                                 return_date: str | None = None) -> dict[str, Any]:
         """Record a return with NO original sale (unlinked). items:
         [{product_id, qty, refund_minor}] where refund_minor is the amount to give
         back for that line (the operator decides it — there is no sale to price
@@ -281,8 +298,9 @@ class SaleService:
 
             cur = conn.execute(
                 "INSERT INTO sale_returns (sale_id, refund_minor, method, notes, "
-                "created_by) VALUES (NULL, ?, ?, ?, ?)",
-                (refund, (method or None), (notes or None), user_id))
+                "created_by, return_date) VALUES (NULL, ?, ?, ?, ?, ?)",
+                (refund, (method or None), (notes or None), user_id,
+                 _norm_return_date(return_date)))
             return_id = cur.lastrowid
             for pid, name, qty, line_refund, cost in picked:
                 unit_refund = line_refund // qty if qty else 0
@@ -301,6 +319,81 @@ class SaleService:
                                    "lines": len(picked)})
         log.warning("No-receipt return recorded id=%s refund_minor=%s", return_id, refund)
         return {"return_id": return_id, "refund_minor": refund}
+
+    def list_returns(self, *, date_from: str | None = None,
+                     date_to: str | None = None, limit: int = 500,
+                     offset: int = 0) -> dict[str, Any]:
+        """Return history, newest first, optionally within an inclusive date
+        range (by date part). Each row carries the invoice (or '(no receipt)'),
+        refund, method, a short item summary, and who recorded it."""
+        conds, params = [], []
+        if date_from:
+            conds.append("substr(r.return_date,1,10) >= ?"); params.append(date_from[:10])
+        if date_to:
+            conds.append("substr(r.return_date,1,10) <= ?"); params.append(date_to[:10])
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        rows = [dict(x) for x in self.db.query(
+            "SELECT r.id, substr(r.return_date,1,16) AS date, "
+            "s.invoice_no AS invoice, r.refund_minor AS refund, "
+            "COALESCE(r.method,'Cash') AS method, "
+            "COALESCE(u.full_name, u.username, '-') AS by_name, "
+            "(SELECT COUNT(*) FROM sale_return_items ri WHERE ri.return_id = r.id) AS lines, "
+            "(SELECT COALESCE(SUM(ri.qty),0) FROM sale_return_items ri "
+            " WHERE ri.return_id = r.id) AS units "
+            "FROM sale_returns r "
+            "LEFT JOIN sales s ON s.id = r.sale_id "
+            "LEFT JOIN users u ON u.id = r.created_by "
+            f"{where} ORDER BY r.return_date DESC, r.id DESC LIMIT ? OFFSET ?",
+            tuple(params) + (limit, offset))]
+        total = self.db.query_one(
+            f"SELECT COUNT(*) AS n FROM sale_returns r {where}", tuple(params))["n"]
+        return {"rows": rows, "total": total}
+
+    def return_detail(self, return_id: int) -> dict[str, Any]:
+        """One return with its line items, for a confirm/preview before reversing."""
+        head = self.db.query_one(
+            "SELECT r.id, substr(r.return_date,1,16) AS date, s.invoice_no AS invoice, "
+            "r.refund_minor AS refund, COALESCE(r.method,'Cash') AS method "
+            "FROM sale_returns r LEFT JOIN sales s ON s.id = r.sale_id WHERE r.id = ?",
+            (return_id,))
+        if not head:
+            raise NotFoundError(f"Return {return_id} not found")
+        items = [dict(x) for x in self.db.query(
+            "SELECT product_name, qty, line_total_minor FROM sale_return_items "
+            "WHERE return_id = ? ORDER BY id", (return_id,))]
+        d = dict(head); d["items"] = items
+        return d
+
+    def reverse_return(self, return_id: int, *, user_id: int | None = None) -> dict[str, Any]:
+        """Undo a return entirely: pull the restocked quantity back off each
+        product, lower the sale line's returned_qty (for linked returns), and
+        delete the return + its items. The cash refund reverses automatically
+        because Cash-in-Hand is derived from the returns ledger. Audited."""
+        with self.db.transaction() as conn:
+            head = conn.execute("SELECT * FROM sale_returns WHERE id = ?",
+                                (return_id,)).fetchone()
+            if head is None:
+                raise NotFoundError(f"Return {return_id} not found")
+            items = conn.execute(
+                "SELECT * FROM sale_return_items WHERE return_id = ?",
+                (return_id,)).fetchall()
+            for it in items:
+                if it["product_id"] is not None:
+                    conn.execute(
+                        "UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?",
+                        (it["qty"], it["product_id"]))
+                if it["sale_item_id"] is not None:   # linked: release the returned qty
+                    conn.execute(
+                        "UPDATE sale_items SET returned_qty = MAX(0, returned_qty - ?) "
+                        "WHERE id = ?", (it["qty"], it["sale_item_id"]))
+            conn.execute("DELETE FROM sale_return_items WHERE return_id = ?", (return_id,))
+            conn.execute("DELETE FROM sale_returns WHERE id = ?", (return_id,))
+        self.audit.record(action="REVERSE_RETURN", user_id=user_id,
+                          entity_type="sale_return", entity_id=return_id,
+                          details={"refund_minor": head["refund_minor"],
+                                   "sale_id": head["sale_id"]})
+        log.warning("Return id=%s reversed; stock pulled back, refund undone", return_id)
+        return {"return_id": return_id, "refund_minor": head["refund_minor"]}
 
     # -- reads --------------------------------------------------------
     def list_sales(

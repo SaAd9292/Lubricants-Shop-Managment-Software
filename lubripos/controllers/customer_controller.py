@@ -52,16 +52,32 @@ class CustomerController:
 
     def record_payment(self, customer_id: int, amount_major: float, *,
                        method: str | None = None, account_id: int | None = None,
-                       account_name: str | None = None, notes: str | None = None):
+                       account_name: str | None = None, notes: str | None = None,
+                       payment_date: str | None = None):
         """amount_major is in currency units (e.g. rupees); converted to minor.
+        payment_date optionally back-dates the recovery.
         Returns (ok, msg, payment_id) so the caller can print a receipt."""
         def op(uid):
             _, mu = self.currency()
             return self.customers.record_payment(
                 customer_id, money.to_minor(amount_major or 0, mu),
                 method=method, account_id=account_id, account_name=account_name,
-                notes=notes, user_id=uid)
+                notes=notes, user_id=uid, payment_date=payment_date)
         return self._guarded(op)
+
+    # -- recovery history + reversal ---------------------------------
+    def recoveries(self, *, date_from=None, date_to=None, limit=500, offset=0):
+        """Recovery history for the Cash Recovery screen."""
+        return self.customers.list_recoveries(date_from=date_from, date_to=date_to,
+                                              limit=limit, offset=offset)
+
+    def recoveries_min_date(self):
+        return self.customers.recoveries_min_date()
+
+    def reverse_recovery(self, payment_id: int):
+        """Undo a recovery (gated by the Customers privilege). (ok, msg, data)."""
+        return self._guarded(
+            lambda uid: self.customers.reverse_payment(payment_id, user_id=uid))
 
     def payment_receipt(self, payment_id: int, dest: str | None = None):
         """Build a printable PDF receipt for a repayment. If dest is None a temp
