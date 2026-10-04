@@ -14,15 +14,19 @@ from pathlib import Path
 from PySide6.QtCore import QDate, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDateEdit, QDialog, QHBoxLayout, QHeaderView, QLabel,
-    QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QVBoxLayout,
 )
 
 from ..app_context import AppContext
 from ..controllers.payable_controller import PayableController
+from ..core.session import current_session
 from ..reports.report_exporter import to_pdf, to_xlsx
 
 _COLS = ["Date", "Supplier", "Amount", "Method", "Note"]
+_METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
 
 
 class SupplierPaymentsDialog(QDialog):
@@ -70,11 +74,30 @@ class SupplierPaymentsDialog(QDialog):
         self.table.setHorizontalHeaderLabels(_COLS)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self._sync_btns)
         root.addWidget(self.table, 1)
 
         foot = QHBoxLayout()
+        self._is_admin = bool(current_session.user
+                              and current_session.user.role == "admin")
+        self.edit_btn = QPushButton("Edit selected")
+        self.edit_btn.setObjectName("Secondary")
+        self.edit_btn.setToolTip("Correct this payment — supplier, amount, "
+                                 "method, date or note (admin)")
+        self.edit_btn.clicked.connect(self._edit)
+        self.edit_btn.setEnabled(False)
+        self.reverse_btn = QPushButton("Reverse selected")
+        self.reverse_btn.setObjectName("Secondary")
+        self.reverse_btn.setToolTip("Undo this payment: the supplier's balance "
+                                    "and cash both self-correct (admin)")
+        self.reverse_btn.clicked.connect(self._reverse)
+        self.reverse_btn.setEnabled(False)
+        if self._is_admin:
+            foot.addWidget(self.edit_btn)
+            foot.addWidget(self.reverse_btn)
         self.print_btn = QPushButton("Print / PDF")
         self.print_btn.setObjectName("Secondary")
         self.print_btn.clicked.connect(lambda: self._export("pdf"))
@@ -102,10 +125,68 @@ class SupplierPaymentsDialog(QDialog):
                      p["method"], p.get("notes") or ""]
             for c, val in enumerate(cells):
                 item = QTableWidgetItem(val)
+                if c == 0:
+                    item.setData(Qt.UserRole, p.get("id"))
                 if c == 2:
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.table.setItem(r, c, item)
         self.total_lbl.setText(f"{len(self._rows)} payment(s)  ·  total {fmt(data['total'])}")
+        self._sync_btns()
+
+    def _sync_btns(self) -> None:
+        on = self._is_admin and self.table.currentRow() >= 0
+        self.edit_btn.setEnabled(on)
+        self.reverse_btn.setEnabled(on)
+
+    def _selected_id(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        return it.data(Qt.UserRole) if it else None
+
+    def _reverse(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            return
+        row = self.table.currentRow()
+        who = self.table.item(row, 1).text()
+        amt = self.table.item(row, 2).text()
+        confirm = QMessageBox.warning(
+            self, "Reverse payment",
+            f"Reverse this payment of {amt} to {who}?\n\n"
+            "The amount goes back onto what you owe the supplier, and cash "
+            "self-corrects. This cannot itself be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        ok, msg, _ = self.controller.reverse_payment(pid)
+        if ok:
+            QMessageBox.information(self, "Reversed", "The payment was reversed.")
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not reverse", msg)
+
+    def _edit(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            return
+        try:
+            detail = self.controller.get_supplier_payment(pid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not open", str(exc))
+            return
+        dlg = SupplierPaymentEditDialog(self.controller, detail, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        ok, msg, _ = self.controller.edit_payment(
+            pid, supplier_id=v["supplier_id"], amount=v["amount"], method=v["method"],
+            payment_date=v["date"], notes=v["notes"])
+        if ok:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not save", msg)
 
     def _report(self) -> dict:
         rows = [{"date": p["date"], "supplier": p["supplier"],
@@ -151,3 +232,80 @@ class SupplierPaymentsDialog(QDialog):
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         except Exception as exc:
             QMessageBox.warning(self, "Export failed", str(exc))
+
+
+class SupplierPaymentEditDialog(QDialog):
+    """Correct a supplier payment: supplier, amount, method, date, note."""
+
+    def __init__(self, controller: PayableController, detail: dict,
+                 parent=None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Edit supplier payment")
+        self.setMinimumWidth(420)
+        form = QFormLayout(self)
+
+        self.supplier = QComboBox()
+        try:
+            rows = controller.list(only_outstanding=False)["rows"]
+        except Exception:
+            rows = []
+        want = detail.get("supplier_id")
+        sel = 0
+        for i, s in enumerate(rows):
+            self.supplier.addItem(s["name"], s["id"])
+            if s["id"] == want:
+                sel = i
+        if not rows:   # fall back so the current supplier is at least shown
+            self.supplier.addItem(detail.get("supplier_name") or "(supplier)", want)
+        self.supplier.setCurrentIndex(sel)
+        form.addRow("Supplier", self.supplier)
+
+        sym, self._mu = controller.currency()
+        self.amount = QDoubleSpinBox()
+        self.amount.setMaximum(1_000_000_000)
+        self.amount.setDecimals(2)
+        self.amount.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.amount.setPrefix(f"{sym} ")
+        self.amount.setValue((detail.get("amount_minor") or 0) / (self._mu or 100))
+        form.addRow("Amount", self.amount)
+
+        self.method = QComboBox()
+        self.method.addItems(_METHODS)
+        mi = self.method.findText(detail.get("method") or "Cash")
+        self.method.setCurrentIndex(mi if mi >= 0 else 0)
+        form.addRow("Method", self.method)
+
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        full = (detail.get("payment_date") or "")[:10]
+        qd = QDate.fromString(full, "yyyy-MM-dd")
+        self.date.setDate(qd if qd.isValid() else QDate.currentDate())
+        form.addRow("Date", self.date)
+
+        self.note = QLineEdit(detail.get("notes") or "")
+        form.addRow("Note", self.note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _on_accept(self) -> None:
+        if self.supplier.currentData() is None:
+            QMessageBox.information(self, "Pick a supplier", "Choose a supplier.")
+            return
+        if self.amount.value() <= 0:
+            QMessageBox.information(self, "Enter amount",
+                                    "Amount must be greater than zero.")
+            return
+        self.accept()
+
+    def values(self) -> dict:
+        return {"supplier_id": self.supplier.currentData(),
+                "amount": self.amount.value(),
+                "method": self.method.currentText(),
+                "date": self.date.date().toString("yyyy-MM-dd"),
+                "notes": self.note.text().strip()}

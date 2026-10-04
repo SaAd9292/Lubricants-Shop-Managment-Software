@@ -117,8 +117,10 @@ class PayableService:
             conds.append("substr(sp.payment_date,1,10) <= ?"); params.append(date_to[:10])
         where = ("WHERE " + " AND ".join(conds)) if conds else ""
         rows = [dict(r) for r in self.db.query(
-            "SELECT substr(sp.payment_date,1,16) AS date, "
-            "COALESCE(s.name,'(removed)') AS supplier, sp.amount_minor AS amount, "
+            "SELECT sp.id AS id, sp.payment_date AS payment_date_full, "
+            "substr(sp.payment_date,1,16) AS date, "
+            "COALESCE(s.name,'(removed)') AS supplier, sp.supplier_id AS supplier_id, "
+            "sp.amount_minor AS amount, "
             "COALESCE(sp.method,'Cash') AS method, COALESCE(sp.notes,'') AS notes "
             "FROM supplier_payments sp LEFT JOIN suppliers s ON s.id = sp.supplier_id "
             f"{where} ORDER BY sp.payment_date DESC, sp.id DESC", tuple(params))]
@@ -133,6 +135,76 @@ class PayableService:
         return row["d"] if row and row["d"] else None
 
     # -- writes -------------------------------------------------------
+    def get_payment(self, payment_id: int) -> dict[str, Any]:
+        """One supplier payment's editable fields (no account columns, so this
+        works on older DBs that predate them)."""
+        row = self.db.query_one(
+            "SELECT sp.id, sp.supplier_id, COALESCE(s.name,'(removed)') AS supplier_name, "
+            "sp.amount_minor, COALESCE(sp.method,'Cash') AS method, "
+            "COALESCE(sp.notes,'') AS notes, sp.payment_date "
+            "FROM supplier_payments sp LEFT JOIN suppliers s ON s.id = sp.supplier_id "
+            "WHERE sp.id = ?", (payment_id,))
+        if not row:
+            raise NotFoundError(f"Payment {payment_id} not found")
+        return dict(row)
+
+    def reverse_payment(self, payment_id: int, *, user_id: int | None = None) -> dict[str, Any]:
+        """Undo a payment made to a supplier: delete the row. The supplier's
+        payable and Cash-in-Hand both self-correct (derived from this ledger).
+        Audited."""
+        row = self.db.query_one(
+            "SELECT supplier_id, amount_minor FROM supplier_payments WHERE id = ?",
+            (payment_id,))
+        if not row:
+            raise NotFoundError(f"Payment {payment_id} not found")
+        self.db.execute("DELETE FROM supplier_payments WHERE id = ?", (payment_id,))
+        self.audit.record(action="REVERSE_PAYMENT", user_id=user_id,
+                          entity_type="supplier", entity_id=row["supplier_id"],
+                          details={"payment_id": payment_id,
+                                   "amount_minor": row["amount_minor"]})
+        log.warning("Supplier payment id=%s reversed (deleted); payable restored",
+                    payment_id)
+        return {"payment_id": payment_id, "amount_minor": row["amount_minor"],
+                "supplier_id": row["supplier_id"]}
+
+    def update_payment(self, payment_id: int, *, supplier_id: int | None = None,
+                       amount_minor: int | None = None, method: str | None = None,
+                       notes: str | None = None, payment_date: str | None = None,
+                       user_id: int | None = None) -> dict[str, Any]:
+        """Correct a supplier payment in place (supplier, amount, method, date,
+        note). Any field left None is unchanged. Safe because the payable and
+        cash are derived. Account columns are intentionally not touched so this
+        works on older DBs."""
+        row = self.db.query_one(
+            "SELECT id, supplier_id, amount_minor, method, notes, payment_date "
+            "FROM supplier_payments WHERE id = ?", (payment_id,))
+        if not row:
+            raise NotFoundError(f"Payment {payment_id} not found")
+        new_sup = row["supplier_id"] if supplier_id is None else int(supplier_id)
+        if not self.db.query_one("SELECT id FROM suppliers WHERE id = ?", (new_sup,)):
+            raise NotFoundError(f"Supplier {new_sup} not found")
+        amt = row["amount_minor"] if amount_minor is None else int(amount_minor)
+        if amt <= 0:
+            raise ValidationError("Payment amount must be greater than zero.")
+        new_method = row["method"] if method is None else ((method or "").strip() or None)
+        new_notes = row["notes"] if notes is None else ((notes or "").strip() or None)
+        if payment_date is None:
+            new_date = row["payment_date"]
+        else:
+            pd = payment_date.strip()
+            new_date = f"{pd} 12:00:00" if len(pd) == 10 else pd
+        self.db.execute(
+            "UPDATE supplier_payments SET supplier_id=?, amount_minor=?, method=?, "
+            "notes=?, payment_date=? WHERE id=?",
+            (new_sup, amt, new_method, new_notes, new_date, payment_id))
+        self.audit.record(action="EDIT_PAYMENT", user_id=user_id,
+                          entity_type="supplier", entity_id=new_sup,
+                          details={"payment_id": payment_id, "amount_minor": amt,
+                                   "method": new_method})
+        log.info("Edited supplier payment id=%s (supplier=%s, amount=%s, method=%s)",
+                 payment_id, new_sup, amt, new_method)
+        return {"payment_id": payment_id, "supplier_id": new_sup}
+
     def record_payment(self, supplier_id: int, amount_minor: int, *,
                        method: str | None = None, notes: str | None = None,
                        payment_date: str | None = None,

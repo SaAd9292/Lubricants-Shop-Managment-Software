@@ -48,7 +48,46 @@ class PayableController:
     def payments_min_date(self) -> str | None:
         return self.payables.payments_min_date()
 
+    def get_supplier_payment(self, payment_id: int):
+        """One payment's editable detail (for the edit dialog)."""
+        return self.payables.get_payment(payment_id)
+
     # -- writes -------------------------------------------------------
+    def reverse_payment(self, payment_id: int):
+        """Undo a supplier payment (admin only). Returns (ok, msg, data)."""
+        try:
+            user = current_session.require_role("admin")
+            data = self.payables.reverse_payment(payment_id, user_id=user.id)
+            return True, "ok", data
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("Reverse supplier payment failed")
+            return False, f"Unexpected error: {exc}", None
+
+    def edit_payment(self, payment_id: int, *, supplier_id=None, amount=None,
+                     method=None, notes=None, payment_date=None):
+        """Correct a supplier payment (admin only). amount is a decimal.
+        Returns (ok, msg, data)."""
+        _, mu = self.currency()
+        amt = None
+        if amount is not None:
+            try:
+                amt = money.to_minor(amount, mu)
+            except (ValueError, ArithmeticError):
+                return False, "Invalid payment amount.", None
+        try:
+            user = current_session.require_role("admin")
+            data = self.payables.update_payment(
+                payment_id, supplier_id=supplier_id, amount_minor=amt, method=method,
+                notes=notes, payment_date=payment_date, user_id=user.id)
+            return True, "ok", data
+        except LubriPosError as exc:
+            return False, str(exc), None
+        except Exception as exc:  # pragma: no cover
+            log.exception("Edit supplier payment failed")
+            return False, f"Unexpected error: {exc}", None
+
     def record_payment(self, supplier_id: int, amount: float, *,
                        method: str | None = None, notes: str | None = None,
                        payment_date: str | None = None):

@@ -93,6 +93,20 @@ def main() -> int:
     check(len(led["payments"]) == 1, "ledger lists the payment")
     check(led["balance"] == 15000, "ledger balance 15000")
 
+    print("\n[payables] edit + reverse a supplier payment")
+    pay2 = pay.record_payment(sid, 5000, method="Cash", payment_date="2026-09-10")
+    check(_bal(pay, sid)["balance"] == 10000, "balance 10000 after paying 5000")
+    lp = pay.list_payments(date_from="2026-09-01", date_to="2026-09-30")
+    check(len(lp["rows"]) == 1 and lp["rows"][0]["id"] == pay2,
+          "payment listed with its id in the date range")
+    pay.update_payment(pay2, amount_minor=8000, method="Bank")
+    check(_bal(pay, sid)["balance"] == 7000, "amount edit (8000) lowers balance to 7000")
+    check(pay.get_payment(pay2)["method"] == "Bank", "method edit (Bank) persisted")
+    pay.reverse_payment(pay2)
+    check(_bal(pay, sid)["balance"] == 15000, "reverse restores balance to 15000")
+    check(len(pay.list_payments(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
+          "reversed payment no longer listed")
+
     ctx.shutdown()
     n = sum(_r); print(f"\n==== {n}/{len(_r)} checks passed ====")
     return 0 if n == len(_r) else 1

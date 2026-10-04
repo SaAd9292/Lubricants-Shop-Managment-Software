@@ -48,6 +48,11 @@ EXPECTED = [
     ("cash_recovery_view.py", "RecoveryHistoryDialog",
      ["_reload", "_edit", "_reverse", "_sync_btn", "_selected_id"]),
     ("cash_recovery_view.py", "RecoveryEditDialog", ["values", "_reload_accounts"]),
+    ("supplier_payments_dialog.py", "SupplierPaymentsDialog",
+     ["_build", "_reload", "_sync_btns", "_selected_id", "_reverse", "_edit",
+      "_export"]),
+    ("supplier_payments_dialog.py", "SupplierPaymentEditDialog",
+     ["values", "_on_accept"]),
 ]
 
 
