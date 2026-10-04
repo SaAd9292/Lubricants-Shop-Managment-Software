@@ -363,45 +363,6 @@ class ReturnsView(QWidget):
         dlg.exec()
         self._reload_history()
 
-
-class ReturnEditDialog(QDialog):
-    """Edit a return's date, refund method and note (not its quantities)."""
-
-    def __init__(self, detail: dict, parent=None) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Edit return")
-        self.setMinimumWidth(380)
-        form = QFormLayout(self)
-        self.date = QDateEdit()
-        self.date.setCalendarPopup(True)
-        self.date.setDisplayFormat("dd MMM yyyy")
-        self.date.setMaximumDate(QDate.currentDate())
-        full = (detail.get("return_date_full") or detail.get("date") or "")[:10]
-        qd = QDate.fromString(full, "yyyy-MM-dd")
-        self.date.setDate(qd if qd.isValid() else QDate.currentDate())
-        form.addRow("Return date", self.date)
-
-        self.method = QComboBox()
-        self.method.addItems(_RETURN_METHODS)
-        cur = (detail.get("method") or "Cash")
-        i = self.method.findText(cur)
-        self.method.setCurrentIndex(i if i >= 0 else 0)
-        form.addRow("Refund via", self.method)
-
-        self.note = QLineEdit(detail.get("notes") or "")
-        self.note.setPlaceholderText("Optional note")
-        form.addRow("Note", self.note)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-
-    def values(self) -> dict:
-        return {"date": self.date.date().toString("yyyy-MM-dd"),
-                "method": self.method.currentText(),
-                "notes": self.note.text().strip()}
-
     # -- returns history ---------------------------------------------
     def _reload_history(self) -> None:
         d_from = self.h_from.date().toString("yyyy-MM-dd")
@@ -494,3 +455,42 @@ class ReturnEditDialog(QDialog):
                 self._fetch()   # keep the open invoice's remaining quantities fresh
         else:
             QMessageBox.warning(self, "Could not reverse", msg)
+
+
+class ReturnEditDialog(QDialog):
+    """Edit a return's date, refund method and note (not its quantities)."""
+
+    def __init__(self, detail: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit return")
+        self.setMinimumWidth(380)
+        form = QFormLayout(self)
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        full = (detail.get("return_date_full") or detail.get("date") or "")[:10]
+        qd = QDate.fromString(full, "yyyy-MM-dd")
+        self.date.setDate(qd if qd.isValid() else QDate.currentDate())
+        form.addRow("Return date", self.date)
+
+        self.method = QComboBox()
+        self.method.addItems(_RETURN_METHODS)
+        cur = (detail.get("method") or "Cash")
+        i = self.method.findText(cur)
+        self.method.setCurrentIndex(i if i >= 0 else 0)
+        form.addRow("Refund via", self.method)
+
+        self.note = QLineEdit(detail.get("notes") or "")
+        self.note.setPlaceholderText("Optional note")
+        form.addRow("Note", self.note)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> dict:
+        return {"date": self.date.date().toString("yyyy-MM-dd"),
+                "method": self.method.currentText(),
+                "notes": self.note.text().strip()}
