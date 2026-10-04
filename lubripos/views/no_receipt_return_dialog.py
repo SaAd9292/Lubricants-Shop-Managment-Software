@@ -32,6 +32,7 @@ REFUND_METHODS = [
     ("Bank / transfer", "Bank"),
     ("EasyPaisa", "EasyPaisa"),
     ("JazzCash", "JazzCash"),
+    ("Credit to customer account", "Ledger"),
 ]
 
 
@@ -126,7 +127,22 @@ class NoReceiptReturnDialog(QDialog):
         self.method = QComboBox()
         for label, value in REFUND_METHODS:
             self.method.addItem(label, value)
+        self.method.currentIndexChanged.connect(self._on_method_changed)
         mrow.addRow("Refund via", self.method)
+
+        # Customer (only needed when the refund is credited to an account)
+        self.cust = QLineEdit()
+        self.cust.setPlaceholderText("Customer (required to credit the account)")
+        self._cust_index: dict[str, int] = {}
+        self._cust_completer = QCompleter(self)
+        self._cust_completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self._cust_completer.setFilterMode(Qt.MatchContains)
+        self._cust_completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.cust.setCompleter(self._cust_completer)
+        self._refresh_customers()
+        self._cust_label = QLabel("Customer")
+        mrow.addRow(self._cust_label, self.cust)
+        self._cust_row_widgets = (self._cust_label, self.cust)
         self.ret_date = QDateEdit()
         self.ret_date.setCalendarPopup(True)
         self.ret_date.setDisplayFormat("dd MMM yyyy")
@@ -157,7 +173,29 @@ class NoReceiptReturnDialog(QDialog):
         root.addLayout(foot)
 
         self._update_total()
+        self._on_method_changed()
         self.prod.setFocus()
+
+    def _refresh_customers(self) -> None:
+        try:
+            rows = self.controller.search_customers("", 100000)
+        except TypeError:
+            rows = self.controller.search_customers("")
+        except Exception:
+            rows = []
+        self._cust_index = {}
+        names: list[str] = []
+        for c in rows:
+            key = (c.get("name") or "").lower()
+            if key and key not in self._cust_index:
+                self._cust_index[key] = c["id"]
+                names.append(c["name"])
+        self._cust_completer.setModel(QStringListModel(names, self._cust_completer))
+
+    def _on_method_changed(self) -> None:
+        is_ledger = self.method.currentData() == "Ledger"
+        for w in self._cust_row_widgets:
+            w.setVisible(is_ledger)
 
     # -- product lookup ----------------------------------------------
     def _refresh_products(self) -> None:
@@ -264,18 +302,30 @@ class NoReceiptReturnDialog(QDialog):
             return
         total = self._total_minor()
         method = self.method.currentData()
+        credit_customer_id = None
+        if method == "Ledger":
+            credit_customer_id = self._cust_index.get(self.cust.text().strip().lower())
+            if credit_customer_id is None:
+                QMessageBox.information(
+                    self, "Pick a customer",
+                    "To credit the refund to an account, choose a saved customer.")
+                self.cust.setFocus()
+                return
+        how = ("credited to the customer's account" if credit_customer_id
+               else f"refunded via {method}")
         confirm = QMessageBox.question(
             self, "Confirm return",
             f"Record a no-receipt return of {len(self._cart)} line(s)?\n\n"
-            f"Stock will be restored and {self.controller.fmt(total)} refunded "
-            f"via {method}. This cannot be undone.")
+            f"Stock will be restored and {self.controller.fmt(total)} {how}. "
+            "This cannot be undone.")
         if confirm != QMessageBox.Yes:
             return
         lines = [{"product_id": ln["product_id"], "qty": ln["qty"],
                   "refund": ln["refund_minor"] / self._mu()} for ln in self._cart]
         ok, msg, data = self.controller.create_no_receipt_return(
             lines=lines, method=method, notes=self.reason.text().strip(),
-            return_date=self.ret_date.date().toString("yyyy-MM-dd"))
+            return_date=self.ret_date.date().toString("yyyy-MM-dd"),
+            credit_customer_id=credit_customer_id)
         if ok:
             self.result_data = data
             QMessageBox.information(

@@ -225,7 +225,8 @@ class SaleService:
 
     def create_return(self, sale_id: int, lines: list[dict[str, Any]], *,
                       user_id: int | None = None, notes: str = "",
-                      return_date: str | None = None) -> dict[str, Any]:
+                      return_date: str | None = None,
+                      credit_customer_id: int | None = None) -> dict[str, Any]:
         """Return specific quantities from a completed sale.
 
         lines: [{sale_item_id, qty}]. Each returned quantity is restored to
@@ -261,11 +262,26 @@ class SaleService:
             if not picked:
                 raise ValidationError("Select at least one quantity to return.")
 
+            # Refund method: 'Ledger' when the refund is credited to the
+            # customer's account (no cash leaves the drawer) instead of paid out.
+            ret_method = "Ledger" if credit_customer_id else None
+            rdate = _norm_return_date(return_date)
             cur = conn.execute(
-                "INSERT INTO sale_returns (sale_id, refund_minor, notes, created_by, "
-                "return_date) VALUES (?,?,?,?,?)",
-                (sale_id, refund, (notes or None), user_id, _norm_return_date(return_date)))
+                "INSERT INTO sale_returns (sale_id, refund_minor, method, notes, "
+                "created_by, return_date) VALUES (?,?,?,?,?,?)",
+                (sale_id, refund, ret_method, (notes or None), user_id, rdate))
             return_id = cur.lastrowid
+            if credit_customer_id and refund > 0:
+                # Credit the refund to the customer's ledger: a positive payment
+                # reduces what they owe (or tips them into credit if it exceeds
+                # their balance). Non-cash method, so it never touches the till.
+                conn.execute(
+                    "INSERT INTO customer_payments (customer_id, sale_id, amount_minor, "
+                    "method, notes, payment_date, created_by, return_id) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (credit_customer_id, sale_id, refund, "Return credit",
+                     f"Return credit for {sale['invoice_no']}", rdate, user_id,
+                     return_id))
             for item, qty in picked:
                 conn.execute(
                     "INSERT INTO sale_return_items (return_id, sale_item_id, product_id, "
@@ -292,7 +308,8 @@ class SaleService:
     def create_no_receipt_return(self, items: list[dict[str, Any]], *,
                                  method: str | None = None, notes: str = "",
                                  user_id: int | None = None,
-                                 return_date: str | None = None) -> dict[str, Any]:
+                                 return_date: str | None = None,
+                                 credit_customer_id: int | None = None) -> dict[str, Any]:
         """Record a return with NO original sale (unlinked). items:
         [{product_id, qty, refund_minor}] where refund_minor is the amount to give
         back for that line (the operator decides it — there is no sale to price
@@ -321,12 +338,20 @@ class SaleService:
             if not picked:
                 raise ValidationError("Add at least one product to return.")
 
+            rdate = _norm_return_date(return_date)
+            # Credited to a customer's ledger -> method 'Ledger' (no cash out).
+            eff_method = "Ledger" if credit_customer_id else (method or None)
             cur = conn.execute(
                 "INSERT INTO sale_returns (sale_id, refund_minor, method, notes, "
                 "created_by, return_date) VALUES (NULL, ?, ?, ?, ?, ?)",
-                (refund, (method or None), (notes or None), user_id,
-                 _norm_return_date(return_date)))
+                (refund, eff_method, (notes or None), user_id, rdate))
             return_id = cur.lastrowid
+            if credit_customer_id and refund > 0:
+                conn.execute(
+                    "INSERT INTO customer_payments (customer_id, amount_minor, method, "
+                    "notes, payment_date, created_by, return_id) VALUES (?,?,?,?,?,?,?)",
+                    (credit_customer_id, refund, "Return credit",
+                     "Return credit (no receipt)", rdate, user_id, return_id))
             for pid, name, qty, line_refund, cost in picked:
                 unit_refund = line_refund // qty if qty else 0
                 conn.execute(
@@ -438,6 +463,9 @@ class SaleService:
                     conn.execute(
                         "UPDATE sale_items SET returned_qty = MAX(0, returned_qty - ?) "
                         "WHERE id = ?", (it["qty"], it["sale_item_id"]))
+            # If this refund was credited to a customer's ledger, remove that
+            # credit too so their balance returns to what it was.
+            conn.execute("DELETE FROM customer_payments WHERE return_id = ?", (return_id,))
             conn.execute("DELETE FROM sale_return_items WHERE return_id = ?", (return_id,))
             conn.execute("DELETE FROM sale_returns WHERE id = ?", (return_id,))
         self.audit.record(action="REVERSE_RETURN", user_id=user_id,

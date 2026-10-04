@@ -216,12 +216,15 @@ class SaleController:
             log.exception("PDF generation failed")
             return False, f"Could not create PDF: {exc}", None
 
-    def create_return(self, sale_id, lines, notes="", return_date=None):
-        """lines: [{sale_item_id, qty}]. Returns (ok, msg, {return_id, refund_minor})."""
+    def create_return(self, sale_id, lines, notes="", return_date=None,
+                      credit_customer_id=None):
+        """lines: [{sale_item_id, qty}]. credit_customer_id credits the refund to
+        that customer's ledger instead of paying cash. Returns (ok, msg, data)."""
         try:
             user = current_session.require_permission("sale.void")
             data = self.sales.create_return(sale_id, lines, user_id=user.id,
-                                            notes=notes, return_date=return_date)
+                                            notes=notes, return_date=return_date,
+                                            credit_customer_id=credit_customer_id)
             return True, "ok", data
         except LubriPosError as exc:
             return False, str(exc), None
@@ -231,7 +234,8 @@ class SaleController:
 
     def create_no_receipt_return(self, *, lines: list[dict[str, Any]],
                                  method: str | None = None, notes: str = "",
-                                 return_date: str | None = None):
+                                 return_date: str | None = None,
+                                 credit_customer_id: int | None = None):
         """A return with no original sale. lines: [{product_id, qty, refund
         (decimal)}]. The UI also requires the admin password before calling this.
         Returns (ok, msg, {return_id, refund_minor})."""
@@ -247,7 +251,7 @@ class SaleController:
                 })
             data = self.sales.create_no_receipt_return(
                 items, method=method, notes=notes, user_id=user.id,
-                return_date=return_date)
+                return_date=return_date, credit_customer_id=credit_customer_id)
             return True, "ok", data
         except (ValueError, ArithmeticError, KeyError):
             return False, "Invalid return data (check quantities and refund amounts).", None

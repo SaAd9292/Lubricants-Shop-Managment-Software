@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 29
+CURRENT_VERSION = 30
 
 
 def run_migrations(db: Database) -> None:
@@ -44,6 +44,7 @@ def run_migrations(db: Database) -> None:
     _migration_27_noreceipt_returns(db)
     _migration_28_cash_opening(db)
     _migration_29_cash_counts(db)
+    _migration_30_return_credit_link(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -463,6 +464,18 @@ def _migration_29_cash_counts(db: Database) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_cashcounts_date "
                "ON cash_counts(count_date)")
     log.info("Migration: added cash_counts table")
+
+
+def _migration_30_return_credit_link(db: Database) -> None:
+    """v30: link a refund that was credited to a customer's ledger back to its
+    return. A 'return credit' is stored as a positive customer_payment (method
+    'Return credit'); return_id ties it to the sale_return so that reversing the
+    return cleanly removes the credit too. Purely additive (nullable column)."""
+    if not _column_exists(db, "customer_payments", "return_id"):
+        db.execute("ALTER TABLE customer_payments ADD COLUMN return_id INTEGER")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_custpay_return "
+               "ON customer_payments(return_id)")
+    log.info("Migration: added customer_payments.return_id (return-credit link)")
 
 
 def _migration_27_noreceipt_returns(db: Database) -> None:

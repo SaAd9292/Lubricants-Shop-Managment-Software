@@ -13,10 +13,10 @@ import time
 
 from PySide6.QtCore import Qt, QDate, QEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox, QDateEdit,
-    QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, QHeaderView,
-    QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QCheckBox, QComboBox,
+    QDateEdit, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 _RETURN_METHODS = ["Cash", "Bank", "EasyPaisa", "JazzCash"]
@@ -150,6 +150,12 @@ class ReturnsView(QWidget):
         self.ret_date.setDate(QDate.currentDate())
         self.ret_date.setToolTip("Date to record this return on (back-date if needed)")
         footer.addWidget(self.ret_date)
+        footer.addSpacing(12)
+        self.credit_cb = QCheckBox("Credit to customer account")
+        self.credit_cb.setToolTip("Put the refund on the customer's ledger instead "
+                                  "of paying cash now (needs a customer on the bill)")
+        self.credit_cb.setEnabled(False)
+        footer.addWidget(self.credit_cb)
         footer.addStretch(1)
         self.total_lbl = QLabel("")
         self.total_lbl.setStyleSheet("font-weight:700; font-size:15px;")
@@ -305,6 +311,10 @@ class ReturnsView(QWidget):
             f"   •   Status: {status}")
         self.all_btn.setEnabled(can and not is_void and any_returnable)
         self.cancel_btn.setEnabled(True)
+        has_customer = bool(sale.get("customer_id"))
+        self.credit_cb.setEnabled(can and not is_void and has_customer)
+        if not has_customer:
+            self.credit_cb.setChecked(False)
         self._recalc()
 
     def _select_all(self) -> None:
@@ -339,13 +349,17 @@ class ReturnsView(QWidget):
         if confirm != QMessageBox.Yes:
             return
         rdate = self.ret_date.date().toString("yyyy-MM-dd")
+        to_ledger = self.credit_cb.isChecked() and self._sale.get("customer_id")
+        credit_id = self._sale.get("customer_id") if to_ledger else None
         ok, msg, data = self.controller.create_return(
-            self._sale["id"], lines, return_date=rdate)
+            self._sale["id"], lines, return_date=rdate, credit_customer_id=credit_id)
         if ok:
+            how = ("credited to the customer's account"
+                   if credit_id else "refunded")
             QMessageBox.information(
                 self, "Returned",
                 f"Return recorded: stock restored and "
-                f"{self.controller.fmt(data['refund_minor'])} refunded.")
+                f"{self.controller.fmt(data['refund_minor'])} {how}.")
             self._fetch()         # refresh remaining quantities
             self._reload_history()
         else:

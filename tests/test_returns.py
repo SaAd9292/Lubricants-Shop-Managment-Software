@@ -106,6 +106,22 @@ def main() -> int:
     check(len(ss.list_returns(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
           "reversed return no longer listed")
 
+    print("\n[returns] refund credited to a customer's ledger (not cash)")
+    from lubripos.services.customer_service import CustomerService
+    cs = CustomerService(ctx.db, ctx.audit)
+    rc = cs.create({"name": "Regular Ledger"})
+    rcid = rc["id"] if isinstance(rc, dict) else rc
+    ss.create_sale(items=[{"product_id": pid2, "qty": 2}], cashier_id=1,
+                   cashier_name="S", payment_method="Debt",
+                   customer_id=rcid, customer_name="Regular Ledger")
+    owed0 = cs.balance_owed(rcid)
+    check(owed0 == 10000, "customer owes Rs 100 from the debt sale")
+    creditret = ss.create_no_receipt_return(
+        [{"product_id": pid2, "qty": 1, "refund_minor": 5000}], credit_customer_id=rcid)
+    check(cs.balance_owed(rcid) == 5000, "ledger-credit return lowers the tab by Rs 50")
+    ss.reverse_return(creditret["return_id"])
+    check(cs.balance_owed(rcid) == 10000, "reversing the credit return restores the tab")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

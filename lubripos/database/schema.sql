@@ -237,6 +237,7 @@ CREATE TABLE IF NOT EXISTS customer_payments (
     notes        TEXT,
     payment_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    return_id    INTEGER REFERENCES sale_returns(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
 );
 CREATE INDEX IF NOT EXISTS idx_custpay_customer ON customer_payments(customer_id);
