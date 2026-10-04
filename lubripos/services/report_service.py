@@ -177,7 +177,7 @@ class ReportService:
         cash_rows = [{"item": "Opening balance", "amount": recon["opening"]}]
         for label, key, sign in (
             ("Cash sales", "cash_sales", 1),
-            ("Debt repayments (cash)", "repayments", 1),
+            ("Recoveries (cash)", "repayments", 1),
             ("Refunds paid (cash)", "refunds", -1),
             ("Expenses", "expenses", -1),
             ("Purchase payments", "purchase_payments", -1),
@@ -225,12 +225,12 @@ class ReportService:
                              _col("amount", "Refund", "right", True)],
                  "rows": ret_rows,
                  "total_label": "Total refunds", "total": refunds_total},
-                {"name": "Customer debt repayments",
+                {"name": "Recoveries (udhaar collected)",
                  "columns": [_col("time", "Time"), _col("customer", "Customer"),
                              _col("method", "Method"),
                              _col("amount", "Amount", "right", True)],
                  "rows": repay_rows,
-                 "total_label": "Total repayments", "total": repay_today},
+                 "total_label": "Total recoveries", "total": repay_today},
                 {"name": "Supplier payments",
                  "columns": [_col("time", "Time"), _col("supplier", "Supplier"),
                              _col("method", "Method"),
@@ -262,7 +262,7 @@ class ReportService:
                 {"label": "Money received", "value": total_received, "money": True},
                 {"label": "Opening cash", "value": recon["opening"], "money": True},
                 {"label": "Cash in hand", "value": cash_in_hand, "money": True},
-                {"label": "Debt repayments", "value": repay_today, "money": True},
+                {"label": "Recoveries", "value": repay_today, "money": True},
                 {"label": "Net", "value": net, "money": True},
             ],
         }
