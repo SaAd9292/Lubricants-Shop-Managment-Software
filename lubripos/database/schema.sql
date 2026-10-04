@@ -240,6 +240,24 @@ CREATE TABLE IF NOT EXISTS customer_payments (
     return_id    INTEGER REFERENCES sale_returns(id) ON DELETE SET NULL,
     created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
 );
+
+-- Money paid BACK to a customer when the shop owes them (their ledger is in
+-- credit/advance). Increases their balance toward zero; cash payouts leave the
+-- till. Kept separate from customer_payments (which is money IN).
+CREATE TABLE IF NOT EXISTS customer_payouts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id  INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+    amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+    method       TEXT,
+    account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,
+    account_name TEXT,
+    notes        TEXT,
+    payout_date  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_custpayout_cust ON customer_payouts(customer_id);
+CREATE INDEX IF NOT EXISTS idx_custpayout_date ON customer_payouts(payout_date);
 CREATE INDEX IF NOT EXISTS idx_custpay_customer ON customer_payments(customer_id);
 CREATE INDEX IF NOT EXISTS idx_custpay_date     ON customer_payments(payment_date);
 

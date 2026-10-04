@@ -65,6 +65,20 @@ class CustomerController:
                 notes=notes, user_id=uid, payment_date=payment_date)
         return self._guarded(op)
 
+    def record_payout(self, customer_id: int, amount_major: float, *,
+                      method: str | None = None, account_id: int | None = None,
+                      account_name: str | None = None, notes: str | None = None,
+                      payout_date: str | None = None):
+        """Pay a customer back (we owe them). amount_major in currency units.
+        Returns (ok, msg, payout_id)."""
+        def op(uid):
+            _, mu = self.currency()
+            return self.customers.record_payout(
+                customer_id, money.to_minor(amount_major or 0, mu),
+                method=method, account_id=account_id, account_name=account_name,
+                notes=notes, user_id=uid, payout_date=payout_date)
+        return self._guarded(op)
+
     # -- recovery history + reversal ---------------------------------
     def recoveries(self, *, date_from=None, date_to=None, limit=500, offset=0):
         """Recovery history for the Cash Recovery screen."""

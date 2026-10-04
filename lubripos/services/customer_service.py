@@ -270,8 +270,11 @@ class CustomerService:
             "+ COALESCE((SELECT SUM(grand_total_minor) FROM sales "
             "WHERE customer_id = ? AND status='completed' AND payment_method='Debt'),0) "
             "- COALESCE((SELECT SUM(amount_minor) FROM customer_payments "
+            "WHERE customer_id = ?),0) "
+            # money we PAID BACK to the customer raises their balance toward zero
+            "+ COALESCE((SELECT SUM(amount_minor) FROM customer_payouts "
             "WHERE customer_id = ?),0) AS bal",
-            (customer_id, customer_id, customer_id))
+            (customer_id, customer_id, customer_id, customer_id))
         return int(row["bal"] or 0)
 
     def record_payment(self, customer_id: int, amount_minor: int, *,
@@ -300,6 +303,35 @@ class CustomerService:
         log.info("Recorded customer payment id=%s customer=%s amount=%s",
                  pay_id, customer_id, amount_minor)
         return pay_id
+
+    def record_payout(self, customer_id: int, amount_minor: int, *,
+                      method: str | None = None, account_id: int | None = None,
+                      account_name: str | None = None, notes: str | None = None,
+                      user_id: int | None = None, payout_date: str | None = None) -> int:
+        """Pay a customer back (when the shop owes them — their ledger is in
+        credit). Raises their balance toward zero; a cash payout leaves the till.
+        Amount in minor units, must be positive."""
+        self.get(customer_id)
+        amount_minor = int(amount_minor)
+        if amount_minor <= 0:
+            raise ValidationError("Payout amount must be greater than zero.")
+        cur = self.db.execute(
+            "INSERT INTO customer_payouts (customer_id, amount_minor, method, "
+            "account_id, account_name, notes, payout_date, created_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, "
+            "COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')), ?)",
+            (customer_id, amount_minor, (method or "").strip() or None,
+             account_id, (account_name or "").strip() or None,
+             (notes or "").strip() or None, _norm_payment_date(payout_date)
+             if payout_date else None, user_id))
+        pid = cur.lastrowid
+        self.audit.record(action="PAYOUT", user_id=user_id,
+                          entity_type="customer", entity_id=customer_id,
+                          details={"payout_id": pid, "amount": amount_minor,
+                                   "method": method})
+        log.info("Recorded customer payout id=%s customer=%s amount=%s",
+                 pid, customer_id, amount_minor)
+        return pid
 
     def debt_ledger(self, customer_id: int) -> dict[str, Any]:
         """Combined, date-ordered ledger for one customer: each 'Debt' sale

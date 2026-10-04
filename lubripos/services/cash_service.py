@@ -94,6 +94,12 @@ class CashService:
         return self._sum("purchases", "amount_paid_minor", "purchase_date",
                          d_from, d_to)
 
+    def _customer_payouts(self, d_from, d_to) -> int:
+        # Money paid back to a customer (we owed them). Cash payouts leave the
+        # till; bank/wallet payouts don't.
+        return self._sum("customer_payouts", "amount_minor", "payout_date",
+                         d_from, d_to, "COALESCE(method,'Cash')='Cash'")
+
     def _supplier_payments(self, d_from, d_to) -> int:
         # This shop runs a single cash till: ALL supplier payments come out of
         # the till, even when routed through a bank (the bank is just a pipe for
@@ -115,7 +121,8 @@ class CashService:
         cash_out = (self._cash_refunds(d_from, as_of)
                     + self._expenses(d_from, as_of)
                     + self._purchase_payments(d_from, as_of)
-                    + self._supplier_payments(d_from, as_of))
+                    + self._supplier_payments(d_from, as_of)
+                    + self._customer_payouts(d_from, as_of))
         return opening + cash_in - cash_out
 
     def current(self) -> int:
@@ -244,8 +251,9 @@ class CashService:
         expenses = self._expenses(day, day)
         purchase_pay = self._purchase_payments(day, day)
         supplier_pay = self._supplier_payments(day, day)
+        cust_payouts = self._customer_payouts(day, day)
         cash_in = cash_sales + repayments
-        cash_out = refunds + expenses + purchase_pay + supplier_pay
+        cash_out = refunds + expenses + purchase_pay + supplier_pay + cust_payouts
         closing = self.balance_as_of(day)
         opening = closing - cash_in + cash_out
         return {
@@ -256,6 +264,7 @@ class CashService:
             "expenses": expenses,
             "purchase_payments": purchase_pay,
             "supplier_payments": supplier_pay,
+            "customer_payouts": cust_payouts,
             "cash_in": cash_in,
             "cash_out": cash_out,
             "closing": closing,

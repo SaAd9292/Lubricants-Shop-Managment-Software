@@ -127,6 +127,15 @@ def main() -> int:
     check(len(cs.list_recoveries(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
           "reversed recovery no longer listed")
 
+    print("\n[payout] pay a customer back when we owe them")
+    po = cs.create({"name": "Owed Customer"})
+    poid = po["id"] if isinstance(po, dict) else po
+    # put them in credit: record a recovery with no debt -> balance goes negative
+    cs.record_payment(poid, 5000, method="Cash")
+    check(cs.balance_owed(poid) == -5000, "customer is Rs 50 in credit (we owe them)")
+    cs.record_payout(poid, 5000, method="Cash")
+    check(cs.balance_owed(poid) == 0, "paying them back settles the credit to zero")
+
     ctx.shutdown()
     n = sum(_r); print(f"\n==== {n}/{len(_r)} checks passed ====")
     return 0 if n == len(_r) else 1

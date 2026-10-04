@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 30
+CURRENT_VERSION = 31
 
 
 def run_migrations(db: Database) -> None:
@@ -45,6 +45,7 @@ def run_migrations(db: Database) -> None:
     _migration_28_cash_opening(db)
     _migration_29_cash_counts(db)
     _migration_30_return_credit_link(db)
+    _migration_31_customer_payouts(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -464,6 +465,31 @@ def _migration_29_cash_counts(db: Database) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_cashcounts_date "
                "ON cash_counts(count_date)")
     log.info("Migration: added cash_counts table")
+
+
+def _migration_31_customer_payouts(db: Database) -> None:
+    """v31: paying a customer back when the shop owes them (their ledger is in
+    credit/advance). A payout INCREASES their balance toward zero (settles our
+    debt to them) and, when paid in cash, leaves the till. Separate table so the
+    existing customer_payments (money IN) stays simple. Purely additive."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS customer_payouts ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " customer_id  INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,"
+        " amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),"
+        " method       TEXT,"
+        " account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,"
+        " account_name TEXT,"
+        " notes        TEXT,"
+        " payout_date  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+        " created_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+        " created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+        ")")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_custpayout_cust "
+               "ON customer_payouts(customer_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_custpayout_date "
+               "ON customer_payouts(payout_date)")
+    log.info("Migration: added customer_payouts table (pay a customer back)")
 
 
 def _migration_30_return_credit_link(db: Database) -> None:

@@ -44,7 +44,7 @@ EXPECTED = [
       "_edit_selected", "_reverse_selected"]),
     ("returns_view.py", "ReturnEditDialog", ["values"]),
     ("cash_recovery_view.py", "CashRecoveryView",
-     ["_build_ui", "_record", "_open_history", "_sync_customer"]),
+     ["_build_ui", "_record", "_open_history", "_sync_customer", "_on_mode_changed"]),
     ("cash_recovery_view.py", "RecoveryHistoryDialog",
      ["_reload", "_edit", "_reverse", "_sync_btn", "_selected_id"]),
     ("cash_recovery_view.py", "RecoveryEditDialog", ["values", "_reload_accounts"]),

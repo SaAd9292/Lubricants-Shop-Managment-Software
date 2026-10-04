@@ -198,6 +198,7 @@ class ReportService:
             ("Expenses", "expenses", -1),
             ("Purchase payments", "purchase_payments", -1),
             ("Supplier payments", "supplier_payments", -1),
+            ("Customer payouts", "customer_payouts", -1),
         ):
             if recon[key]:
                 cash_rows.append({"item": label, "amount": sign * recon[key]})

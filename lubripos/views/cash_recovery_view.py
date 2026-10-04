@@ -69,11 +69,30 @@ class CashRecoveryView(QWidget):
         cl.setContentsMargins(24, 20, 24, 20)
         cl.setSpacing(12)
 
-        sub = QLabel("Record money recovered against a customer's outstanding "
-                     "balance (udhaar).")
-        sub.setObjectName("Muted")
-        sub.setWordWrap(True)
-        cl.addWidget(sub)
+        self.sub = QLabel("Record money recovered against a customer's outstanding "
+                          "balance (udhaar).")
+        self.sub.setObjectName("Muted")
+        self.sub.setWordWrap(True)
+        cl.addWidget(self.sub)
+
+        # Direction toggle: money IN (recover) vs money OUT (pay the customer back
+        # when the shop owes them — their account is in credit).
+        mode_row = QHBoxLayout()
+        self._mode = "recover"
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
+        self.recover_btn = QPushButton("Recover (money in)")
+        self.recover_btn.setObjectName("Chip"); self.recover_btn.setCheckable(True)
+        self.recover_btn.setChecked(True)
+        self.payout_btn = QPushButton("Pay out (money out)")
+        self.payout_btn.setObjectName("Chip"); self.payout_btn.setCheckable(True)
+        self._mode_group.addButton(self.recover_btn)
+        self._mode_group.addButton(self.payout_btn)
+        self._mode_group.buttonClicked.connect(self._on_mode_changed)
+        mode_row.addWidget(self.recover_btn)
+        mode_row.addWidget(self.payout_btn)
+        mode_row.addStretch(1)
+        cl.addLayout(mode_row)
 
         form = QFormLayout()
         form.setHorizontalSpacing(14)
@@ -126,7 +145,8 @@ class CashRecoveryView(QWidget):
         self.amount.setDecimals(2)
         self.amount.setButtonSymbols(QDoubleSpinBox.NoButtons)
         self.amount.setPrefix(f"{sym} ")
-        form2.addRow("Amount recovered", self.amount)
+        self._amount_label = QLabel("Amount recovered")
+        form2.addRow(self._amount_label, self.amount)
 
         self.date = QDateEdit()
         self.date.setCalendarPopup(True)
@@ -234,6 +254,23 @@ class CashRecoveryView(QWidget):
             label = a["name"] + (f" — {a['account_no']}" if a.get("account_no") else "")
             self.account.addItem(label, (a["id"], a["name"]))
 
+    def _on_mode_changed(self, _btn=None) -> None:
+        self._mode = "payout" if self.payout_btn.isChecked() else "recover"
+        if self._mode == "payout":
+            self.sub.setText("Pay a customer back when the shop owes them "
+                             "(their account is in credit / advance).")
+            self.record_btn.setText("Pay out")
+            self.amount_label_set("Amount to pay")
+        else:
+            self.sub.setText("Record money recovered against a customer's "
+                             "outstanding balance (udhaar).")
+            self.record_btn.setText("Record recovery")
+            self.amount_label_set("Amount recovered")
+
+    def amount_label_set(self, text: str) -> None:
+        if getattr(self, "_amount_label", None) is not None:
+            self._amount_label.setText(text)
+
     # -- record -------------------------------------------------------
     def _record(self) -> None:
         if not current_session.can("customers"):
@@ -255,9 +292,26 @@ class CashRecoveryView(QWidget):
         if method != "Cash" and acct_id is None:
             QMessageBox.information(
                 self, "Choose an account",
-                f"Select which {method} account received the money "
-                "(or add one in Settings → Payment Accounts).")
+                f"Select which {method} account "
+                + ("received the money" if self._mode == "recover" else "paid the money")
+                + " (or add one in Settings → Payment Accounts).")
             return
+
+        if self._mode == "payout":
+            ok, msg, _pid = self.controller.record_payout(
+                self._customer["id"], amt, method=method, account_id=acct_id,
+                account_name=acct_name, notes=self.note.text(),
+                payout_date=self.date.date().toString("yyyy-MM-dd"))
+            if not ok:
+                QMessageBox.warning(self, "Could not record payout", msg)
+                return
+            show_toast(self, "Payout recorded")
+            self.amount.setValue(0)
+            self.note.clear()
+            self._refresh_customers()
+            self._sync_customer()
+            return
+
         ok, msg, pay_id = self.controller.record_payment(
             self._customer["id"], amt, method=method, account_id=acct_id,
             account_name=acct_name, notes=self.note.text(),
