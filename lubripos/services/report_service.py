@@ -35,16 +35,25 @@ class ReportService:
         like = f"{day}%"
 
         # -- section 1: every sale LINE (each sale on its own row, even when
-        #    the same product is sold across several invoices) --
+        #    the same product is sold across several invoices). We also carry the
+        #    payment method + customer so the sheet can SPLIT cash-paid lines from
+        #    udhaar (credit) lines — credit sales are NOT cash and must sit in
+        #    their own section so cash-in-hand reads cleanly.
         line_rows = [dict(r) for r in self.db.query(
             """SELECT s.invoice_no AS invoice, substr(s.sale_date,12,5) AS time,
                   COALESCE(p.name, si.product_name) AS product, si.qty AS qty,
-                  si.unit_price_minor AS price, si.line_total_minor AS amount
+                  si.unit_price_minor AS price, si.line_total_minor AS amount,
+                  s.payment_method AS method,
+                  COALESCE(NULLIF(TRIM(s.customer_name),''), '—') AS customer
                FROM sale_items si JOIN sales s ON s.id = si.sale_id
                LEFT JOIN products p ON p.id = si.product_id
                WHERE s.status='completed' AND s.sale_date LIKE ?
                ORDER BY s.id, si.id""", (like,))]
+        cash_line_rows = [r for r in line_rows if r.get("method") != "Debt"]
+        credit_line_rows = [r for r in line_rows if r.get("method") == "Debt"]
         items_subtotal = sum(r["amount"] for r in line_rows)
+        cash_items_subtotal = sum(r["amount"] for r in cash_line_rows)
+        credit_items_subtotal = sum(r["amount"] for r in credit_line_rows)
 
         # -- section 2: expenses for the day --
         exp_rows = [dict(r) for r in self.db.query(
@@ -180,13 +189,19 @@ class ReportService:
             ],
             "rows": line_rows,
             "sections": [
-                {"name": "Sales",
+                {"name": "Cash & paid sales",
                  "columns": [_col("invoice", "Invoice"), _col("time", "Time"),
                              _col("product", "Product"), _col("qty", "Qty", "right"),
                              _col("price", "Price", "right", True),
                              _col("amount", "Amount", "right", True)],
-                 "rows": line_rows,
-                 "total_label": "Items subtotal", "total": items_subtotal},
+                 "rows": cash_line_rows,
+                 "total_label": "Paid sales subtotal", "total": cash_items_subtotal},
+                {"name": "Udhaar (credit sales) — not in cash",
+                 "columns": [_col("customer", "Customer"), _col("invoice", "Invoice"),
+                             _col("product", "Product"), _col("qty", "Qty", "right"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": credit_line_rows,
+                 "total_label": "Total given on udhaar", "total": credit_items_subtotal},
                 {"name": "Expenses",
                  "columns": [_col("category", "Category"), _col("description", "Description"),
                              _col("amount", "Amount", "right", True)],
@@ -218,6 +233,9 @@ class ReportService:
             "summary": [
                 {"label": "Invoices", "value": agg["n"], "money": False},
                 {"label": "Gross sales", "value": gross, "money": True},
+                {"label": "Paid sales (cash/bank)", "value": gross - debt_today,
+                 "money": True},
+                {"label": "Udhaar given (credit)", "value": debt_today, "money": True},
                 {"label": "Discounts", "value": agg["disc"], "money": True},
                 {"label": "Tax collected", "value": agg["tax"], "money": True},
                 {"label": "Expenses", "value": expense_total, "money": True},
@@ -225,7 +243,6 @@ class ReportService:
                 {"label": "Money received", "value": total_received, "money": True},
                 {"label": "Opening cash", "value": recon["opening"], "money": True},
                 {"label": "Cash in hand", "value": cash_in_hand, "money": True},
-                {"label": "On credit (unpaid)", "value": debt_today, "money": True},
                 {"label": "Debt repayments", "value": repay_today, "money": True},
                 {"label": "Net", "value": net, "money": True},
             ],
