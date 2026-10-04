@@ -100,6 +100,20 @@ def main() -> int:
     sec = next((s for s in dsr["sections"] if s["name"] == "Cash drawer"), None)
     check(sec is not None and sec["total"] == 350000, "Cash drawer section totals to closing")
 
+    print("\n[cash] supplier payment: Bank does NOT touch the till, Cash does")
+    from lubripos.services.payable_service import PayableService
+    pay = PayableService(ctx.db, ctx.audit)
+    D4 = "2026-01-13"
+    pc.create(supplier_id=sup, amount_paid=0, purchase_date=D4,
+              lines=[{"product_id": A, "qty": 10, "unit_cost": 400}])  # owes Rs 4,000 on credit
+    before = cash.balance_as_of(D4)
+    pay.record_payment(sup, 100000, method="Bank", payment_date=D4)    # Rs 1,000 via HBL
+    check(cash.balance_as_of(D4) == before,
+          "bank supplier payment leaves cash in hand unchanged")
+    pay.record_payment(sup, 50000, method="Cash", payment_date=D4)     # Rs 500 cash
+    check(cash.balance_as_of(D4) == before - 50000,
+          "cash supplier payment reduces the till by Rs 500")
+
     print("\n[cash] no opening float set -> pure movement sum")
     ctx.company.update_company({"cash_opening_minor": 0, "cash_opening_date": None})
     b = cash.balance_as_of(D2)

@@ -95,8 +95,11 @@ class CashService:
                          d_from, d_to)
 
     def _supplier_payments(self, d_from, d_to) -> int:
+        # Only CASH-method supplier payments leave the till. A payment made by
+        # Bank / EasyPaisa / JazzCash (e.g. paying a supplier through HBL) must
+        # NOT reduce cash-in-hand. (NULL method is treated as Cash for older rows.)
         return self._sum("supplier_payments", "amount_minor", "payment_date",
-                         d_from, d_to)
+                         d_from, d_to, "COALESCE(method,'Cash')='Cash'")
 
     # -- public: point-in-time balance -------------------------------
     def balance_as_of(self, as_of: str | None = None) -> int:
