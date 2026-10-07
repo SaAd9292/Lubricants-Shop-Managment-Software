@@ -127,6 +127,19 @@ def main() -> int:
     check(len(cs.list_recoveries(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
           "reversed recovery no longer listed")
 
+    print("\n[opening] editable opening-balance date on the ledger")
+    oc = cs.create({"name": "Opening Dated", "opening_debt_minor": 200000,
+                    "opening_debt_date": "2026-07-01"})
+    ocid = oc["id"] if isinstance(oc, dict) else oc
+    orow = [c for c in cs.debt_ledger(ocid)["charges"]
+            if c["ref"].startswith("Opening")][0]
+    check(orow["date"].startswith("2026-07-01"), "opening line dated to the chosen date")
+    cs.update(ocid, {"opening_debt_date": "2026-04-01"})
+    orow2 = [c for c in cs.debt_ledger(ocid)["charges"]
+             if c["ref"].startswith("Opening")][0]
+    check(orow2["date"].startswith("2026-04-01"), "editing the opening date updates the ledger")
+    check(cs.balance_owed(ocid) == 200000, "changing the date leaves the balance untouched")
+
     print("\n[payout] pay a customer back when we owe them")
     po = cs.create({"name": "Owed Customer"})
     poid = po["id"] if isinstance(po, dict) else po

@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 31
+CURRENT_VERSION = 32
 
 
 def run_migrations(db: Database) -> None:
@@ -46,6 +46,7 @@ def run_migrations(db: Database) -> None:
     _migration_29_cash_counts(db)
     _migration_30_return_credit_link(db)
     _migration_31_customer_payouts(db)
+    _migration_32_customer_opening_date(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -465,6 +466,15 @@ def _migration_29_cash_counts(db: Database) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_cashcounts_date "
                "ON cash_counts(count_date)")
     log.info("Migration: added cash_counts table")
+
+
+def _migration_32_customer_opening_date(db: Database) -> None:
+    """v32: an 'as-of' date for a customer's opening balance (the paper balance
+    carried in). Purely a dating field for the ledger — the amount itself is
+    unchanged. Nullable; the ledger falls back to the customer's created date."""
+    if not _column_exists(db, "customers", "opening_debt_date"):
+        db.execute("ALTER TABLE customers ADD COLUMN opening_debt_date TEXT")
+    log.info("Migration: added customers.opening_debt_date")
 
 
 def _migration_31_customer_payouts(db: Database) -> None:

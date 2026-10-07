@@ -38,7 +38,8 @@ _SORT_COLUMNS = {
     "sales_count": "sales_count",
     "balance_owed": "balance_owed",
 }
-_EDITABLE = {"name", "phone", "address", "notes", "opening_debt_minor"}
+_EDITABLE = {"name", "phone", "address", "notes", "opening_debt_minor",
+             "opening_debt_date"}
 
 
 def _norm_phone(phone: str | None) -> str:
@@ -113,9 +114,11 @@ class CustomerService:
                      existing["id"], name)
             return existing["id"]
         try:
+            opening_date = (data.get("opening_debt_date") or "").strip() or None
             cur = self.db.execute(
-                "INSERT INTO customers (name, phone, address, notes, opening_debt_minor) "
-                "VALUES (?, ?, ?, ?, ?)", (name, phone, address, notes, opening))
+                "INSERT INTO customers (name, phone, address, notes, opening_debt_minor, "
+                "opening_debt_date) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, phone, address, notes, opening, opening_date))
         except sqlite3.IntegrityError:
             raise ValidationError(
                 "A customer with this name and phone already exists.")
@@ -345,7 +348,8 @@ class CustomerService:
         opening = int(cust.get("opening_debt_minor") or 0)
         if opening > 0:
             charges.insert(0, {"id": None,
-                               "date": (cust.get("created_at") or "")[:16],
+                               "date": (cust.get("opening_debt_date")
+                                        or cust.get("created_at") or "")[:16],
                                "ref": "Opening balance (from paper)",
                                "amount": opening})
         payments = [dict(r) for r in self.db.query(

@@ -8,11 +8,11 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QDate
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QDialogButtonBox,
+    QAbstractItemView, QCheckBox, QDateEdit, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -383,10 +383,20 @@ class CustomerEditDialog(QDialog):
             "Balance carried over from your paper records. Positive = the customer "
             "owes you; negative = you owe the customer (advance / credit). "
             "Leave 0 for a brand-new customer.")
+        # 'As-of' date for the opening balance (defaults to today for a new
+        # customer). Only matters for how the opening line is dated on the ledger.
+        self.opening_date = QDateEdit()
+        self.opening_date.setCalendarPopup(True)
+        self.opening_date.setDisplayFormat("dd MMM yyyy")
+        self.opening_date.setMaximumDate(QDate.currentDate())
+        self.opening_date.setDate(QDate.currentDate())
+        self.opening_date.setToolTip("The date this opening balance was carried in "
+                                     "from paper (e.g. your last audit date).")
         form.addRow("Name *", self.name)
         form.addRow("Phone", self.phone)
         form.addRow("Address", self.address)
         form.addRow("Opening balance owed", self.opening)
+        form.addRow("Opening balance date", self.opening_date)
         form.addRow("Notes", self.notes)
         _, self._mu = controller.currency()
         if customer_id is not None:
@@ -396,6 +406,10 @@ class CustomerEditDialog(QDialog):
             self.address.setText(c.get("address") or "")
             self.notes.setText(c.get("notes") or "")
             self.opening.setValue((c.get("opening_debt_minor") or 0) / self._mu)
+            od = (c.get("opening_debt_date") or c.get("created_at") or "")[:10]
+            qd = QDate.fromString(od, "yyyy-MM-dd")
+            if qd.isValid():
+                self.opening_date.setDate(qd)
         box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         box.button(QDialogButtonBox.Save).setObjectName("Success")
         box.accepted.connect(self._save)
@@ -406,7 +420,8 @@ class CustomerEditDialog(QDialog):
         form = {"name": self.name.text().strip(), "phone": self.phone.text().strip(),
                 "address": self.address.text().strip(),
                 "notes": self.notes.text().strip(),
-                "opening_debt": self.opening.value()}
+                "opening_debt": self.opening.value(),
+                "opening_debt_date": self.opening_date.date().toString("yyyy-MM-dd")}
         if not form["name"]:
             QMessageBox.information(self, "Name required", "Enter a customer name.")
             return

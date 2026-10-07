@@ -216,6 +216,7 @@ CREATE TABLE IF NOT EXISTS customers (
     address    TEXT,                                 -- optional
     notes      TEXT,
     opening_debt_minor INTEGER NOT NULL DEFAULT 0,   -- balance carried over from paper books
+    opening_debt_date  TEXT,                          -- 'as of' date for that opening balance
     is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
     created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     updated_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
