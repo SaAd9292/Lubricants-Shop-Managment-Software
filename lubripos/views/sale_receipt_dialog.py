@@ -55,13 +55,15 @@ class SaleReceiptDialog(QDialog):
         s = self._sale
         cust = s.get("customer_name")
         cust_html = f"<br><b>{tr('Customer')}:</b> {cust}" if cust else ""
+        note = (s.get("notes") or "").strip()
+        note_html = f"<br><b>{tr('Bill / ref')}:</b> {note}" if note else ""
         info = QLabel(
             f"<b>{tr('Invoice')}:</b> {s['invoice_no']} &nbsp;&nbsp; "
             f"<b>{tr('Status')}:</b> {s['status']}<br>"
             f"<b>{tr('Date')}:</b> {(s.get('sale_date') or '')[:16]}<br>"
             f"<b>{tr('Cashier')}:</b> {s.get('cashier_name') or '-'} &nbsp;&nbsp; "
             f"<b>{tr('Payment')}:</b> {s.get('payment_method') or '-'}"
-            f"{cust_html}"
+            f"{cust_html}{note_html}"
         )
         info.setTextFormat(Qt.RichText)
         root.addWidget(info)
