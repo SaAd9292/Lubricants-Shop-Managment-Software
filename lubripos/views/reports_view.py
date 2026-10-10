@@ -31,6 +31,7 @@ REPORTS = [
     ("Purchases", "purchases", "range"),
     ("Expenses", "expenses", "range"),
     ("Cash in Hand Ledger", "cash_ledger", "range"),
+    ("Daily Cash Book (in/out per day)", "daily_cash_ledger", "range"),
     ("GST / Tax", "tax", "range"),
     ("Product Price List", "product_list", "day"),
     ("Product History", "product_history", "range"),

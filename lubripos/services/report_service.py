@@ -346,6 +346,69 @@ class ReportService:
             ],
         }
 
+    # ---- Daily Cash Book (one row per day: in / out / net) ---------
+    def daily_cash_ledger(self, date_from: str, date_to: str) -> dict[str, Any]:
+        """A day-by-day cash book straight from each day's close: for every day
+        with cash movement, its total Cash In, Cash Out, the day's Net, and the
+        running Cash-in-Hand balance at day end. Opening balance shown first."""
+        from datetime import date as _date, timedelta as _td
+        df, dt = date_from[:10], date_to[:10]
+        cash = CashService(self.db)
+        opening = cash.opening_before(df)
+
+        crow = self.db.query_one(
+            "SELECT currency_symbol s, currency_minor_units mu "
+            "FROM company_settings WHERE id = 1")
+        sym = (crow["s"] if crow else None) or "Rs"
+        mu = (crow["mu"] if crow else None) or 100
+
+        def fmt(v):
+            return format_money(int(v or 0), sym, mu)
+
+        rows = [{"date": df, "cash_in": "", "cash_out": "",
+                 "net": "Opening", "balance": fmt(opening)}]
+        total_in = total_out = 0
+        try:
+            d0, d1 = _date.fromisoformat(df), _date.fromisoformat(dt)
+        except ValueError:
+            d0 = d1 = _date.today()
+        cur = d0
+        while cur <= d1:
+            ds = cur.isoformat()
+            recon = cash.reconciliation(ds)
+            cin, cout = recon["cash_in"], recon["cash_out"]
+            if cin or cout:
+                total_in += cin
+                total_out += cout
+                rows.append({
+                    "date": ds,
+                    "cash_in": fmt(cin) if cin else "",
+                    "cash_out": fmt(cout) if cout else "",
+                    "net": fmt(cin - cout),
+                    "balance": fmt(recon["closing"]),
+                })
+            cur += _td(days=1)
+        closing = cash.balance_as_of(dt)
+
+        return {
+            "key": "daily_cash_ledger", "title": "Daily Cash Book",
+            "subtitle": f"{df} to {dt}  ·  cash in / out per day", "orientation": "portrait",
+            "columns": [
+                _col("date", "Date"),
+                _col("cash_in", "Cash In", "right"),
+                _col("cash_out", "Cash Out", "right"),
+                _col("net", "Net (day)", "right"),
+                _col("balance", "Balance", "right"),
+            ],
+            "rows": rows,
+            "summary": [
+                {"label": "Opening balance", "value": opening, "money": True},
+                {"label": "Total cash in", "value": total_in, "money": True},
+                {"label": "Total cash out", "value": total_out, "money": True},
+                {"label": "Closing (Cash in Hand)", "value": closing, "money": True},
+            ],
+        }
+
     # ---- 2. Monthly Sales Report (by day + by product) -------------
     def monthly_sales(self, year: int, month: int) -> dict[str, Any]:
         """Multi-section (layout='sections'): a per-DAY summary plus a per-
