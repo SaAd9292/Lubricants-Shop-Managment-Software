@@ -3,14 +3,15 @@ from __future__ import annotations
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDialog, QHBoxLayout,
-    QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
+    QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDateEdit, QDialog,
+    QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView,
+    QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
 from ..core.session import current_session
-from ..ui.widgets import DataTable, number_rows
+from ..ui.widgets import DataTable
 from ..controllers.purchase_controller import PurchaseController
 from .new_purchase_dialog import NewPurchaseDialog
 from .security_prompt import require_admin_password
@@ -88,6 +89,12 @@ class PurchasesView(QWidget):
         view_btn.clicked.connect(self._view_details)
         footer.addWidget(view_btn)
         if current_session.is_admin:
+            edit_btn = QPushButton("Edit purchase")
+            edit_btn.setObjectName("Secondary")
+            edit_btn.setToolTip("Edit the supplier, date, bill no, note or amount "
+                                "paid (to change items, delete and re-enter)")
+            edit_btn.clicked.connect(self._edit_selected)
+            footer.addWidget(edit_btn)
             self.del_btn = QPushButton("Delete purchase")
             self.del_btn.setObjectName("Danger")
             self.del_btn.clicked.connect(self._delete_selected)
@@ -135,7 +142,6 @@ class PurchasesView(QWidget):
 
     def _populate(self, rows: list[dict]) -> None:
         self.table.setRowCount(len(rows))
-        number_rows(self.table, self._page * PAGE_SIZE + 1)
         for r, p in enumerate(rows):
             values = [
                 (p.get("purchase_date") or "")[:16],
@@ -187,6 +193,25 @@ class PurchasesView(QWidget):
             return
         data = self.controller.get(pid)
         PurchaseDetailDialog(data, self.controller.fmt).exec()
+
+    def _edit_selected(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            QMessageBox.information(self, "Select a purchase", "Please select a row first.")
+            return
+        data = self.controller.get(pid)
+        dlg = PurchaseEditDialog(self.controller, data)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        ok, msg, _ = self.controller.edit(
+            pid, supplier_id=v["supplier_id"], purchase_date=v["date"],
+            supplier_invoice_no=v["invoice_no"], notes=v["notes"],
+            amount_paid=v["amount_paid"])
+        if ok:
+            self._reset_and_reload()
+        else:
+            QMessageBox.warning(self, "Could not save", msg)
 
     def _delete_selected(self) -> None:
         pid = self._selected_id()
@@ -271,3 +296,72 @@ class PurchaseDetailDialog(QDialog):
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
         root.addWidget(close)
+
+
+class PurchaseEditDialog(QDialog):
+    """Edit a purchase's header: supplier, date, bill no, note, amount paid.
+    Line items aren't editable here (they moved stock) — delete + re-enter for
+    those."""
+
+    def __init__(self, controller: PurchaseController, data: dict) -> None:
+        super().__init__()
+        self.controller = controller
+        self._total_minor = int(data.get("total_minor") or 0)
+        self.setWindowTitle("Edit purchase")
+        self.setMinimumWidth(420)
+        form = QFormLayout(self)
+
+        sym, self._mu = controller.currency()
+        form.addRow("Total", QLabel(controller.fmt(self._total_minor)))
+
+        self.supplier = QComboBox()
+        self.supplier.addItem("(no supplier)", None)
+        want = data.get("supplier_id")
+        sel = 0
+        try:
+            sups = controller.active_suppliers()
+        except Exception:
+            sups = []
+        for i, s in enumerate(sups, start=1):
+            self.supplier.addItem(s["name"], s["id"])
+            if s["id"] == want:
+                sel = i
+        self.supplier.setCurrentIndex(sel)
+        form.addRow("Supplier", self.supplier)
+
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        qd = QDate.fromString((data.get("purchase_date") or "")[:10], "yyyy-MM-dd")
+        self.date.setDate(qd if qd.isValid() else QDate.currentDate())
+        form.addRow("Date", self.date)
+
+        self.invoice = QLineEdit(data.get("supplier_invoice_no") or "")
+        self.invoice.setPlaceholderText("Supplier's bill / invoice no")
+        form.addRow("Bill no", self.invoice)
+
+        self.paid = QDoubleSpinBox()
+        self.paid.setMaximum(self._total_minor / (self._mu or 100))
+        self.paid.setDecimals(2)
+        self.paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.paid.setPrefix(f"{sym} ")
+        self.paid.setValue((data.get("amount_paid_minor") or 0) / (self._mu or 100))
+        self.paid.setToolTip("How much has been paid to the supplier. Less than "
+                             "the total leaves a balance owed (needs a supplier).")
+        form.addRow("Amount paid", self.paid)
+
+        self.notes = QLineEdit(data.get("notes") or "")
+        form.addRow("Note", self.notes)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> dict:
+        return {"supplier_id": self.supplier.currentData(),
+                "date": self.date.date().toString("yyyy-MM-dd"),
+                "invoice_no": self.invoice.text().strip(),
+                "amount_paid": self.paid.value(),
+                "notes": self.notes.text().strip()}

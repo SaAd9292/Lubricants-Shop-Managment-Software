@@ -93,6 +93,18 @@ def main() -> int:
     check(len(led["payments"]) == 1, "ledger lists the payment")
     check(led["balance"] == 15000, "ledger balance 15000")
 
+    print("\n[payables] edit a purchase header (amount paid / supplier)")
+    sid2 = sup_s.create({"name": "Reassign Co"})
+    p_id = pu.create_purchase(supplier_id=sid, amount_paid_minor=0,
+                              items=[{"product_id": pid, "qty": 5, "unit_cost_minor": 2000}])
+    # owes 10000 to sid now; pay 4000 -> owes 6000
+    pu.update_purchase(p_id, amount_paid_minor=4000)
+    check(_bal(pay, sid)["balance"] == 15000 + 10000 - 4000, "amount-paid edit lowers the payable")
+    before_stock = ps.get(pid)["stock_qty"]
+    pu.update_purchase(p_id, supplier_id=sid2)
+    check(_bal(pay, sid2)["balance"] == 6000, "reassigning the purchase moves the payable")
+    check(ps.get(pid)["stock_qty"] == before_stock, "editing the header leaves stock untouched")
+
     print("\n[payables] edit + reverse a supplier payment")
     pay2 = pay.record_payment(sid, 5000, method="Cash", payment_date="2026-09-10")
     check(_bal(pay, sid)["balance"] == 10000, "balance 10000 after paying 5000")

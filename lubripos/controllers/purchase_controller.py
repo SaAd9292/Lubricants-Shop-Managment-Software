@@ -78,6 +78,26 @@ class PurchaseController:
             )
         return self._guarded(op)
 
+    def edit(self, purchase_id: int, *, supplier_id=None, purchase_date=None,
+             supplier_invoice_no=None, notes=None, amount_paid=None):
+        """Edit a purchase header (supplier/date/bill no/note/amount paid) — admin
+        only. amount_paid is a decimal. Returns (ok, msg, purchase_id)."""
+        _, mu = self.currency()
+        amt = None
+        if amount_paid is not None:
+            try:
+                amt = money.to_minor(amount_paid, mu)
+            except (ValueError, ArithmeticError):
+                return False, "Invalid amount paid.", None
+
+        def op(uid):
+            self.purchases.update_purchase(
+                purchase_id, supplier_id=supplier_id, purchase_date=purchase_date,
+                supplier_invoice_no=supplier_invoice_no, notes=notes,
+                amount_paid_minor=amt, user_id=uid)
+            return purchase_id
+        return self._guarded(op)
+
     def delete(self, purchase_id: int):
         """Permanently delete a purchase and reverse its stock (admin only). The
         UI also requires the admin's password before calling this."""

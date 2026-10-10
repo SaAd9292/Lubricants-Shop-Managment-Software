@@ -185,6 +185,52 @@ class PurchaseService:
         log.warning("Deleted purchase id=%s; stock reversed (%d lines)",
                     purchase_id, len(items))
 
+    def update_purchase(self, purchase_id: int, *, supplier_id: int | None = None,
+                        purchase_date: str | None = None,
+                        supplier_invoice_no: str | None = None,
+                        notes: str | None = None,
+                        amount_paid_minor: int | None = None,
+                        user_id: int | None = None) -> None:
+        """Edit a purchase's HEADER only — supplier, date, bill number, note, and
+        amount paid. Line items (products/qty/cost) are NOT editable here because
+        they moved stock and re-priced products; to change those, delete the
+        purchase (which reverses the stock) and re-enter it. Any field left None
+        is unchanged."""
+        row = self.db.query_one("SELECT * FROM purchases WHERE id = ?", (purchase_id,))
+        if row is None:
+            raise NotFoundError(f"Purchase {purchase_id} not found")
+        total = row["total_minor"]
+        new_supplier = row["supplier_id"] if supplier_id is None else supplier_id
+        new_paid = row["amount_paid_minor"] if amount_paid_minor is None \
+            else int(amount_paid_minor)
+        if new_paid < 0:
+            raise ValidationError("Amount paid cannot be negative.")
+        if new_paid > total:
+            raise ValidationError("Amount paid cannot exceed the purchase total.")
+        if new_paid < total and new_supplier is None:
+            raise ValidationError("A credit purchase (amount paid below the total) "
+                                  "needs a supplier.")
+        if new_supplier is not None and not self.db.query_one(
+                "SELECT id FROM suppliers WHERE id = ?", (new_supplier,)):
+            raise NotFoundError(f"Supplier {new_supplier} not found")
+        if purchase_date is None:
+            new_date = row["purchase_date"]
+        else:
+            pd = purchase_date.strip()
+            new_date = f"{pd} 12:00:00" if len(pd) == 10 else pd
+        new_inv = row["supplier_invoice_no"] if supplier_invoice_no is None \
+            else ((supplier_invoice_no or "").strip() or None)
+        new_notes = row["notes"] if notes is None else ((notes or "").strip() or None)
+        self.db.execute(
+            "UPDATE purchases SET supplier_id=?, purchase_date=?, supplier_invoice_no=?, "
+            "notes=?, amount_paid_minor=? WHERE id=?",
+            (new_supplier, new_date, new_inv, new_notes, new_paid, purchase_id))
+        self.audit.record(action="EDIT_PURCHASE", user_id=user_id,
+                          entity_type="purchase", entity_id=purchase_id,
+                          details={"supplier_id": new_supplier, "amount_paid": new_paid})
+        log.info("Edited purchase id=%s (supplier=%s, paid=%s)",
+                 purchase_id, new_supplier, new_paid)
+
     # -- reads --------------------------------------------------------
     def list_purchases(
         self,
