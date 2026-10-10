@@ -188,9 +188,11 @@ class ReportService:
         recon = CashService(self.db).reconciliation(day)
         cash_in_hand = recon["closing"]        # cash in the drawer at day end
 
-        # Cash-drawer reconciliation section (out-flows shown negative so the
-        # column visibly nets down to the closing balance).
-        cash_rows = [{"item": "Opening balance", "amount": recon["opening"]}]
+        # Cash-drawer section. THIS DAY'S movements first (out-flows negative),
+        # then today's net, THEN yesterday's carried-over balance added at the
+        # end -> closing. This keeps "the day's money" readable on its own,
+        # instead of mixing the opening balance into every line.
+        cash_rows = []
         for label, key, sign in (
             ("Cash sales", "cash_sales", 1),
             ("Recoveries (cash)", "repayments", 1),
@@ -202,6 +204,10 @@ class ReportService:
         ):
             if recon[key]:
                 cash_rows.append({"item": label, "amount": sign * recon[key]})
+        day_net = recon["cash_in"] - recon["cash_out"]
+        cash_rows.append({"item": "Today's cash (in − out)", "amount": day_net})
+        cash_rows.append({"item": "+ Opening balance (carried from previous day)",
+                          "amount": recon["opening"]})
 
         # per-method map so the UI can show a card per channel even at zero
         by_method = method_totals
@@ -278,6 +284,8 @@ class ReportService:
                 {"label": "Refunds", "value": refunds_total, "money": True},
                 {"label": "Money received", "value": total_received, "money": True},
                 {"label": "Opening cash", "value": recon["opening"], "money": True},
+                {"label": "Today's cash (net)",
+                 "value": recon["cash_in"] - recon["cash_out"], "money": True},
                 {"label": "Cash in hand", "value": cash_in_hand, "money": True},
                 {"label": "Recoveries", "value": repay_today, "money": True},
                 {"label": "Net", "value": net, "money": True},
