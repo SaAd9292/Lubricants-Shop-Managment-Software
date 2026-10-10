@@ -54,6 +54,8 @@ EXPECTED = [
     ("supplier_payments_dialog.py", "SupplierPaymentEditDialog",
      ["values", "_on_accept"]),
     ("pos_view.py", "_PartialPayDialog", ["values", "_reload_accounts"]),
+    ("day_close_widget.py", "DayCloseWidget",
+     ["render", "_add_section", "_fill_table"]),
 ]
 
 

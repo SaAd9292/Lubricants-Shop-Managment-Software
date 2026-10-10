@@ -59,44 +59,14 @@ class DayCloseWidget(QWidget):
         self.pay_row = FlowLayout(spacing=12)
         root.addLayout(self.pay_row)
 
+        # Section panels are built DYNAMICALLY in render() from whatever the
+        # report provides, so renaming or adding a section never blanks a panel.
         body = QHBoxLayout()
         body.setSpacing(16)
-
-        left = QVBoxLayout()
-        left.addWidget(self._h("Sales"))
-        self.sales_tbl = self._table("No sales recorded for this day.", 240)
-        left.addWidget(self.sales_tbl, 1)
-        self.sales_total = self._total_label()
-        left.addWidget(self.sales_total)
-        body.addLayout(left, 2)
-
-        right = QVBoxLayout()
-        right.addWidget(self._h("Expenses"))
-        self.exp_tbl = self._table("No expenses recorded for this day.", 130)
-        right.addWidget(self.exp_tbl)
-        self.exp_total = self._total_label()
-        right.addWidget(self.exp_total)
-        right.addWidget(self._h("Money received"))
-        self.pay_tbl = self._table("No payments recorded.", 130)
-        right.addWidget(self.pay_tbl)
-        right.addWidget(self._h("Customer debt repayments"))
-        self.repay_tbl = self._table("No debt repayments today.", 110)
-        right.addWidget(self.repay_tbl)
-        self.repay_total = self._total_label()
-        right.addWidget(self.repay_total)
-        right.addWidget(self._h("Returns"))
-        self.returns_tbl = self._table("No returns for this day.", 130)
-        right.addWidget(self.returns_tbl)
-        self.returns_total = self._total_label()
-        right.addWidget(self.returns_total)
-        right.addWidget(self._h("Cash drawer"))
-        self.cash_tbl = self._table("No cash movement recorded.", 130)
-        right.addWidget(self.cash_tbl)
-        self.cash_total = self._total_label()
-        right.addWidget(self.cash_total)
-        right.addStretch(1)
-        body.addLayout(right, 1)
-
+        self._left = QVBoxLayout()
+        self._right = QVBoxLayout()
+        body.addLayout(self._left, 2)
+        body.addLayout(self._right, 1)
         root.addLayout(body, 1)
         scroll.setWidget(content)
         outer.addWidget(scroll)
@@ -141,28 +111,26 @@ class DayCloseWidget(QWidget):
         self._fill_cards(self.pay_row,
                          [(m, fmt(pays.get(m, 0)), None) for m in _METHODS])
 
-        secs = {s["name"]: s for s in report.get("sections", [])}
-        for name, table, total in (
-            ("Sales", self.sales_tbl, self.sales_total),
-            ("Expenses", self.exp_tbl, self.exp_total),
-            ("Returns", self.returns_tbl, self.returns_total),
-        ):
-            sec = secs.get(name)
-            if sec:
-                self._fill_table(table, sec)
-                total.setText(f"{sec['total_label']}:  {fmt(sec['total'])}")
-        if secs.get("Money received"):
-            self._fill_table(self.pay_tbl, secs["Money received"])
-        repay = secs.get("Customer debt repayments")
-        if repay is not None:
-            self._fill_table(self.repay_tbl, repay)
-            self.repay_total.setText(
-                f"{repay['total_label']}:  {fmt(repay['total'])}")
-        cash = secs.get("Cash drawer")
-        if cash is not None:
-            self._fill_table(self.cash_tbl, cash)
-            self.cash_total.setText(
-                f"{cash['total_label']}:  {fmt(cash['total'])}")
+        # Render EVERY section the report provides. Sales-type sections take the
+        # wide left column; everything else stacks on the right. This never
+        # breaks when a section is renamed or added.
+        self._clear_layout(self._left)
+        self._clear_layout(self._right)
+        for sec in report.get("sections", []):
+            on_left = sec.get("name", "").startswith(("Cash & paid", "Udhaar"))
+            self._add_section(self._left if on_left else self._right, sec)
+        self._left.addStretch(1)
+        self._right.addStretch(1)
+
+    def _add_section(self, layout, sec: dict) -> None:
+        layout.addWidget(self._h(sec.get("name", "")))
+        tbl = self._table("Nothing to show.", 120)
+        self._fill_table(tbl, sec)
+        layout.addWidget(tbl)
+        if sec.get("total_label") is not None:
+            tl = self._total_label()
+            tl.setText(f"{sec['total_label']}:  {self._fmt(sec.get('total', 0))}")
+            layout.addWidget(tl)
 
     # -- helpers ------------------------------------------------------
     def _fill_cards(self, layout, items) -> None:
