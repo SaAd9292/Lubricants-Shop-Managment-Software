@@ -14,6 +14,7 @@ from ..core.session import current_session
 from ..ui.widgets import DataTable
 from ..controllers.purchase_controller import PurchaseController
 from .new_purchase_dialog import NewPurchaseDialog
+from .purchase_return_dialog import PurchaseReturnDialog
 from .security_prompt import require_admin_password
 
 PAGE_SIZE = 25
@@ -40,6 +41,13 @@ class PurchasesView(QWidget):
         title.setObjectName("PageTitle")
         header.addWidget(title)
         header.addStretch(1)
+        if current_session.is_admin:
+            ret_btn = QPushButton("Return to supplier")
+            ret_btn.setObjectName("Secondary")
+            ret_btn.setToolTip("Send goods back to a supplier (reduces stock and "
+                               "what you owe them). No cash moves.")
+            ret_btn.clicked.connect(self._return_to_supplier)
+            header.addWidget(ret_btn)
         new_btn = QPushButton("+ New Purchase")
         new_btn.clicked.connect(self._new_purchase)
         header.addWidget(new_btn)
@@ -187,6 +195,18 @@ class PurchasesView(QWidget):
         if NewPurchaseDialog(self.controller).exec():
             self._reset_and_reload()
 
+    def _return_to_supplier(self) -> None:
+        # prefill the supplier from the selected purchase row, if any
+        supplier_id = None
+        pid = self._selected_id()
+        if pid is not None:
+            try:
+                supplier_id = self.controller.get(pid).get("supplier_id")
+            except Exception:
+                supplier_id = None
+        if PurchaseReturnDialog(self.controller, supplier_id=supplier_id).exec():
+            self._reset_and_reload()
+
     def _view_details(self) -> None:
         pid = self._selected_id()
         if pid is None:
@@ -281,11 +301,14 @@ class PurchaseDetailDialog(QDialog):
         gross = sum(it["qty"] * it["unit_cost_minor"] for it in items)
         line_disc = sum((it.get("discount_minor", 0) or 0) for it in items)
         bill_disc = purchase.get("discount_minor", 0) or 0
+        adv_tax = purchase.get("tax_minor", 0) or 0
         lines = [f"Subtotal (before discount):&nbsp;&nbsp; {self._fmt(gross)}"]
         if line_disc:
             lines.append(f"Line discounts:&nbsp;&nbsp; − {self._fmt(line_disc)}")
         if bill_disc:
             lines.append(f"Bill discount:&nbsp;&nbsp; − {self._fmt(bill_disc)}")
+        if adv_tax:
+            lines.append(f"Advance tax:&nbsp;&nbsp; + {self._fmt(adv_tax)}")
         lines.append(f"<b>Total:&nbsp;&nbsp; {self._fmt(purchase['total_minor'])}</b>")
         summary = QLabel("<br>".join(lines))
         summary.setTextFormat(Qt.RichText)
@@ -306,13 +329,44 @@ class PurchaseEditDialog(QDialog):
     def __init__(self, controller: PurchaseController, data: dict) -> None:
         super().__init__()
         self.controller = controller
+        self._updating = True
         self._total_minor = int(data.get("total_minor") or 0)
+        # line subtotal (net of per-line discounts) is the base the bill
+        # discount/tax adjust: subtotal = total + discount - tax
+        self._subtotal_minor = (self._total_minor
+                                + int(data.get("discount_minor") or 0)
+                                - int(data.get("tax_minor") or 0))
         self.setWindowTitle("Edit purchase")
         self.setMinimumWidth(420)
         form = QFormLayout(self)
 
         sym, self._mu = controller.currency()
-        form.addRow("Total", QLabel(controller.fmt(self._total_minor)))
+        self._sym = sym
+        self._decimals = max(0, len(str(self._mu or 100)) - 1)
+        form.addRow("Subtotal", QLabel(controller.fmt(self._subtotal_minor)))
+
+        self.bill_disc = QDoubleSpinBox()
+        self.bill_disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.bill_disc.setDecimals(self._decimals)
+        self.bill_disc.setRange(0, self._subtotal_minor / (self._mu or 100))
+        self.bill_disc.setPrefix(f"{sym} ")
+        self.bill_disc.setValue((data.get("discount_minor") or 0) / (self._mu or 100))
+        self.bill_disc.valueChanged.connect(self._recompute)
+        form.addRow("Bill discount", self.bill_disc)
+
+        self.adv_tax = QDoubleSpinBox()
+        self.adv_tax.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.adv_tax.setDecimals(self._decimals)
+        self.adv_tax.setRange(0, 1_000_000_000)
+        self.adv_tax.setPrefix(f"{sym} ")
+        self.adv_tax.setToolTip("Advance / withholding tax — actual amount, added to the bill.")
+        self.adv_tax.setValue((data.get("tax_minor") or 0) / (self._mu or 100))
+        self.adv_tax.valueChanged.connect(self._recompute)
+        form.addRow("Advance tax", self.adv_tax)
+
+        self.total_lbl = QLabel(controller.fmt(self._total_minor))
+        self.total_lbl.setStyleSheet("font-weight: 700;")
+        form.addRow("Total", self.total_lbl)
 
         self.supplier = QComboBox()
         self.supplier.addItem("(no supplier)", None)
@@ -358,10 +412,29 @@ class PurchaseEditDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+        self._updating = False
+
+    def _recompute(self) -> None:
+        """Recompute the total as subtotal − bill discount + advance tax and keep
+        the amount-paid cap in step (it can never exceed the total)."""
+        if self._updating:
+            return
+        mu = self._mu or 100
+        disc = round(self.bill_disc.value() * mu)
+        tax = round(self.adv_tax.value() * mu)
+        self._total_minor = self._subtotal_minor - disc + tax
+        self.total_lbl.setText(self.controller.fmt(self._total_minor))
+        # if the paid amount now exceeds the total, pull it down to the total
+        cap = self._total_minor / mu
+        if self.paid.value() > cap:
+            self.paid.setValue(cap)
+        self.paid.setMaximum(cap)
 
     def values(self) -> dict:
         return {"supplier_id": self.supplier.currentData(),
                 "date": self.date.date().toString("yyyy-MM-dd"),
                 "invoice_no": self.invoice.text().strip(),
                 "amount_paid": self.paid.value(),
+                "discount": self.bill_disc.value(),
+                "tax": self.adv_tax.value(),
                 "notes": self.notes.text().strip()}

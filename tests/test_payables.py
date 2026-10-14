@@ -105,6 +105,57 @@ def main() -> int:
     check(_bal(pay, sid2)["balance"] == 6000, "reassigning the purchase moves the payable")
     check(ps.get(pid)["stock_qty"] == before_stock, "editing the header leaves stock untouched")
 
+    print("\n[payables] advance tax is added to the bill total")
+    sid3 = sup_s.create({"name": "Zain Enterprises"})
+    # subtotal 50000, bill discount 2000, advance tax 500 -> total 48500
+    pt = pu.create_purchase(supplier_id=sid3, amount_paid_minor=0,
+                            discount_minor=2000, tax_minor=500,
+                            items=[{"product_id": pid, "qty": 10, "unit_cost_minor": 5000}])
+    head = pu.get_purchase(pt)
+    check(head["total_minor"] == 48500, f"total = subtotal - disc + tax = 48500 (got {head['total_minor']})")
+    check(head["tax_minor"] == 500, "tax_minor stored")
+    check(_bal(pay, sid3)["balance"] == 48500, "payable reflects the taxed total")
+    # cost basis must ignore the bill-level tax (unit cost stays 5000)
+    check(ps.get(pid)["purchase_price_minor"] == 5000, "advance tax does not change unit cost")
+
+    print("\n[payables] editing tax / discount recomputes the total")
+    pu.update_purchase(pt, tax_minor=1500, discount_minor=0)
+    head = pu.get_purchase(pt)
+    check(head["total_minor"] == 51500, f"edit -> 50000 - 0 + 1500 = 51500 (got {head['total_minor']})")
+    check(_bal(pay, sid3)["balance"] == 51500, "payable follows the edited total")
+    try:
+        pu.update_purchase(pt, discount_minor=60000)  # > subtotal 50000
+        check(False, "over-subtotal discount should raise")
+    except ValidationError:
+        check(True, "bill discount cannot exceed subtotal on edit")
+
+    print("\n[payables] purchase return (debit note) lowers the balance + stock")
+    sidr = sup_s.create({"name": "Return Co"})
+    ps.create({"name": "RetOil"})  # ensure a product with stock via a purchase
+    rpid = ps.create({"name": "Drum X", "sale_price_minor": 9000,
+                      "purchase_price_minor": 5000, "stock_qty": 0})
+    pu.create_purchase(supplier_id=sidr, amount_paid_minor=0,
+                       items=[{"product_id": rpid, "qty": 20, "unit_cost_minor": 5000}])
+    check(_bal(pay, sidr)["balance"] == 100000, "owe 100000 after a 20×5000 credit purchase")
+    check(ps.get(rpid)["stock_qty"] == 20, "stock 20 after purchase")
+    # return 4 units @5000 -> debit note 20000; stock 20->16; balance 100000->80000
+    rr = pu.create_purchase_return(supplier_id=sidr,
+                                   items=[{"product_id": rpid, "qty": 4, "unit_cost_minor": 5000}])
+    check(_bal(pay, sidr)["balance"] == 80000, "return lowers payable to 80000")
+    check(ps.get(rpid)["stock_qty"] == 16, "return reduces stock to 16")
+    led2 = pay.supplier_ledger(sidr)
+    check(led2["returned"] == 20000 and len(led2["returns"]) == 1, "ledger shows the return")
+    check(led2["balance"] == 80000, "ledger balance reflects the return")
+    try:
+        pu.create_purchase_return(supplier_id=sidr,
+                                  items=[{"product_id": rpid, "qty": 999, "unit_cost_minor": 5000}])
+        check(False, "returning more than stock should raise")
+    except ValidationError:
+        check(True, "can't return more than is in stock")
+    pu.reverse_purchase_return(rr["return_id"])
+    check(_bal(pay, sidr)["balance"] == 100000 and ps.get(rpid)["stock_qty"] == 20,
+          "reversing the return restores balance and stock")
+
     print("\n[payables] edit + reverse a supplier payment")
     pay2 = pay.record_payment(sid, 5000, method="Cash", payment_date="2026-09-10")
     check(_bal(pay, sid)["balance"] == 10000, "balance 10000 after paying 5000")

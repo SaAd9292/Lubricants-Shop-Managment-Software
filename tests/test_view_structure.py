@@ -56,7 +56,14 @@ EXPECTED = [
     ("pos_view.py", "_PartialPayDialog", ["values", "_reload_accounts"]),
     ("day_close_widget.py", "DayCloseWidget",
      ["render", "_add_section", "_fill_table"]),
-    ("purchases_view.py", "PurchaseEditDialog", ["values"]),
+    ("purchases_view.py", "PurchaseEditDialog", ["values", "_recompute"]),
+    ("new_purchase_dialog.py", "NewPurchaseDialog",
+     ["_build_ui", "_refresh_products", "_on_pick", "_pieces", "_update_unit_hint",
+      "eventFilter", "_add_line", "_render_cart", "_recompute", "_update_credit",
+      "_save"]),
+    ("purchase_return_dialog.py", "PurchaseReturnDialog",
+     ["_build_ui", "_refresh_products", "_on_pick", "_pieces", "_update_unit_hint",
+      "eventFilter", "_add_line", "_render_cart", "_process"]),
 ]
 
 

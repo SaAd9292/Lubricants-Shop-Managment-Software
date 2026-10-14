@@ -172,6 +172,43 @@ def main() -> int:
     check(hprice("2026-07-01") == [(2000, 2500)], "as-of picks the latest change on/before the date")
     check(hprice("2025-01-01") == [], "product excluded from a date before it existed")
 
+    print("\n[report] return credited to a customer is NOT counted as a recovery")
+    from lubripos.services.customer_service import CustomerService
+    cust_s = CustomerService(db)
+    cid = cust_s.create({"name": "Rahim"})
+    # a REAL cash recovery (money actually collected)
+    cust_s.record_payment(cid, 5000, method="Cash", payment_date=today + " 10:00:00",
+                          user_id=1)
+    # a return CREDITED to the customer's account (store credit, NOT money in):
+    # stored as a customer_payment with a return_id + method 'Return credit'
+    sales.create_no_receipt_return(
+        [{"product_id": a, "qty": 1, "refund_minor": 30000}],
+        method="Ledger", credit_customer_id=cid,
+        return_date=today + " 11:00:00", user_id=1)
+    # a cash refund return (money actually went out) -> should read "Paid"
+    sales.create_no_receipt_return(
+        [{"product_id": b, "qty": 1, "refund_minor": 20000}],
+        method="Cash", return_date=today + " 11:30:00", user_id=1)
+    d2 = rs.daily_sales(today)
+    s2 = {s["name"]: s for s in d2["sections"]}
+    rec = s2["Recoveries (udhaar collected)"]
+    check(rec["total"] == 5000, f"recoveries = the cash collected only, not the return credit (got {rec['total']})")
+    check(all(r["method"] != "Return credit" for r in rec["rows"]),
+          "return credit is not listed as a recovery")
+    mr = s2["Money received"]
+    check(all("Return credit" not in str(r["method"]) for r in mr["rows"]),
+          "return credit is not listed under money received")
+    ret_row = next(r for r in s2["Returns"]["rows"] if r.get("amount") == 30000)
+    check("Not paid" in ret_row.get("paid", ""),
+          "credited return is marked 'Not paid' in the Returns section")
+    cash_ret = next(r for r in s2["Returns"]["rows"] if r.get("amount") == 20000)
+    check(cash_ret.get("paid", "").startswith("Paid"),
+          "cash return is marked 'Paid' in the Returns section")
+    # the customer's ledger still reflects the credit (shop owes them): both the
+    # 5000 cash payment and the 30000 return credit reduce their debt.
+    bal = cust_s.balance_owed(cid)
+    check(bal == -(5000 + 30000), f"customer ledger shows the credit: balance {bal} (shop owes them 35000)")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

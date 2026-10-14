@@ -82,11 +82,18 @@ class ReportService:
         # -- returns / refunds for the day --
         ret_rows = [dict(r) for r in self.db.query(
             """SELECT COALESCE(p.name, sri.product_name) AS product, sri.qty AS qty,
-                  sri.line_total_minor AS amount
+                  sri.line_total_minor AS amount,
+                  COALESCE(sr.method, 'Cash') AS method
                FROM sale_return_items sri JOIN sale_returns sr ON sr.id = sri.return_id
                LEFT JOIN products p ON p.id = sri.product_id
                WHERE sr.return_date LIKE ?
                ORDER BY sr.id DESC, sri.id""", (like,))]
+        # mark each return line Paid (cash/bank went out) vs Not paid (the refund
+        # was credited to the customer's account — method 'Ledger' — so no money
+        # left the till; the shop now owes that customer).
+        for r in ret_rows:
+            r["paid"] = ("Not paid (credited to account)"
+                         if r["method"] == "Ledger" else f"Paid ({r['method']})")
         refunds_total = sum(r["amount"] for r in ret_rows)
 
         # -- section 3: money received (real cash/bank IN today) --
@@ -117,6 +124,7 @@ class ReportService:
                   COALESCE(account_name, '') AS account,
                   COUNT(*) AS n, SUM(amount_minor) AS amount
                FROM customer_payments WHERE payment_date LIKE ?
+                 AND return_id IS NULL
                GROUP BY method, account_name""", (like,)):
             r = dict(r); _add(r["method"], r["account"], r["amount"], r["n"])
 
@@ -146,9 +154,14 @@ class ReportService:
             "SELECT COALESCE(SUM(grand_total_minor),0) v FROM sales "
             "WHERE status='completed' AND sale_date LIKE ? "
             "AND payment_method='Debt'", (like,))["v"]
+        # Recoveries = real money customers paid against their udhaar. A refund
+        # that was CREDITED to a customer's account (a return credit) is also
+        # stored in customer_payments, but it is NOT money collected — the shop
+        # now owes that customer. Those carry a return_id, so they are excluded
+        # here (they already appear under Returns and in the customer's balance).
         repay_today = self.db.query_one(
             "SELECT COALESCE(SUM(amount_minor),0) v FROM customer_payments "
-            "WHERE payment_date LIKE ?", (like,))["v"]
+            "WHERE payment_date LIKE ? AND return_id IS NULL", (like,))["v"]
         # customer debt repayments today, itemised by WHO paid (separate from sales)
         repay_rows = [dict(r) for r in self.db.query(
             """SELECT substr(cp.payment_date,12,5) AS time,
@@ -157,7 +170,8 @@ class ReportService:
                   cp.amount_minor AS amount
                FROM customer_payments cp
                LEFT JOIN customers c ON c.id = cp.customer_id
-               WHERE cp.payment_date LIKE ? ORDER BY cp.id""", (like,))]
+               WHERE cp.payment_date LIKE ? AND cp.return_id IS NULL
+               ORDER BY cp.id""", (like,))]
 
         # supplier payments today, itemised by WHO was paid (each on its own row,
         # then summed) — mirrors the debt-repayments section. No account columns so
@@ -245,6 +259,7 @@ class ReportService:
                  "total_label": "Total expenses", "total": expense_total},
                 {"name": "Returns",
                  "columns": [_col("product", "Product"), _col("qty", "Qty", "right"),
+                             _col("paid", "Paid?"),
                              _col("amount", "Refund", "right", True)],
                  "rows": ret_rows,
                  "total_label": "Total refunds", "total": refunds_total},

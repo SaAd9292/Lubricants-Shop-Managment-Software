@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 32
+CURRENT_VERSION = 34
 
 
 def run_migrations(db: Database) -> None:
@@ -47,6 +47,8 @@ def run_migrations(db: Database) -> None:
     _migration_30_return_credit_link(db)
     _migration_31_customer_payouts(db)
     _migration_32_customer_opening_date(db)
+    _migration_33_purchase_tax(db)
+    _migration_34_purchase_returns(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -466,6 +468,53 @@ def _migration_29_cash_counts(db: Database) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_cashcounts_date "
                "ON cash_counts(count_date)")
     log.info("Migration: added cash_counts table")
+
+
+def _migration_34_purchase_returns(db: Database) -> None:
+    """v34: returning goods to a supplier (a purchase return / debit note). It
+    reduces stock and LOWERS what the shop owes that supplier — it is NOT a cash
+    movement (money does not leave or enter the till), so it stays out of the cash
+    drawer. Purely additive: two new tables, nothing existing is altered."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS purchase_returns ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,"
+        " purchase_id INTEGER REFERENCES purchases(id) ON DELETE SET NULL,"
+        " return_date TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+        " total_minor INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),"
+        " notes TEXT,"
+        " created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+        " created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))"
+        ")")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS purchase_return_items ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " return_id INTEGER NOT NULL REFERENCES purchase_returns(id) ON DELETE CASCADE,"
+        " product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,"
+        " product_name TEXT,"
+        " qty INTEGER NOT NULL CHECK (qty > 0),"
+        " unit_cost_minor INTEGER NOT NULL CHECK (unit_cost_minor >= 0),"
+        " line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)"
+        ")")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_purret_supplier "
+               "ON purchase_returns(supplier_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_purret_date "
+               "ON purchase_returns(return_date)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_purretitems_return "
+               "ON purchase_return_items(return_id)")
+    log.info("Migration: added purchase_returns + purchase_return_items (debit notes)")
+
+
+def _migration_33_purchase_tax(db: Database) -> None:
+    """v33: advance tax (withholding tax) charged on a supplier purchase, stored
+    as an ACTUAL amount (not a percentage). It is ADDED to the bill after the
+    discount: total = subtotal - bill_discount + advance_tax. Like the whole-bill
+    discount it is a general bill-level charge, so it does NOT change any
+    product's unit cost. Nullable-equivalent (defaults to 0); purely additive."""
+    if not _column_exists(db, "purchases", "tax_minor"):
+        db.execute("ALTER TABLE purchases ADD COLUMN tax_minor "
+                   "INTEGER NOT NULL DEFAULT 0 CHECK (tax_minor >= 0)")
+    log.info("Migration: added purchases.tax_minor (advance tax amount)")
 
 
 def _migration_32_customer_opening_date(db: Database) -> None:

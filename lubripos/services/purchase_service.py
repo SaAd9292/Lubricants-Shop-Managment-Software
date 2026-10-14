@@ -40,21 +40,27 @@ class PurchaseService:
         notes: str | None = None,
         amount_paid_minor: int | None = None,
         discount_minor: int = 0,
+        tax_minor: int = 0,
         user_id: int | None = None,
     ) -> int:
         """items: list of {product_id, qty, unit_cost_minor, discount_minor?}.
 
         discount_minor = a whole-bill discount, on top of any per-line discounts,
-        subtracted from the line subtotal to give the payable total.
+        subtracted from the line subtotal.
+        tax_minor = advance/withholding tax charged on the bill, an ACTUAL amount
+        (not a percentage), ADDED after the discount. Like the bill discount it is
+        a general bill-level charge, so it does NOT change any product's unit cost.
+        total = subtotal - discount + tax.
         amount_paid_minor = how much is paid to the supplier at purchase time.
         None means paid in full (no payable). A partial payment (< total) needs
         a supplier so the remaining balance can be attributed to someone."""
         norm = self._validate_items(items)
         subtotal = sum(line["line_total_minor"] for line in norm)
         discount_minor = max(0, int(discount_minor or 0))
+        tax_minor = max(0, int(tax_minor or 0))
         if discount_minor > subtotal:
             raise ValidationError("The bill discount cannot exceed the subtotal.")
-        total = subtotal - discount_minor
+        total = subtotal - discount_minor + tax_minor
         if amount_paid_minor is None:
             amount_paid_minor = total
         amount_paid_minor = int(amount_paid_minor)
@@ -91,11 +97,11 @@ class PurchaseService:
 
             cur = conn.execute(
                 "INSERT INTO purchases (supplier_id, supplier_invoice_no, "
-                "purchase_date, discount_minor, total_minor, amount_paid_minor, "
-                "notes, created_by) "
-                "VALUES (?,?,COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')),?,?,?,?,?)",
+                "purchase_date, discount_minor, tax_minor, total_minor, "
+                "amount_paid_minor, notes, created_by) "
+                "VALUES (?,?,COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')),?,?,?,?,?,?)",
                 (supplier_id, supplier_invoice_no, purchase_date, discount_minor,
-                 total, amount_paid_minor, notes, user_id),
+                 tax_minor, total, amount_paid_minor, notes, user_id),
             )
             purchase_id = cur.lastrowid
 
@@ -190,16 +196,34 @@ class PurchaseService:
                         supplier_invoice_no: str | None = None,
                         notes: str | None = None,
                         amount_paid_minor: int | None = None,
+                        discount_minor: int | None = None,
+                        tax_minor: int | None = None,
                         user_id: int | None = None) -> None:
-        """Edit a purchase's HEADER only — supplier, date, bill number, note, and
-        amount paid. Line items (products/qty/cost) are NOT editable here because
-        they moved stock and re-priced products; to change those, delete the
-        purchase (which reverses the stock) and re-enter it. Any field left None
-        is unchanged."""
+        """Edit a purchase's HEADER only — supplier, date, bill number, note,
+        amount paid, and the bill-level discount / advance tax. Line items
+        (products/qty/cost) are NOT editable here because they moved stock and
+        re-priced products; to change those, delete the purchase (which reverses
+        the stock) and re-enter it. Any field left None is unchanged.
+
+        Editing the discount or tax recomputes the total from the line subtotal
+        (total = subtotal - discount + tax); the amount paid is then re-validated
+        against the new total."""
         row = self.db.query_one("SELECT * FROM purchases WHERE id = ?", (purchase_id,))
         if row is None:
             raise NotFoundError(f"Purchase {purchase_id} not found")
-        total = row["total_minor"]
+        # the line subtotal (sum of per-line net totals) is the stable base that
+        # the bill discount/tax adjust; derive the total from it so an edit can't
+        # drift from the recorded lines.
+        subtotal = self.db.query_one(
+            "SELECT COALESCE(SUM(line_total_minor),0) AS s FROM purchase_items "
+            "WHERE purchase_id = ?", (purchase_id,))["s"]
+        cur_disc = row["discount_minor"] if "discount_minor" in row.keys() else 0
+        cur_tax = row["tax_minor"] if "tax_minor" in row.keys() else 0
+        new_disc = cur_disc if discount_minor is None else max(0, int(discount_minor))
+        new_tax = cur_tax if tax_minor is None else max(0, int(tax_minor))
+        if new_disc > subtotal:
+            raise ValidationError("The bill discount cannot exceed the subtotal.")
+        total = subtotal - new_disc + new_tax
         new_supplier = row["supplier_id"] if supplier_id is None else supplier_id
         new_paid = row["amount_paid_minor"] if amount_paid_minor is None \
             else int(amount_paid_minor)
@@ -223,13 +247,138 @@ class PurchaseService:
         new_notes = row["notes"] if notes is None else ((notes or "").strip() or None)
         self.db.execute(
             "UPDATE purchases SET supplier_id=?, purchase_date=?, supplier_invoice_no=?, "
-            "notes=?, amount_paid_minor=? WHERE id=?",
-            (new_supplier, new_date, new_inv, new_notes, new_paid, purchase_id))
+            "notes=?, amount_paid_minor=?, discount_minor=?, tax_minor=?, total_minor=? "
+            "WHERE id=?",
+            (new_supplier, new_date, new_inv, new_notes, new_paid, new_disc, new_tax,
+             total, purchase_id))
         self.audit.record(action="EDIT_PURCHASE", user_id=user_id,
                           entity_type="purchase", entity_id=purchase_id,
-                          details={"supplier_id": new_supplier, "amount_paid": new_paid})
+                          details={"supplier_id": new_supplier, "amount_paid": new_paid,
+                                   "discount": new_disc, "tax": new_tax, "total": total})
         log.info("Edited purchase id=%s (supplier=%s, paid=%s)",
                  purchase_id, new_supplier, new_paid)
+
+    # -- purchase returns (debit notes) -------------------------------
+    def create_purchase_return(
+        self,
+        *,
+        supplier_id: int | None,
+        items: list[dict[str, Any]],
+        purchase_id: int | None = None,
+        return_date: str | None = None,
+        notes: str | None = None,
+        user_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Return goods to a supplier (a debit note). items: list of
+        {product_id, qty, unit_cost_minor}. Each item's stock is REDUCED and the
+        supplier's payable is LOWERED by the total. This is NOT a cash movement.
+
+        A return is refused if it would drive any product's stock below zero (you
+        can't send back more than you hold). A supplier is required — the whole
+        point is to reduce what is owed to someone."""
+        if supplier_id is None:
+            raise ValidationError("Select a supplier to return goods to.")
+        if not self.db.query_one("SELECT id FROM suppliers WHERE id = ?", (supplier_id,)):
+            raise NotFoundError(f"Supplier {supplier_id} not found")
+        norm = []
+        for it in items or []:
+            pid = it.get("product_id")
+            qty = int(it.get("qty", 0))
+            cost = int(it.get("unit_cost_minor", 0))
+            if not pid or qty <= 0:
+                continue
+            if cost < 0:
+                raise ValidationError("Unit cost cannot be negative.")
+            norm.append({"product_id": pid, "qty": qty, "unit_cost_minor": cost,
+                         "line_total_minor": qty * cost})
+        if not norm:
+            raise ValidationError("Add at least one product to return.")
+        total = sum(line["line_total_minor"] for line in norm)
+
+        with self.db.transaction() as conn:
+            # pre-check stock: can't return more than is on hand
+            picked = []
+            for line in norm:
+                prow = conn.execute(
+                    "SELECT name, stock_qty FROM products WHERE id = ?",
+                    (line["product_id"],)).fetchone()
+                if prow is None:
+                    raise NotFoundError(f"Product {line['product_id']} not found")
+                if line["qty"] > prow["stock_qty"]:
+                    raise ValidationError(
+                        f"Can't return {line['qty']} of '{prow['name']}' — only "
+                        f"{prow['stock_qty']} in stock.")
+                picked.append((line, prow["name"]))
+
+            cur = conn.execute(
+                "INSERT INTO purchase_returns (supplier_id, purchase_id, return_date, "
+                "total_minor, notes, created_by) "
+                "VALUES (?,?,COALESCE(?, strftime('%Y-%m-%d %H:%M:%S','now')),?,?,?)",
+                (supplier_id, purchase_id, return_date, total, notes, user_id))
+            return_id = cur.lastrowid
+
+            for line, name in picked:
+                conn.execute(
+                    "INSERT INTO purchase_return_items (return_id, product_id, "
+                    "product_name, qty, unit_cost_minor, line_total_minor) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (return_id, line["product_id"], name, line["qty"],
+                     line["unit_cost_minor"], line["line_total_minor"]))
+                conn.execute(
+                    "UPDATE products SET stock_qty = stock_qty - ? WHERE id = ?",
+                    (line["qty"], line["product_id"]))
+
+        self.audit.record(action="PURCHASE_RETURN", user_id=user_id,
+                          entity_type="purchase_return", entity_id=return_id,
+                          details={"supplier_id": supplier_id, "lines": len(norm),
+                                   "total_minor": total})
+        log.info("Recorded purchase return id=%s supplier=%s lines=%d total_minor=%d",
+                 return_id, supplier_id, len(norm), total)
+        return {"return_id": return_id, "total_minor": total}
+
+    def reverse_purchase_return(self, return_id: int, *,
+                                user_id: int | None = None) -> None:
+        """Undo a purchase return: restore the stock it removed and delete it (so
+        the supplier payable goes back up). Items cascade-delete with the row."""
+        with self.db.transaction() as conn:
+            row = conn.execute("SELECT id FROM purchase_returns WHERE id = ?",
+                               (return_id,)).fetchone()
+            if row is None:
+                raise NotFoundError(f"Purchase return {return_id} not found")
+            items = conn.execute(
+                "SELECT product_id, qty FROM purchase_return_items WHERE return_id = ?",
+                (return_id,)).fetchall()
+            for it in items:
+                if it["product_id"] is not None:
+                    conn.execute(
+                        "UPDATE products SET stock_qty = stock_qty + ? WHERE id = ?",
+                        (it["qty"], it["product_id"]))
+            conn.execute("DELETE FROM purchase_returns WHERE id = ?", (return_id,))
+        self.audit.record(action="REVERSE_PURCHASE_RETURN", user_id=user_id,
+                          entity_type="purchase_return", entity_id=return_id,
+                          details={"lines": len(items)})
+        log.warning("Reversed purchase return id=%s; stock restored (%d lines)",
+                    return_id, len(items))
+
+    def list_purchase_returns(self, *, supplier_id: int | None = None,
+                             date_from: str | None = None,
+                             date_to: str | None = None) -> dict[str, Any]:
+        clauses, params = [], []
+        if supplier_id:
+            clauses.append("pr.supplier_id = ?"); params.append(supplier_id)
+        if date_from:
+            clauses.append("pr.return_date >= ?"); params.append(date_from)
+        if date_to:
+            clauses.append("pr.return_date <= ?"); params.append(date_to + " 23:59:59")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = [dict(r) for r in self.db.query(
+            f"""SELECT pr.id, substr(pr.return_date,1,16) AS date, pr.total_minor,
+                   COALESCE(s.name,'(removed)') AS supplier_name, pr.notes,
+                   (SELECT COUNT(*) FROM purchase_return_items i WHERE i.return_id = pr.id) AS lines
+                FROM purchase_returns pr
+                LEFT JOIN suppliers s ON s.id = pr.supplier_id
+                {where} ORDER BY pr.return_date DESC, pr.id DESC""", tuple(params))]
+        return {"rows": rows, "total": sum(r["total_minor"] for r in rows)}
 
     # -- reads --------------------------------------------------------
     def list_purchases(

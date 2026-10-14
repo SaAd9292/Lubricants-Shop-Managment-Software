@@ -45,7 +45,8 @@ class PayableService:
                    COALESCE(s.opening_debt_minor, 0) AS opening,
                    COALESCE(pu.purchased, 0)  AS purchased,
                    COALESCE(pu.paid_at, 0)    AS paid_at_purchase,
-                   COALESCE(pm.paid_later, 0) AS paid_later
+                   COALESCE(pm.paid_later, 0) AS paid_later,
+                   COALESCE(pr.returned, 0)   AS returned
             FROM suppliers s
             LEFT JOIN (SELECT supplier_id,
                               SUM(total_minor)       AS purchased,
@@ -55,6 +56,9 @@ class PayableService:
             LEFT JOIN (SELECT supplier_id, SUM(amount_minor) AS paid_later
                        FROM supplier_payments GROUP BY supplier_id) pm
                    ON pm.supplier_id = s.id
+            LEFT JOIN (SELECT supplier_id, SUM(total_minor) AS returned
+                       FROM purchase_returns WHERE supplier_id IS NOT NULL
+                       GROUP BY supplier_id) pr ON pr.supplier_id = s.id
             {where}
             ORDER BY s.name COLLATE NOCASE
             """,
@@ -64,7 +68,8 @@ class PayableService:
         for r in rows:
             r = dict(r)
             paid = r["paid_at_purchase"] + r["paid_later"]
-            balance = r["opening"] + r["purchased"] - paid
+            # a purchase return (debit note) lowers what we owe, like a payment
+            balance = r["opening"] + r["purchased"] - paid - r["returned"]
             if only_outstanding and balance <= 0:
                 continue
             out.append({"id": r["id"], "name": r["name"], "phone": r["phone"],
@@ -99,12 +104,19 @@ class PayableService:
                   COALESCE(method,'') AS method, COALESCE(notes,'') AS notes
                FROM supplier_payments WHERE supplier_id = ?
                ORDER BY payment_date DESC, id DESC""", (supplier_id,))]
+        returns = [dict(r) for r in self.db.query(
+            """SELECT id, substr(return_date,1,10) AS date, total_minor AS amount,
+                  COALESCE(notes,'') AS notes
+               FROM purchase_returns WHERE supplier_id = ?
+               ORDER BY return_date DESC, id DESC""", (supplier_id,))]
         purchased = sum(p["total"] for p in purchases)
         paid = sum(p["paid_at"] for p in purchases) + sum(p["amount"] for p in payments)
+        returned = sum(r["amount"] for r in returns)
         opening = sup["opening"]
         return {"supplier": dict(sup), "purchases": purchases, "payments": payments,
-                "purchased": purchased, "paid": paid, "opening": opening,
-                "balance": opening + purchased - paid}
+                "returns": returns, "purchased": purchased, "paid": paid,
+                "returned": returned, "opening": opening,
+                "balance": opening + purchased - paid - returned}
 
     def list_payments(self, *, date_from: str | None = None,
                       date_to: str | None = None) -> dict[str, Any]:

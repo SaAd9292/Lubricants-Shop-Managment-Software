@@ -1,22 +1,33 @@
 """New Purchase dialog: pick a supplier, add product lines, save.
 
+Layout follows the standard purchase-entry order:
+  header (supplier / date / bill no / notes)
+  -> keyboard line entry (Product -> Qty[Piece/Carton] -> Unit cost -> Disc -> Add)
+  -> cart of added lines
+  -> totals (subtotal -> bill discount -> advance tax -> grand total)
+  -> amount paid now (defaults to 0 = on credit)
+
+Entry is keyboard-driven, like the Back-date Entry form: Enter moves to the next
+field and Enter on the last field (Disc) adds the line and returns to Product.
+
 Saving records the purchase and increases each product's stock atomically
 (handled in PurchaseService within a single transaction).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, QEvent, QStringListModel, Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QDialog, QDoubleSpinBox,
-    QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QCompleter, QDateEdit, QDialog,
+    QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QWidget,
 )
 
 from ..controllers.purchase_controller import PurchaseController
 from ..core import money
-from ..ui.widgets import CartonQtyEntry
 from .product_picker_dialog import ProductPickerDialog
+
+CART_COLS = ["Product", "Qty", "Unit cost/pc", "Disc", "Line total", ""]
 
 
 class NewPurchaseDialog(QDialog):
@@ -25,110 +36,199 @@ class NewPurchaseDialog(QDialog):
         self.controller = controller
         self._symbol, self._minor_units = controller.currency()
         self._decimals = max(0, len(str(self._minor_units)) - 1)
-        self._updating = False
-        self._paid_touched = False   # has the user manually edited "amount paid"?
+        self._cart: list[dict] = []        # {product_id, name, qty, cost_minor, disc_minor}
+        self._name_index: dict[str, dict] = {}
         self._grand_minor = 0
         self.setWindowTitle("New Purchase")
-        self.setMinimumSize(760, 540)
+        self.setMinimumSize(880, 640)
+        self._open_full = True   # fill the screen on first show (see showEvent)
         self._build_ui()
+        self._refresh_products()
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        super().showEvent(event)
+        if getattr(self, "_open_full", False):
+            self._open_full = False
+            scr = self.screen().availableGeometry() if self.screen() else None
+            if scr is not None:
+                self.setGeometry(scr)   # fill the usable screen (minus taskbar)
+
+    # a consistent, comfortable height for every spin box so none render clipped
+    _FIELD_H = 32
 
     # -- UI -----------------------------------------------------------
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(22, 22, 22, 22)
-        root.setSpacing(12)
+        root.setContentsMargins(28, 24, 28, 22)
+        root.setSpacing(16)
 
         title = QLabel("New Purchase")
         title.setObjectName("PageTitle")
         root.addWidget(title)
 
-        # header form
-        form = QFormLayout()
+        hint = QLabel("Enter moves to the next field; Enter on Disc adds the item. "
+                      "Select a cart row and press Delete to remove it.")
+        hint.setObjectName("Muted")
+        root.addWidget(hint)
+
+        # ---- header: supplier / date / bill no / notes ----
+        header = QFormLayout()
+        header.setHorizontalSpacing(16)
+        header.setVerticalSpacing(12)
         self.supplier = QComboBox()
         self.supplier.addItem("— Select supplier —", None)
         for s in self.controller.active_suppliers():
             self.supplier.addItem(s["name"], s["id"])
+        header.addRow("Supplier", self.supplier)
         self.date = QDateEdit()
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("yyyy-MM-dd")
         self.date.setDate(QDate.currentDate())
-        # stock can't be received in the future — cap at today
         self.date.setMaximumDate(QDate.currentDate())
+        header.addRow("Date", self.date)
         self.invoice_no = QLineEdit()
         self.invoice_no.setPlaceholderText("Supplier's invoice/bill no (optional)")
+        header.addRow("Supplier invoice #", self.invoice_no)
         self.notes = QLineEdit()
         self.notes.setPlaceholderText("Notes (optional)")
-        form.addRow("Supplier", self.supplier)
-        form.addRow("Date", self.date)
-        form.addRow("Supplier invoice #", self.invoice_no)
-        form.addRow("Notes", self.notes)
+        header.addRow("Notes", self.notes)
+        root.addLayout(header)
 
-        # whole-bill discount, on top of any per-line discounts
+        # ---- line entry row (keyboard-driven) ----
+        entry = QFormLayout()
+        entry.setHorizontalSpacing(16)
+        entry.setVerticalSpacing(12)
+        self.prod = QLineEdit()
+        self.prod.setPlaceholderText("Type product name…")
+        self._suggest = QCompleter(self)
+        self._suggest.setCaseSensitivity(Qt.CaseInsensitive)
+        self._suggest.setFilterMode(Qt.MatchContains)
+        self._suggest.setCompletionMode(QCompleter.PopupCompletion)
+        self._suggest.setMaxVisibleItems(10)
+        self.prod.setCompleter(self._suggest)
+        self._suggest.activated[str].connect(self._on_pick)
+        prod_row = QHBoxLayout()
+        prod_row.setContentsMargins(0, 0, 0, 0)
+        prod_row.addWidget(self.prod, 1)
+        browse = QPushButton("Browse…")
+        browse.setObjectName("Secondary")
+        browse.setToolTip("Browse all products in a list")
+        browse.clicked.connect(self._browse_product)
+        prod_row.addWidget(browse)
+        prod_wrap = QWidget(); prod_wrap.setLayout(prod_row)
+        entry.addRow("Product", prod_wrap)
+
+        self.qty = QSpinBox()
+        self.qty.setRange(1, 1_000_000)
+        self.qty.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.qty.setMinimumHeight(self._FIELD_H)
+        self.unit = QComboBox()
+        self.unit.addItem("Piece", "piece")
+        self.unit.addItem("Carton", "carton")
+        self.unit.setMaximumWidth(120)
+        self.unit.currentIndexChanged.connect(self._update_unit_hint)
+        self.unit_hint = QLabel("")
+        self.unit_hint.setObjectName("Muted")
+        qty_row = QHBoxLayout()
+        qty_row.addWidget(self.qty, 1)
+        qty_row.addWidget(self.unit)
+        qty_row.addWidget(self.unit_hint)
+        qty_wrap = QWidget(); qty_wrap.setLayout(qty_row)
+        entry.addRow("Qty", qty_wrap)
+
+        self.cost = QDoubleSpinBox()
+        self.cost.setRange(0, 1_000_000_000)
+        self.cost.setDecimals(self._decimals)
+        self.cost.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.cost.setMinimumHeight(self._FIELD_H)
+        self.cost.setGroupSeparatorShown(True)
+        self.cost.setPrefix(f"{self._symbol} ")
+        entry.addRow("Unit cost/pc", self.cost)
+
+        self.line_disc = QDoubleSpinBox()
+        self.line_disc.setRange(0, 1_000_000_000)
+        self.line_disc.setDecimals(self._decimals)
+        self.line_disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.line_disc.setMinimumHeight(self._FIELD_H)
+        self.line_disc.setGroupSeparatorShown(True)
+        self.line_disc.setPrefix(f"{self._symbol} ")
+        disc_row = QHBoxLayout()
+        disc_row.addWidget(self.line_disc, 1)
+        add_btn = QPushButton("Add item")
+        add_btn.clicked.connect(self._add_line)
+        disc_row.addWidget(add_btn)
+        disc_wrap = QWidget(); disc_wrap.setLayout(disc_row)
+        entry.addRow("Disc (line)", disc_wrap)
+        root.addLayout(entry)
+
+        # Enter flows Product -> Qty -> Cost -> Disc -> (add)
+        for w in (self.prod, self.qty, self.cost, self.line_disc):
+            w.installEventFilter(self)
+
+        # ---- cart ----
+        self.table = QTableWidget(0, len(CART_COLS))
+        self.table.setHorizontalHeaderLabels(CART_COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.table.setColumnWidth(5, 40)
+        self.table.verticalHeader().setDefaultSectionSize(34)
+        self.table.setMinimumHeight(160)
+        self.table.cellClicked.connect(self._on_cart_cell)
+        self.table.installEventFilter(self)
+        root.addWidget(self.table, 1)
+
+        # ---- totals block (right-aligned) + amount paid ----
+        totals = QFormLayout()
+        totals.setHorizontalSpacing(16)
+        totals.setVerticalSpacing(10)
+        totals.setLabelAlignment(Qt.AlignRight)
+        self.subtotal_lbl = QLabel(self.controller.fmt(0))
+        totals.addRow("Subtotal", self.subtotal_lbl)
+
         self.bill_disc = QDoubleSpinBox()
         self.bill_disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.bill_disc.setMinimumHeight(self._FIELD_H)
         self.bill_disc.setDecimals(self._decimals)
         self.bill_disc.setGroupSeparatorShown(True)
         self.bill_disc.setRange(0, 1_000_000_000)
+        self.bill_disc.setPrefix(f"{self._symbol} ")
         self.bill_disc.valueChanged.connect(self._recompute)
-        form.addRow(f"Bill discount ({self._symbol})", self.bill_disc)
+        totals.addRow("Bill discount", self.bill_disc)
 
-        # amount paid now -> the remainder becomes a payable owed to the supplier
+        self.adv_tax = QDoubleSpinBox()
+        self.adv_tax.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.adv_tax.setMinimumHeight(self._FIELD_H)
+        self.adv_tax.setDecimals(self._decimals)
+        self.adv_tax.setGroupSeparatorShown(True)
+        self.adv_tax.setRange(0, 1_000_000_000)
+        self.adv_tax.setPrefix(f"{self._symbol} ")
+        self.adv_tax.setToolTip("Advance / withholding tax — actual amount, added to the bill.")
+        self.adv_tax.valueChanged.connect(self._recompute)
+        totals.addRow("Advance tax", self.adv_tax)
+
+        self.total_lbl = QLabel(self.controller.fmt(0))
+        self.total_lbl.setStyleSheet("font-size: 18px; font-weight: 700;")
+        totals.addRow("Grand total", self.total_lbl)
+
         self.paid = QDoubleSpinBox()
         self.paid.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.paid.setMinimumHeight(self._FIELD_H)
         self.paid.setDecimals(self._decimals)
         self.paid.setGroupSeparatorShown(True)
         self.paid.setRange(0, 1_000_000_000)
-        self.paid.valueChanged.connect(self._on_paid_changed)
-        pay_full = QPushButton("Full")
-        pay_full.setObjectName("Secondary")
-        pay_full.setFixedWidth(64)
-        pay_full.clicked.connect(self._pay_full)
-        paid_row = QHBoxLayout()
-        paid_row.setContentsMargins(0, 0, 0, 0)
-        paid_row.addWidget(self.paid, 1)
-        paid_row.addWidget(pay_full)
-        paid_container = QWidget()
-        paid_container.setLayout(paid_row)
-        form.addRow(f"Amount paid now ({self._symbol})", paid_container)
+        self.paid.setPrefix(f"{self._symbol} ")
+        self.paid.valueChanged.connect(self._update_credit)
+        self.paid.setToolTip("How much you pay the supplier now. 0 = fully on credit.")
+        totals.addRow("Amount paid now", self.paid)
         self.credit_lbl = QLabel("")
         self.credit_lbl.setObjectName("Muted")
-        form.addRow("", self.credit_lbl)
-        root.addLayout(form)
+        totals.addRow("", self.credit_lbl)
+        root.addLayout(totals)
 
-        # line items table
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(
-            ["Product", "Qty (ctn + pc)", f"Unit cost/pc ({self._symbol})",
-             f"Disc ({self._symbol})", "Line total"]
-        )
-        self.table.verticalHeader().setVisible(False)
-        # rows hold spin-box cell widgets; give them room so the ctn/pc and cost
-        # editors aren't vertically clipped
-        self.table.verticalHeader().setDefaultSectionSize(46)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.table.setColumnWidth(1, 168)
-        self.table.setColumnWidth(2, 120)
-        self.table.setColumnWidth(3, 100)
-        self.table.setColumnWidth(4, 110)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        root.addWidget(self.table, 1)
-
-        line_actions = QHBoxLayout()
-        add_line = QPushButton("+ Add product")
-        add_line.clicked.connect(self._add_product)
-        remove_line = QPushButton("Remove line")
-        remove_line.setObjectName("Secondary")
-        remove_line.clicked.connect(self._remove_line)
-        line_actions.addWidget(add_line)
-        line_actions.addWidget(remove_line)
-        line_actions.addStretch(1)
-        self.total_label = QLabel(self._fmt_total(0))
-        self.total_label.setStyleSheet("font-size: 18px; font-weight: 700;")
-        line_actions.addWidget(self.total_label)
-        root.addLayout(line_actions)
-
-        # dialog actions
+        # ---- dialog actions ----
         actions = QHBoxLayout()
         actions.addStretch(1)
         cancel = QPushButton("Cancel")
@@ -140,135 +240,198 @@ class NewPurchaseDialog(QDialog):
         actions.addWidget(save)
         root.addLayout(actions)
 
-    # -- line management ----------------------------------------------
-    def _add_product(self) -> None:
+        self.prod.setFocus()
+
+    # -- product lookup ----------------------------------------------
+    def _refresh_products(self) -> None:
+        try:
+            rows = self.controller.search_products("", 100000)
+        except TypeError:
+            rows = self.controller.search_products("")
+        self._name_index = {}
+        names: list[str] = []
+        for p in rows:
+            key = (p["name"] or "").lower()
+            if key and key not in self._name_index:
+                self._name_index[key] = p
+                names.append(p["name"])
+        self._suggest.setModel(QStringListModel(names, self._suggest))
+
+    def _current_product(self) -> dict | None:
+        return self._name_index.get(self.prod.text().strip().lower())
+
+    def _browse_product(self) -> None:
         picker = ProductPickerDialog(self.controller.search_products, self.controller.fmt)
-        if not picker.exec() or not picker.selected:
+        if picker.exec() and picker.selected:
+            self.prod.setText(picker.selected["name"])
+            self._on_pick(picker.selected["name"])
+
+    def _on_pick(self, text: str) -> None:
+        p = self._name_index.get((text or "").strip().lower())
+        if p:
+            self.prod.setText(p["name"])
+            self._update_unit_hint()
+            self.cost.setValue(float(p.get("purchase_price_minor") or 0) / self._minor_units)
+            self.line_disc.setValue(0)
+            self.qty.setFocus()
+            self.qty.selectAll()
+
+    def _pieces(self) -> int:
+        entered = int(self.qty.value())
+        if self.unit.currentData() == "carton":
+            p = self._current_product()
+            upc = max(1, int((p or {}).get("units_per_carton") or 1))
+            return entered * upc
+        return entered
+
+    def _update_unit_hint(self) -> None:
+        p = self._current_product()
+        upc = int((p or {}).get("units_per_carton") or 1)
+        if upc > 1:
+            self.unit_hint.setText(f"1 carton = {upc} pcs")
+        elif self.unit.currentData() == "carton":
+            self.unit_hint.setText("(not sold in cartons)")
+        else:
+            self.unit_hint.setText("")
+
+    # -- keyboard flow ------------------------------------------------
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                if obj is self.prod:
+                    if self._current_product() is not None:
+                        self._on_pick(self.prod.text())
+                    return True
+                if obj is self.qty:
+                    self.cost.setFocus(); self.cost.selectAll(); return True
+                if obj is self.cost:
+                    self.line_disc.setFocus(); self.line_disc.selectAll(); return True
+                if obj is self.line_disc:
+                    self._add_line(); return True
+            if (obj is self.table and key == Qt.Key_Delete):
+                self._remove_selected(); return True
+        return super().eventFilter(obj, event)
+
+    # -- cart ---------------------------------------------------------
+    def _add_line(self) -> None:
+        p = self._current_product()
+        if p is None:
+            QMessageBox.information(self, "Pick a product",
+                                   "Choose a product from the list first.")
+            self.prod.setFocus()
             return
-        p = picker.selected
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-
-        name_item = QTableWidgetItem(p["name"])
-        name_item.setData(Qt.UserRole, p["id"])
-        self.table.setItem(row, 0, name_item)
-
-        upc = max(1, int(p.get("units_per_carton") or 1))
-        qty = CartonQtyEntry(upc)
-        qty.set_total(upc if upc > 1 else 1)  # default: one carton (or one piece)
-        qty.valueChanged.connect(self._recompute)
-        self.table.setCellWidget(row, 1, qty)
-
-        cost = QDoubleSpinBox()
-        cost.setRange(0, 1_000_000_000)
-        cost.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        cost.setDecimals(self._decimals)
-        cost.setGroupSeparatorShown(True)
-        cost.setValue(float(p["purchase_price_minor"]) / self._minor_units)
-        cost.valueChanged.connect(self._recompute)
-        self.table.setCellWidget(row, 2, cost)
-
-        disc = QDoubleSpinBox()
-        disc.setRange(0, 1_000_000_000)
-        disc.setButtonSymbols(QAbstractSpinBox.NoButtons)
-        disc.setDecimals(self._decimals)
-        disc.setGroupSeparatorShown(True)
-        disc.setToolTip("Discount off this line (amount)")
-        disc.valueChanged.connect(self._recompute)
-        self.table.setCellWidget(row, 3, disc)
-
-        total_item = QTableWidgetItem("")
-        total_item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.table.setItem(row, 4, total_item)
-
+        qty = self._pieces()
+        if qty <= 0:
+            QMessageBox.information(self, "Quantity needed", "Enter a quantity.")
+            self.qty.setFocus()
+            return
+        cost_minor = money.to_minor(self.cost.value(), self._minor_units)
+        disc_minor = money.to_minor(self.line_disc.value(), self._minor_units)
+        gross = qty * cost_minor
+        if disc_minor > gross:
+            QMessageBox.information(self, "Discount too high",
+                                   "The line discount can't exceed the line total.")
+            self.line_disc.setFocus()
+            return
+        # same product already in the cart? bump its quantity
+        for ln in self._cart:
+            if ln["product_id"] == p["id"] and ln["cost_minor"] == cost_minor \
+                    and ln["disc_minor"] == disc_minor:
+                ln["qty"] += qty
+                break
+        else:
+            self._cart.append({"product_id": p["id"], "name": p["name"], "qty": qty,
+                               "cost_minor": cost_minor, "disc_minor": disc_minor})
+        self._render_cart()
         self._recompute()
+        # reset entry row, cursor back on Product
+        self.prod.clear()
+        self.qty.setValue(1)
+        self.unit.setCurrentIndex(0)
+        self.unit_hint.clear()
+        self.cost.setValue(0)
+        self.line_disc.setValue(0)
+        self.prod.setFocus()
 
-    def _remove_line(self) -> None:
-        row = self.table.currentRow()
-        if row >= 0:
-            self.table.removeRow(row)
+    def _autosize(self) -> None:
+        """Grow the cart (and the window) as lines are added, so you can see them
+        without scrolling — only ever grows, and never past the screen."""
+        rows = max(1, self.table.rowCount())
+        header_h = self.table.horizontalHeader().height() or 28
+        table_h = max(160, min(header_h + rows * 34 + 12, 560))
+        self.table.setMinimumHeight(table_h)
+        # never shrink below what the content needs; cap at ~95% of the screen
+        need = self.minimumSizeHint().height()
+        scr = self.screen().availableGeometry().height() if self.screen() else 1000
+        new_h = min(max(self.height(), need), max(need, int(scr * 0.95)))
+        if new_h > self.height():
+            self.resize(self.width(), new_h)
+
+    def _render_cart(self) -> None:
+        self.table.setRowCount(len(self._cart))
+        for r, ln in enumerate(self._cart):
+            line_total = ln["qty"] * ln["cost_minor"] - ln["disc_minor"]
+            cells = [ln["name"], str(ln["qty"]),
+                     self.controller.fmt(ln["cost_minor"]),
+                     ("− " + self.controller.fmt(ln["disc_minor"])) if ln["disc_minor"] else "—",
+                     self.controller.fmt(line_total), "✕"]
+            for c, val in enumerate(cells):
+                item = QTableWidgetItem(val)
+                if c in (1, 2, 3, 4):
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                if c == 5:
+                    item.setTextAlignment(Qt.AlignCenter)
+                    item.setForeground(Qt.red)
+                self.table.setItem(r, c, item)
+        self._autosize()
+
+    def _on_cart_cell(self, row: int, col: int) -> None:
+        if col == len(CART_COLS) - 1 and 0 <= row < len(self._cart):
+            self._cart.pop(row)
+            self._render_cart()
             self._recompute()
 
+    def _remove_selected(self) -> None:
+        row = self.table.currentRow()
+        if 0 <= row < len(self._cart):
+            self._cart.pop(row)
+            self._render_cart()
+            self._recompute()
+
+    # -- totals -------------------------------------------------------
     def _recompute(self) -> None:
-        if self._updating:
-            return
-        subtotal = 0
-        for row in range(self.table.rowCount()):
-            qty_w = self.table.cellWidget(row, 1)
-            cost_w = self.table.cellWidget(row, 2)
-            disc_w = self.table.cellWidget(row, 3)
-            if qty_w is None or cost_w is None:
-                continue
-            qty = qty_w.total_pieces()
-            unit_minor = money.to_minor(cost_w.value(), self._minor_units)
-            gross = qty * unit_minor
-            line_disc = money.to_minor(disc_w.value(), self._minor_units) if disc_w else 0
-            line_disc = min(line_disc, gross)
-            line_minor = gross - line_disc
-            subtotal += line_minor
-            self.table.item(row, 4).setText(
-                money.format_money(line_minor, self._symbol, self._minor_units)
-            )
-        bill_disc = money.to_minor(self.bill_disc.value(), self._minor_units)
-        bill_disc = min(bill_disc, subtotal)
-        grand = subtotal - bill_disc
+        subtotal = sum(ln["qty"] * ln["cost_minor"] - ln["disc_minor"] for ln in self._cart)
+        bill_disc = min(money.to_minor(self.bill_disc.value(), self._minor_units), subtotal)
+        tax = money.to_minor(self.adv_tax.value(), self._minor_units)
+        grand = subtotal - bill_disc + tax
         self._grand_minor = grand
-        if not self._paid_touched:
-            self._updating = True
-            self.paid.setValue(grand / self._minor_units)
-            self._updating = False
-        self.total_label.setText(self._fmt_total(grand))
+        self.subtotal_lbl.setText(self.controller.fmt(subtotal))
+        self.total_lbl.setText(self.controller.fmt(grand))
         self._update_credit()
-
-    def _on_paid_changed(self) -> None:
-        if self._updating:
-            return
-        self._paid_touched = True
-        self._update_credit()
-
-    def _pay_full(self) -> None:
-        self._paid_touched = False
-        self._recompute()
 
     def _update_credit(self) -> None:
         paid_minor = money.to_minor(self.paid.value(), self._minor_units)
         credit = self._grand_minor - paid_minor
         if credit > 0:
-            self.credit_lbl.setText(
-                "On credit (payable to supplier):  "
-                + money.format_money(credit, self._symbol, self._minor_units))
+            self.credit_lbl.setText("On credit (payable to supplier):  "
+                                    + self.controller.fmt(credit))
         elif credit < 0:
             self.credit_lbl.setText("Amount paid exceeds the total.")
         else:
             self.credit_lbl.setText("Paid in full.")
-
-    def _fmt_total(self, minor: int) -> str:
-        return "Total:  " + money.format_money(minor, self._symbol, self._minor_units)
 
     # -- save ---------------------------------------------------------
     def _save(self) -> None:
         if self.supplier.currentData() is None:
             QMessageBox.warning(self, "Supplier required", "Please select a supplier.")
             return
-        if self.table.rowCount() == 0:
+        if not self._cart:
             QMessageBox.warning(self, "No items", "Add at least one product line.")
             return
-
-        lines = []
-        for row in range(self.table.rowCount()):
-            qty = self.table.cellWidget(row, 1).total_pieces()
-            if qty <= 0:
-                QMessageBox.warning(self, "Quantity required",
-                                    f"'{self.table.item(row, 0).text()}' has no quantity.")
-                return
-            disc_w = self.table.cellWidget(row, 3)
-            lines.append({
-                "product_id": self.table.item(row, 0).data(Qt.UserRole),
-                "qty": qty,
-                "unit_cost": self.table.cellWidget(row, 2).value(),
-                "discount": disc_w.value() if disc_w else 0,
-            })
-
+        lines = [{"product_id": ln["product_id"], "qty": ln["qty"],
+                  "unit_cost": ln["cost_minor"] / self._minor_units,
+                  "discount": ln["disc_minor"] / self._minor_units} for ln in self._cart]
         ok, msg, _ = self.controller.create(
             supplier_id=self.supplier.currentData(),
             lines=lines,
@@ -277,6 +440,7 @@ class NewPurchaseDialog(QDialog):
             notes=self.notes.text().strip() or None,
             amount_paid=self.paid.value(),
             discount=self.bill_disc.value(),
+            tax=self.adv_tax.value(),
         )
         if ok:
             QMessageBox.information(self, "Saved", "Purchase recorded and stock updated.")

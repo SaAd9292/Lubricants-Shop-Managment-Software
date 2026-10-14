@@ -49,10 +49,12 @@ class PurchaseController:
     def create(self, *, supplier_id: int | None, lines: list[dict[str, Any]],
                purchase_date: str | None = None, supplier_invoice_no: str | None = None,
                notes: str | None = None, amount_paid: float | None = None,
-               discount: float = 0):
+               discount: float = 0, tax: float = 0):
         """lines: [{product_id, qty, unit_cost (decimal), discount (decimal)?}].
         discount (decimal) = whole-bill discount on top of any per-line discounts.
-        amount_paid (decimal) = paid to the supplier now; None means paid in full."""
+        tax (decimal) = advance/withholding tax as an actual amount, added after
+        the discount. amount_paid (decimal) = paid to the supplier now; None means
+        paid in full."""
         _, mu = self.currency()
         items: list[dict[str, Any]] = []
         try:
@@ -66,37 +68,72 @@ class PurchaseController:
             amount_paid_minor = (None if amount_paid is None
                                  else money.to_minor(amount_paid, mu))
             discount_minor = money.to_minor(discount or 0, mu)
+            tax_minor = money.to_minor(tax or 0, mu)
         except (ValueError, ArithmeticError, KeyError):
-            return False, "Invalid line data (check quantities, costs, discounts, amount paid).", None
+            return False, "Invalid line data (check quantities, costs, discounts, tax, amount paid).", None
 
         def op(uid):
             return self.purchases.create_purchase(
                 supplier_id=supplier_id, items=items, purchase_date=purchase_date,
                 supplier_invoice_no=supplier_invoice_no, notes=notes,
                 amount_paid_minor=amount_paid_minor, discount_minor=discount_minor,
-                user_id=uid,
+                tax_minor=tax_minor, user_id=uid,
             )
         return self._guarded(op)
 
     def edit(self, purchase_id: int, *, supplier_id=None, purchase_date=None,
-             supplier_invoice_no=None, notes=None, amount_paid=None):
-        """Edit a purchase header (supplier/date/bill no/note/amount paid) — admin
-        only. amount_paid is a decimal. Returns (ok, msg, purchase_id)."""
+             supplier_invoice_no=None, notes=None, amount_paid=None,
+             discount=None, tax=None):
+        """Edit a purchase header (supplier/date/bill no/note/amount paid/bill
+        discount/advance tax) — admin only. Decimal amounts. Returns
+        (ok, msg, purchase_id)."""
         _, mu = self.currency()
-        amt = None
-        if amount_paid is not None:
-            try:
-                amt = money.to_minor(amount_paid, mu)
-            except (ValueError, ArithmeticError):
-                return False, "Invalid amount paid.", None
+        try:
+            amt = None if amount_paid is None else money.to_minor(amount_paid, mu)
+            disc = None if discount is None else money.to_minor(discount, mu)
+            tx = None if tax is None else money.to_minor(tax, mu)
+        except (ValueError, ArithmeticError):
+            return False, "Invalid amount.", None
 
         def op(uid):
             self.purchases.update_purchase(
                 purchase_id, supplier_id=supplier_id, purchase_date=purchase_date,
                 supplier_invoice_no=supplier_invoice_no, notes=notes,
-                amount_paid_minor=amt, user_id=uid)
+                amount_paid_minor=amt, discount_minor=disc, tax_minor=tx, user_id=uid)
             return purchase_id
         return self._guarded(op)
+
+    def create_return(self, *, supplier_id: int | None, lines: list[dict[str, Any]],
+                      purchase_id: int | None = None, return_date: str | None = None,
+                      notes: str | None = None):
+        """Return goods to a supplier (debit note) — admin only. lines:
+        [{product_id, qty, unit_cost (decimal)}]. Reduces stock and the supplier
+        payable. Returns (ok, msg, {return_id, total_minor})."""
+        _, mu = self.currency()
+        items: list[dict[str, Any]] = []
+        try:
+            for ln in lines:
+                items.append({
+                    "product_id": ln["product_id"],
+                    "qty": int(ln["qty"]),
+                    "unit_cost_minor": money.to_minor(ln["unit_cost"], mu),
+                })
+        except (ValueError, ArithmeticError, KeyError):
+            return False, "Invalid line data (check quantities and costs).", None
+
+        def op(uid):
+            return self.purchases.create_purchase_return(
+                supplier_id=supplier_id, items=items, purchase_id=purchase_id,
+                return_date=return_date, notes=notes, user_id=uid)
+        return self._guarded(op)
+
+    def list_returns(self, **kwargs):
+        return self.purchases.list_purchase_returns(**kwargs)
+
+    def reverse_return(self, return_id: int):
+        return self._guarded(
+            lambda uid: self.purchases.reverse_purchase_return(return_id, user_id=uid)
+            or return_id)
 
     def delete(self, purchase_id: int):
         """Permanently delete a purchase and reverse its stock (admin only). The

@@ -154,7 +154,8 @@ CREATE TABLE IF NOT EXISTS purchases (
     supplier_invoice_no TEXT,                 -- supplier's own reference
     purchase_date TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
     discount_minor INTEGER NOT NULL DEFAULT 0 CHECK (discount_minor >= 0),  -- whole-bill discount (Rs off), on top of any per-line discounts
-    total_minor   INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),      -- after all discounts
+    tax_minor     INTEGER NOT NULL DEFAULT 0 CHECK (tax_minor >= 0),        -- advance/withholding tax (actual Rs, not %), added after discount
+    total_minor   INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),      -- subtotal - discount + tax
     -- how much of `total_minor` was paid at purchase time; the remainder is a
     -- payable owed to the supplier. Later payments live in supplier_payments.
     amount_paid_minor INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_minor >= 0),
@@ -194,6 +195,32 @@ CREATE TABLE IF NOT EXISTS purchase_items (
 );
 CREATE INDEX IF NOT EXISTS idx_pitems_purchase ON purchase_items(purchase_id);
 CREATE INDEX IF NOT EXISTS idx_pitems_product  ON purchase_items(product_id);
+
+-- ---------- Purchase returns (goods sent back to a supplier / debit note) ----
+-- Reduces stock and LOWERS the supplier payable. NOT a cash movement (money does
+-- not leave or enter the till), so it never touches the cash drawer.
+CREATE TABLE IF NOT EXISTS purchase_returns (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id   INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+    purchase_id   INTEGER REFERENCES purchases(id) ON DELETE SET NULL,  -- optional source bill
+    return_date   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    total_minor   INTEGER NOT NULL DEFAULT 0 CHECK (total_minor >= 0),
+    notes         TEXT,
+    created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now'))
+);
+CREATE TABLE IF NOT EXISTS purchase_return_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    return_id       INTEGER NOT NULL REFERENCES purchase_returns(id) ON DELETE CASCADE,
+    product_id      INTEGER REFERENCES products(id) ON DELETE SET NULL,
+    product_name    TEXT,
+    qty             INTEGER NOT NULL CHECK (qty > 0),
+    unit_cost_minor INTEGER NOT NULL CHECK (unit_cost_minor >= 0),
+    line_total_minor INTEGER NOT NULL CHECK (line_total_minor >= 0)
+);
+CREATE INDEX IF NOT EXISTS idx_purret_supplier     ON purchase_returns(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_purret_date         ON purchase_returns(return_date);
+CREATE INDEX IF NOT EXISTS idx_purretitems_return  ON purchase_return_items(return_id);
 
 -- ---------- Payment accounts (named Bank / EasyPaisa / JazzCash) -----
 CREATE TABLE IF NOT EXISTS payment_accounts (

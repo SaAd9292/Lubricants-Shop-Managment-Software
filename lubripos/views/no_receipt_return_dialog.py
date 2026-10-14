@@ -86,13 +86,26 @@ class NoReceiptReturnDialog(QDialog):
         self.prod.installEventFilter(self)
         form.addRow("Product", self.prod)
 
-        # Qty — big +/- buttons so it's usable by touch/mouse without typing
+        # Qty + unit (Piece / Carton). Carton multiplies by the product's
+        # units-per-carton; the refund hint stays per piece. Stock is pieces.
         self.qty = QSpinBox()
         self.qty.setRange(1, 1_000_000)
         self.qty.setButtonSymbols(QAbstractSpinBox.PlusMinus)
         self.qty.setMinimumHeight(34)
         self.qty.valueChanged.connect(self._sync_refund_default)
-        form.addRow("Qty", self.qty)
+        self.unit = QComboBox()
+        self.unit.addItem("Piece", "piece")
+        self.unit.addItem("Carton", "carton")
+        self.unit.setMaximumWidth(120)
+        self.unit.currentIndexChanged.connect(self._on_unit_changed)
+        self.unit_hint = QLabel("")
+        self.unit_hint.setObjectName("Muted")
+        qty_row = QHBoxLayout()
+        qty_row.addWidget(self.qty, 1)
+        qty_row.addWidget(self.unit)
+        qty_row.addWidget(self.unit_hint)
+        qty_wrap = QWidget(); qty_wrap.setLayout(qty_row)
+        form.addRow("Qty", qty_wrap)
 
         # Refund (total for this line)
         sym, _ = self.controller.currency()
@@ -219,26 +232,54 @@ class NoReceiptReturnDialog(QDialog):
         _, mu = self.controller.currency()
         return mu or 100
 
+    def _pieces(self) -> int:
+        """Entered quantity converted to pieces (carton → × units-per-carton)."""
+        entered = int(self.qty.value())
+        if self.unit.currentData() == "carton":
+            p = self._current_product()
+            upc = max(1, int((p or {}).get("units_per_carton") or 1))
+            return entered * upc
+        return entered
+
+    def _update_unit_hint(self) -> None:
+        """Show the carton size (pieces per carton) of the selected product next
+        to the unit selector, so the operator knows what a carton means."""
+        p = self._current_product()
+        upc = int((p or {}).get("units_per_carton") or 1)
+        if upc > 1:
+            self.unit_hint.setText(f"1 carton = {upc} pcs")
+        elif self.unit.currentData() == "carton":
+            self.unit_hint.setText("(not sold in cartons)")
+        else:
+            self.unit_hint.setText("")
+
+    def _on_unit_changed(self) -> None:
+        self._update_unit_hint()
+        self._sync_refund_default()
+
     def _on_pick(self, text: str) -> None:
         p = self._name_index.get((text or "").strip().lower())
         if p:
+            self._update_unit_hint()
             self._sync_refund_default()
             self.qty.setFocus()
             self.qty.selectAll()
 
     def _sync_refund_default(self) -> None:
-        """Default the line refund to the product's current sale price × qty. The
-        operator can override it — there is no receipt, so this is only a hint."""
+        """Default the line refund to the product's current sale price × pieces.
+        The operator can override it — there is no receipt, so this is only a
+        hint. Price is per piece, so carton qty is converted first."""
         p = self._current_product()
         if p is None:
             return
         sp = p.get("sale_price_minor") or 0
-        self.refund.setValue(sp * int(self.qty.value()) / self._mu())
+        self.refund.setValue(sp * self._pieces() / self._mu())
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
         if (obj is self.prod and event.type() == QEvent.KeyPress
                 and event.key() in (Qt.Key_Return, Qt.Key_Enter)):
             if self._current_product() is not None:
+                self._update_unit_hint()
                 self._sync_refund_default()
                 self.qty.setFocus()
                 self.qty.selectAll()
@@ -253,16 +294,24 @@ class NoReceiptReturnDialog(QDialog):
                                     "Choose a product from the list first.")
             self.prod.setFocus()
             return
+        qty = self._pieces()
+        if qty <= 0:
+            QMessageBox.information(self, "Quantity needed",
+                                    "Enter how many are being returned.")
+            self.qty.setFocus()
+            return
         mu = self._mu()
         self._cart.append({
             "product_id": p["id"], "name": p["name"],
-            "qty": int(self.qty.value()),
+            "qty": qty,
             "refund_minor": money.to_minor(self.refund.value(), mu),
         })
         self._render_cart()
         self._update_total()
         self.prod.clear()
         self.qty.setValue(1)
+        self.unit.setCurrentIndex(0)   # back to Piece
+        self.unit_hint.clear()
         self.refund.setValue(0)
         self.prod.setFocus()
 
