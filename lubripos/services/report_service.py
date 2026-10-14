@@ -92,8 +92,7 @@ class ReportService:
         # was credited to the customer's account — method 'Ledger' — so no money
         # left the till; the shop now owes that customer).
         for r in ret_rows:
-            r["paid"] = ("Not paid (credited to account)"
-                         if r["method"] == "Ledger" else f"Paid ({r['method']})")
+            r["paid"] = "Not paid" if r["method"] == "Ledger" else "Paid"
         refunds_total = sum(r["amount"] for r in ret_rows)
 
         # -- section 3: money received (real cash/bank IN today) --
