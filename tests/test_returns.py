@@ -122,6 +122,24 @@ def main() -> int:
     ss.reverse_return(creditret["return_id"])
     check(cs.balance_owed(rcid) == 10000, "reversing the credit return restores the tab")
 
+    print("\n[returns] cash refund leaves the till; bank refund does not")
+    from lubripos.services.cash_service import CashService
+    cash = CashService(ctx.db)
+    pid3 = ps.create({"name": "Coolant", "sale_price_minor": 4000,
+                      "purchase_price_minor": 2000, "stock_qty": 20})
+    s3 = ss.create_sale(items=[{"product_id": pid3, "qty": 3}], cashier_id=1,
+                        cashier_name="S", payment_method="Cash")
+    it3 = ss.get_sale(s3["id"])["items"][0]["id"]
+    before = cash.reconciliation("2026-09-20")["refunds"]
+    ss.create_return(s3["id"], [{"sale_item_id": it3, "qty": 1}],
+                     method="Cash", return_date="2026-09-20")
+    after_cash = cash.reconciliation("2026-09-20")["refunds"]
+    check(after_cash - before == 4000, "a CASH refund is deducted from the till (4000)")
+    ss.create_return(s3["id"], [{"sale_item_id": it3, "qty": 1}],
+                     method="Bank", return_date="2026-09-20")
+    after_bank = cash.reconciliation("2026-09-20")["refunds"]
+    check(after_bank == after_cash, "a BANK refund does NOT touch the till")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

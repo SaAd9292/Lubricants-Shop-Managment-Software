@@ -467,6 +467,49 @@ class CustomerService:
         return {"payment_id": payment_id, "amount_minor": row["amount_minor"],
                 "customer_id": row["customer_id"]}
 
+    def list_payouts(self, *, date_from: str | None = None,
+                     date_to: str | None = None, limit: int = 500,
+                     offset: int = 0) -> dict[str, Any]:
+        """All payouts (money paid BACK to customers), newest first, optionally
+        within an inclusive date range. Each row: id, date, customer, amount,
+        method, account, note."""
+        conds, params = [], []
+        if date_from:
+            conds.append("substr(po.payout_date,1,10) >= ?"); params.append(date_from[:10])
+        if date_to:
+            conds.append("substr(po.payout_date,1,10) <= ?"); params.append(date_to[:10])
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+        rows = [dict(r) for r in self.db.query(
+            "SELECT po.id, substr(po.payout_date,1,16) AS date, "
+            "COALESCE(c.name,'(removed)') AS customer, po.amount_minor AS amount, "
+            "COALESCE(po.method,'Cash') AS method, "
+            "COALESCE(po.account_name,'') AS account, COALESCE(po.notes,'') AS notes "
+            "FROM customer_payouts po LEFT JOIN customers c ON c.id = po.customer_id "
+            f"{where} ORDER BY po.payout_date DESC, po.id DESC LIMIT ? OFFSET ?",
+            tuple(params) + (limit, offset))]
+        total = self.db.query_one(
+            f"SELECT COUNT(*) AS n FROM customer_payouts po {where}", tuple(params))["n"]
+        paid = sum(r["amount"] for r in rows)
+        return {"rows": rows, "total": total, "sum_minor": paid}
+
+    def reverse_payout(self, payout_id: int, *, user_id: int | None = None) -> dict[str, Any]:
+        """Undo a payout: delete the row. The customer's balance and Cash-in-Hand
+        self-correct (both derived from this ledger). Audited."""
+        row = self.db.query_one(
+            "SELECT customer_id, amount_minor FROM customer_payouts WHERE id = ?",
+            (payout_id,))
+        if not row:
+            raise NotFoundError(f"Payout {payout_id} not found")
+        self.db.execute("DELETE FROM customer_payouts WHERE id = ?", (payout_id,))
+        self.audit.record(action="REVERSE_PAYOUT", user_id=user_id,
+                          entity_type="customer_payout", entity_id=payout_id,
+                          details={"customer_id": row["customer_id"],
+                                   "amount": row["amount_minor"]})
+        log.warning("Customer payout id=%s reversed (deleted); balance restored",
+                    payout_id)
+        return {"payout_id": payout_id, "amount_minor": row["amount_minor"],
+                "customer_id": row["customer_id"]}
+
     # -- writes -------------------------------------------------------
     def update(self, customer_id: int, data: dict[str, Any],
                *, user_id: int | None = None) -> None:

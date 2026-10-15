@@ -146,8 +146,16 @@ def main() -> int:
     # put them in credit: record a recovery with no debt -> balance goes negative
     cs.record_payment(poid, 5000, method="Cash")
     check(cs.balance_owed(poid) == -5000, "customer is Rs 50 in credit (we owe them)")
-    cs.record_payout(poid, 5000, method="Cash")
+    pay_id = cs.record_payout(poid, 5000, method="Cash", payout_date="2026-09-10 12:00:00")
     check(cs.balance_owed(poid) == 0, "paying them back settles the credit to zero")
+    lp = cs.list_payouts(date_from="2026-09-01", date_to="2026-09-30")
+    check(len(lp["rows"]) == 1 and lp["rows"][0]["customer"] == "Owed Customer"
+          and lp["rows"][0]["amount"] == 5000,
+          "payout is listed with the customer's name and amount")
+    cs.reverse_payout(pay_id)
+    check(cs.balance_owed(poid) == -5000, "reversing the payout puts the credit back")
+    check(len(cs.list_payouts(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
+          "reversed payout no longer listed")
 
     ctx.shutdown()
     n = sum(_r); print(f"\n==== {n}/{len(_r)} checks passed ====")

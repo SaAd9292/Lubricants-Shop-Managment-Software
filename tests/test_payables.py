@@ -93,6 +93,16 @@ def main() -> int:
     check(len(led["payments"]) == 1, "ledger lists the payment")
     check(led["balance"] == 15000, "ledger balance 15000")
 
+    print("\n[payables] ledger date filter narrows lists but keeps the true balance")
+    # both purchases were created 'now'; filter to an old window -> empty lists,
+    # but the balance must still be the real all-time balance.
+    led_old = pay.supplier_ledger(sid, date_from="2000-01-01", date_to="2000-12-31")
+    check(len(led_old["purchases"]) == 0 and led_old["purchased"] == 0,
+          "no purchases in the out-of-range window")
+    check(led_old["balance"] == 15000, "balance stays all-time (15000) despite the filter")
+    led_now = pay.supplier_ledger(sid, date_from="2000-01-01")  # open-ended to today
+    check(len(led_now["purchases"]) == 2, "open-ended range includes today's purchases")
+
     print("\n[payables] edit a purchase header (amount paid / supplier)")
     sid2 = sup_s.create({"name": "Reassign Co"})
     p_id = pu.create_purchase(supplier_id=sid, amount_paid_minor=0,

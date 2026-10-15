@@ -209,6 +209,18 @@ def main() -> int:
     bal = cust_s.balance_owed(cid)
     check(bal == -(5000 + 30000), f"customer ledger shows the credit: balance {bal} (shop owes them 35000)")
 
+    print("\n[report] paying a customer back shows in the DSR + reduces cash")
+    cust_s.record_payout(cid, 4000, method="Cash", account_id=None, account_name=None,
+                         notes="", payout_date=today + " 15:00:00", user_id=1)
+    d3 = rs.daily_sales(today)
+    s3 = {s["name"]: s for s in d3["sections"]}
+    check("Customer payouts (paid back)" in s3, "DSR has a Customer payouts section")
+    po = s3["Customer payouts (paid back)"]
+    check(po["total"] == 4000 and any(r["amount"] == 4000 for r in po["rows"]),
+          "the payout is itemised with its amount")
+    drawer = {r["item"]: r["amount"] for r in s3["Cash drawer"]["rows"]}
+    check(drawer.get("Customer payouts") == -4000, "cash drawer deducts the cash payout")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

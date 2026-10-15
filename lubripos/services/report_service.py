@@ -185,6 +185,19 @@ class ReportService:
                WHERE sp.payment_date LIKE ? ORDER BY sp.id""", (like,))]
         sup_pay_total = sum(r["amount"] for r in sup_pay_rows)
 
+        # customer payouts today — money paid BACK to a customer (shop owed them),
+        # itemised by WHO was paid. Cash ones leave the till (the cash drawer
+        # already deducts them); listed here so the day shows who got paid.
+        payout_rows = [dict(r) for r in self.db.query(
+            """SELECT substr(po.payout_date,12,5) AS time,
+                  COALESCE(c.name,'(removed)') AS customer,
+                  COALESCE(po.method,'Cash') AS method,
+                  po.amount_minor AS amount
+               FROM customer_payouts po
+               LEFT JOIN customers c ON c.id = po.customer_id
+               WHERE po.payout_date LIKE ? ORDER BY po.id""", (like,))]
+        payout_total = sum(r["amount"] for r in payout_rows)
+
         # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
             """SELECT COUNT(*) n, COALESCE(SUM(subtotal_minor),0) sub,
@@ -274,6 +287,12 @@ class ReportService:
                              _col("amount", "Amount", "right", True)],
                  "rows": sup_pay_rows,
                  "total_label": "Total supplier payments", "total": sup_pay_total},
+                {"name": "Customer payouts (paid back)",
+                 "columns": [_col("time", "Time"), _col("customer", "Customer"),
+                             _col("method", "Method"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": payout_rows,
+                 "total_label": "Total customer payouts", "total": payout_total},
                 {"name": "Money received",
                  "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],

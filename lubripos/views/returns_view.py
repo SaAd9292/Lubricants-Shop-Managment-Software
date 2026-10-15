@@ -151,11 +151,16 @@ class ReturnsView(QWidget):
         self.ret_date.setToolTip("Date to record this return on (back-date if needed)")
         footer.addWidget(self.ret_date)
         footer.addSpacing(12)
-        self.credit_cb = QCheckBox("Credit to customer account")
-        self.credit_cb.setToolTip("Put the refund on the customer's ledger instead "
-                                  "of paying cash now (needs a customer on the bill)")
-        self.credit_cb.setEnabled(False)
-        footer.addWidget(self.credit_cb)
+        footer.addWidget(QLabel("Refund via"))
+        self.refund_method = QComboBox()
+        for label, value in (("Cash", "Cash"), ("Bank / transfer", "Bank"),
+                             ("EasyPaisa", "EasyPaisa"), ("JazzCash", "JazzCash"),
+                             ("Credit to customer account", "Ledger")):
+            self.refund_method.addItem(label, value)
+        self.refund_method.setToolTip("How the refund is paid: cash out of the "
+                                      "till, a wallet/bank transfer, or credited to "
+                                      "the customer's account (needs a customer on the bill)")
+        footer.addWidget(self.refund_method)
         footer.addStretch(1)
         self.total_lbl = QLabel("")
         self.total_lbl.setStyleSheet("font-weight:700; font-size:15px;")
@@ -200,6 +205,13 @@ class ReturnsView(QWidget):
         self.h_to.setDate(QDate.currentDate())
         self.h_to.dateChanged.connect(lambda _=None: self._reload_history())
         hist_head.addWidget(self.h_to)
+        self.view_btn = QPushButton("View details")
+        self.view_btn.setObjectName("Secondary")
+        self.view_btn.setToolTip("See the products, quantities and refund of the "
+                                 "selected return")
+        self.view_btn.clicked.connect(self._view_details)
+        self.view_btn.setEnabled(False)
+        hist_head.addWidget(self.view_btn)
         self.edit_btn = QPushButton("Edit selected return")
         self.edit_btn.setObjectName("Secondary")
         self.edit_btn.setToolTip("Correct this return's date, refund method or note "
@@ -225,6 +237,7 @@ class ReturnsView(QWidget):
         self.history.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.history.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.history.itemSelectionChanged.connect(self._sync_hist_btns)
+        self.history.doubleClicked.connect(self._view_details)
         root.addWidget(self.history, 1)
 
         self._reload_history()
@@ -311,10 +324,14 @@ class ReturnsView(QWidget):
             f"   •   Status: {status}")
         self.all_btn.setEnabled(can and not is_void and any_returnable)
         self.cancel_btn.setEnabled(True)
+        # enable the 'Credit to customer account' option only when the bill has a
+        # customer; if it was selected and there's none, fall back to Cash.
         has_customer = bool(sale.get("customer_id"))
-        self.credit_cb.setEnabled(can and not is_void and has_customer)
-        if not has_customer:
-            self.credit_cb.setChecked(False)
+        idx = self.refund_method.findData("Ledger")
+        if idx >= 0:
+            self.refund_method.model().item(idx).setEnabled(has_customer)
+        if not has_customer and self.refund_method.currentData() == "Ledger":
+            self.refund_method.setCurrentIndex(0)   # Cash
         self._recalc()
 
     def _select_all(self) -> None:
@@ -349,13 +366,24 @@ class ReturnsView(QWidget):
         if confirm != QMessageBox.Yes:
             return
         rdate = self.ret_date.date().toString("yyyy-MM-dd")
-        to_ledger = self.credit_cb.isChecked() and self._sale.get("customer_id")
-        credit_id = self._sale.get("customer_id") if to_ledger else None
+        method_val = self.refund_method.currentData()
+        credit_id = None
+        pay_method = None
+        if method_val == "Ledger":
+            credit_id = self._sale.get("customer_id")
+            if not credit_id:
+                QMessageBox.information(self, "No customer",
+                                       "This bill has no customer to credit. "
+                                       "Choose a cash/bank refund instead.")
+                return
+        else:
+            pay_method = method_val
         ok, msg, data = self.controller.create_return(
-            self._sale["id"], lines, return_date=rdate, credit_customer_id=credit_id)
+            self._sale["id"], lines, return_date=rdate, method=pay_method,
+            credit_customer_id=credit_id)
         if ok:
             how = ("credited to the customer's account"
-                   if credit_id else "refunded")
+                   if credit_id else f"refunded via {pay_method}")
             QMessageBox.information(
                 self, "Returned",
                 f"Return recorded: stock restored and "
@@ -403,7 +431,9 @@ class ReturnsView(QWidget):
         self._sync_hist_btns()
 
     def _sync_hist_btns(self) -> None:
-        on = current_session.can("sale.void") and self.history.currentRow() >= 0
+        has_sel = self.history.currentRow() >= 0
+        on = current_session.can("sale.void") and has_sel
+        self.view_btn.setEnabled(has_sel)   # viewing needs no special privilege
         self.edit_btn.setEnabled(on)
         self.reverse_btn.setEnabled(on)
 
@@ -413,6 +443,17 @@ class ReturnsView(QWidget):
             return None
         it = self.history.item(row, 0)
         return it.data(Qt.UserRole) if it else None
+
+    def _view_details(self) -> None:
+        rid = self._selected_return_id()
+        if rid is None:
+            return
+        try:
+            detail = self.controller.return_detail(rid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not open", str(exc))
+            return
+        ReturnDetailDialog(detail, self.controller.fmt, self).exec()
 
     def _edit_selected(self) -> None:
         if not current_session.can("sale.void"):
@@ -508,3 +549,52 @@ class ReturnEditDialog(QDialog):
         return {"date": self.date.date().toString("yyyy-MM-dd"),
                 "method": self.method.currentText(),
                 "notes": self.note.text().strip()}
+
+
+class ReturnDetailDialog(QDialog):
+    """Read-only view of a return: header + the products/quantities refunded."""
+
+    def __init__(self, detail: dict, fmt_fn, parent=None) -> None:
+        super().__init__(parent)
+        self._fmt = fmt_fn
+        self.setWindowTitle(f"Return #{detail.get('id', '')}")
+        self.setMinimumWidth(520)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(12)
+
+        inv = detail.get("invoice") or "No receipt"
+        meta = QLabel(
+            f"<b>Date:</b> {detail.get('date', '')}<br>"
+            f"<b>Invoice:</b> {inv}<br>"
+            f"<b>Refund via:</b> {detail.get('method', 'Cash')}<br>"
+            f"<b>Note:</b> {detail.get('notes') or '—'}")
+        meta.setTextFormat(Qt.RichText)
+        root.addWidget(meta)
+
+        items = detail.get("items", [])
+        table = QTableWidget(len(items), 3)
+        table.setHorizontalHeaderLabels(["Product", "Qty", "Refund"])
+        table.verticalHeader().setVisible(False)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for r, it in enumerate(items):
+            cells = [it.get("product_name") or "(removed product)",
+                     str(it.get("qty", 0)),
+                     self._fmt(it.get("line_total_minor", 0))]
+            for c, val in enumerate(cells):
+                cell = QTableWidgetItem(val)
+                if c in (1, 2):
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                table.setItem(r, c, cell)
+        root.addWidget(table, 1)
+
+        total = QLabel(f"<b>Total refund:&nbsp;&nbsp; {self._fmt(detail.get('refund', 0))}</b>")
+        total.setTextFormat(Qt.RichText)
+        total.setAlignment(Qt.AlignRight)
+        total.setStyleSheet("font-size: 14px;")
+        root.addWidget(total)
+
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        root.addWidget(close)

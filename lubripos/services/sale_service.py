@@ -225,7 +225,7 @@ class SaleService:
 
     def create_return(self, sale_id: int, lines: list[dict[str, Any]], *,
                       user_id: int | None = None, notes: str = "",
-                      return_date: str | None = None,
+                      return_date: str | None = None, method: str | None = None,
                       credit_customer_id: int | None = None) -> dict[str, Any]:
         """Return specific quantities from a completed sale.
 
@@ -262,9 +262,10 @@ class SaleService:
             if not picked:
                 raise ValidationError("Select at least one quantity to return.")
 
-            # Refund method: 'Ledger' when the refund is credited to the
-            # customer's account (no cash leaves the drawer) instead of paid out.
-            ret_method = "Ledger" if credit_customer_id else None
+            # Refund method: 'Ledger' when credited to the customer's account (no
+            # cash leaves the drawer); otherwise the chosen method (Cash / Bank /
+            # EasyPaisa / JazzCash). None == Cash (the cash drawer coalesces it).
+            ret_method = "Ledger" if credit_customer_id else (method or None)
             rdate = _norm_return_date(return_date)
             cur = conn.execute(
                 "INSERT INTO sale_returns (sale_id, refund_minor, method, notes, "

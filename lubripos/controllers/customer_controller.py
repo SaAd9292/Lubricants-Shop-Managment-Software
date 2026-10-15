@@ -88,6 +88,16 @@ class CustomerController:
     def recoveries_min_date(self):
         return self.customers.recoveries_min_date()
 
+    def payouts(self, *, date_from=None, date_to=None, limit=500, offset=0):
+        """Payout history (money paid back to customers) for the Cash Recovery screen."""
+        return self.customers.list_payouts(date_from=date_from, date_to=date_to,
+                                           limit=limit, offset=offset)
+
+    def reverse_payout(self, payout_id: int):
+        """Undo a payout (gated by the Customers privilege). (ok, msg, data)."""
+        return self._guarded(
+            lambda uid: self.customers.reverse_payout(payout_id, user_id=uid))
+
     def get_recovery(self, payment_id: int):
         """Full detail of one recovery (for prefilling the edit dialog)."""
         return self.customers.get_payment(payment_id)

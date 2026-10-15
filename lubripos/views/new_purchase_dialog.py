@@ -19,8 +19,8 @@ from PySide6.QtCore import QDate, QEvent, QStringListModel, Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QComboBox, QCompleter, QDateEdit, QDialog,
     QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
-    QWidget,
+    QMessageBox, QPushButton, QScrollArea, QSpinBox, QTableWidget, QTableWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..controllers.purchase_controller import PurchaseController
@@ -40,25 +40,49 @@ class NewPurchaseDialog(QDialog):
         self._name_index: dict[str, dict] = {}
         self._grand_minor = 0
         self.setWindowTitle("New Purchase")
-        self.setMinimumSize(880, 640)
-        self._open_full = True   # fill the screen on first show (see showEvent)
+        # behave like a normal window: movable, minimize / maximize / close
+        # buttons, and freely resizable.
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.setMinimumSize(900, 560)
+        self.resize(1060, 915)
+        self._cart_sized = False
         self._build_ui()
         self._refresh_products()
 
+    # how many cart rows are visible before the cart scrolls internally
+    _VISIBLE_ROWS = 5
+
     def showEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         super().showEvent(event)
-        if getattr(self, "_open_full", False):
-            self._open_full = False
-            scr = self.screen().availableGeometry() if self.screen() else None
-            if scr is not None:
-                self.setGeometry(scr)   # fill the usable screen (minus taskbar)
+        # fix the cart to exactly _VISIBLE_ROWS tall now that real row/header
+        # heights are known; extra rows then scroll inside the cart itself.
+        if not self._cart_sized:
+            self._cart_sized = True
+            header_h = self.table.horizontalHeader().height() or 30
+            row_h = self.table.verticalHeader().defaultSectionSize() or 34
+            h = header_h + self._VISIBLE_ROWS * row_h + 4
+            self.table.setMinimumHeight(h)
+            self.table.setMaximumHeight(h)
 
     # a consistent, comfortable height for every spin box so none render clipped
     _FIELD_H = 32
 
     # -- UI -----------------------------------------------------------
     def _build_ui(self) -> None:
-        root = QVBoxLayout(self)
+        # Everything lives inside a scroll area so that, no matter how many lines
+        # are added or how small the screen is, the totals and Save button are
+        # always reachable by scrolling.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget()
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(28, 24, 28, 22)
         root.setSpacing(16)
 
@@ -175,10 +199,13 @@ class NewPurchaseDialog(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setColumnWidth(5, 40)
         self.table.verticalHeader().setDefaultSectionSize(34)
-        self.table.setMinimumHeight(160)
+        # the cart shows a fixed number of rows (see showEvent) and scrolls
+        # inside itself when there are more; the rest of the form stays put.
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setMinimumHeight(190)
         self.table.cellClicked.connect(self._on_cart_cell)
         self.table.installEventFilter(self)
-        root.addWidget(self.table, 1)
+        root.addWidget(self.table)
 
         # ---- totals block (right-aligned) + amount paid ----
         totals = QFormLayout()
@@ -345,28 +372,21 @@ class NewPurchaseDialog(QDialog):
                                "cost_minor": cost_minor, "disc_minor": disc_minor})
         self._render_cart()
         self._recompute()
-        # reset entry row, cursor back on Product
+        # reset entry row, cursor back on Product. The unit (Piece / Carton) is
+        # deliberately KEPT so a run of carton items doesn't revert each time;
+        # change it only when you want a different unit.
         self.prod.clear()
         self.qty.setValue(1)
-        self.unit.setCurrentIndex(0)
         self.unit_hint.clear()
         self.cost.setValue(0)
         self.line_disc.setValue(0)
         self.prod.setFocus()
 
     def _autosize(self) -> None:
-        """Grow the cart (and the window) as lines are added, so you can see them
-        without scrolling — only ever grows, and never past the screen."""
-        rows = max(1, self.table.rowCount())
-        header_h = self.table.horizontalHeader().height() or 28
-        table_h = max(160, min(header_h + rows * 34 + 12, 560))
-        self.table.setMinimumHeight(table_h)
-        # never shrink below what the content needs; cap at ~95% of the screen
-        need = self.minimumSizeHint().height()
-        scr = self.screen().availableGeometry().height() if self.screen() else 1000
-        new_h = min(max(self.height(), need), max(need, int(scr * 0.95)))
-        if new_h > self.height():
-            self.resize(self.width(), new_h)
+        """The cart height is fixed to _VISIBLE_ROWS (set in showEvent) and scrolls
+        internally past that, so nothing to resize here; kept so callers don't need
+        to know."""
+        return
 
     def _render_cart(self) -> None:
         self.table.setRowCount(len(self._cart))

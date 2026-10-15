@@ -84,39 +84,70 @@ class PayableService:
         return sum(max(0, r["balance"])
                    for r in self.list_payables()["rows"])
 
-    def supplier_ledger(self, supplier_id: int) -> dict[str, Any]:
-        """Full history for one supplier: its purchases and its payments,
-        with running totals."""
+    def supplier_ledger(self, supplier_id: int, *, date_from: str | None = None,
+                        date_to: str | None = None) -> dict[str, Any]:
+        """Full history for one supplier: purchases, payments and returns.
+
+        date_from/date_to (YYYY-MM-DD, inclusive) filter only the listed rows and
+        the per-period subtotals. The headline 'balance' is always the TRUE current
+        balance across ALL time — a date filter changes what you see, never what is
+        owed."""
         sup = self.db.query_one(
             "SELECT id, name, phone, COALESCE(opening_debt_minor,0) AS opening "
             "FROM suppliers WHERE id = ?", (supplier_id,))
         if not sup:
             raise NotFoundError(f"Supplier {supplier_id} not found")
+
+        def _range(col):
+            conds, params = ["supplier_id = ?"], [supplier_id]
+            if date_from:
+                conds.append(f"substr({col},1,10) >= ?"); params.append(date_from[:10])
+            if date_to:
+                conds.append(f"substr({col},1,10) <= ?"); params.append(date_to[:10])
+            return " AND ".join(conds), params
+
+        pw, pp = _range("purchase_date")
         purchases = [dict(r) for r in self.db.query(
-            """SELECT id, substr(purchase_date,1,10) AS date,
+            f"""SELECT id, substr(purchase_date,1,10) AS date,
                   COALESCE(supplier_invoice_no,'') AS invoice,
                   total_minor AS total, amount_paid_minor AS paid_at,
                   (total_minor - amount_paid_minor) AS credit
-               FROM purchases WHERE supplier_id = ?
-               ORDER BY purchase_date DESC, id DESC""", (supplier_id,))]
+               FROM purchases WHERE {pw}
+               ORDER BY purchase_date DESC, id DESC""", tuple(pp))]
+        mw, mp = _range("payment_date")
         payments = [dict(r) for r in self.db.query(
-            """SELECT id, substr(payment_date,1,10) AS date, amount_minor AS amount,
+            f"""SELECT id, substr(payment_date,1,10) AS date, amount_minor AS amount,
                   COALESCE(method,'') AS method, COALESCE(notes,'') AS notes
-               FROM supplier_payments WHERE supplier_id = ?
-               ORDER BY payment_date DESC, id DESC""", (supplier_id,))]
+               FROM supplier_payments WHERE {mw}
+               ORDER BY payment_date DESC, id DESC""", tuple(mp))]
+        rw, rp = _range("return_date")
         returns = [dict(r) for r in self.db.query(
-            """SELECT id, substr(return_date,1,10) AS date, total_minor AS amount,
+            f"""SELECT id, substr(return_date,1,10) AS date, total_minor AS amount,
                   COALESCE(notes,'') AS notes
-               FROM purchase_returns WHERE supplier_id = ?
-               ORDER BY return_date DESC, id DESC""", (supplier_id,))]
+               FROM purchase_returns WHERE {rw}
+               ORDER BY return_date DESC, id DESC""", tuple(rp))]
+
+        # per-period subtotals (what's shown)
         purchased = sum(p["total"] for p in purchases)
         paid = sum(p["paid_at"] for p in purchases) + sum(p["amount"] for p in payments)
         returned = sum(r["amount"] for r in returns)
+
+        # TRUE current balance across all time (unaffected by the date filter)
         opening = sup["opening"]
+        all_purch = self.db.query_one(
+            "SELECT COALESCE(SUM(total_minor),0) t, COALESCE(SUM(amount_paid_minor),0) p "
+            "FROM purchases WHERE supplier_id = ?", (supplier_id,))
+        all_pay = self.db.query_one(
+            "SELECT COALESCE(SUM(amount_minor),0) a FROM supplier_payments "
+            "WHERE supplier_id = ?", (supplier_id,))["a"]
+        all_ret = self.db.query_one(
+            "SELECT COALESCE(SUM(total_minor),0) a FROM purchase_returns "
+            "WHERE supplier_id = ?", (supplier_id,))["a"]
+        balance = opening + all_purch["t"] - all_purch["p"] - all_pay - all_ret
+
         return {"supplier": dict(sup), "purchases": purchases, "payments": payments,
                 "returns": returns, "purchased": purchased, "paid": paid,
-                "returned": returned, "opening": opening,
-                "balance": opening + purchased - paid - returned}
+                "returned": returned, "opening": opening, "balance": balance}
 
     def list_payments(self, *, date_from: str | None = None,
                       date_to: str | None = None) -> dict[str, Any]:

@@ -35,8 +35,10 @@ class PayableController:
     def list(self, **kwargs) -> dict[str, Any]:
         return self.payables.list_payables(**kwargs)
 
-    def ledger(self, supplier_id: int) -> dict[str, Any]:
-        return self.payables.supplier_ledger(supplier_id)
+    def ledger(self, supplier_id: int, *, date_from: str | None = None,
+               date_to: str | None = None) -> dict[str, Any]:
+        return self.payables.supplier_ledger(
+            supplier_id, date_from=date_from, date_to=date_to)
 
     def total_outstanding(self) -> int:
         return self.payables.total_outstanding()

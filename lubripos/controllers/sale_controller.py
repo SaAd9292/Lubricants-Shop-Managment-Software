@@ -217,13 +217,15 @@ class SaleController:
             return False, f"Could not create PDF: {exc}", None
 
     def create_return(self, sale_id, lines, notes="", return_date=None,
-                      credit_customer_id=None):
-        """lines: [{sale_item_id, qty}]. credit_customer_id credits the refund to
-        that customer's ledger instead of paying cash. Returns (ok, msg, data)."""
+                      method=None, credit_customer_id=None):
+        """lines: [{sale_item_id, qty}]. method = how the refund is paid
+        (Cash / Bank / EasyPaisa / JazzCash). credit_customer_id instead credits
+        the refund to that customer's ledger (no cash). Returns (ok, msg, data)."""
         try:
             user = current_session.require_permission("sale.void")
             data = self.sales.create_return(sale_id, lines, user_id=user.id,
                                             notes=notes, return_date=return_date,
+                                            method=method,
                                             credit_customer_id=credit_customer_id)
             return True, "ok", data
         except LubriPosError as exc:

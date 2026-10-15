@@ -17,7 +17,9 @@ from ..app_context import AppContext
 from ..reports.report_exporter import to_pdf, to_xlsx
 from ..ui.widgets import DataTable
 from ..controllers.supplier_controller import SupplierController
+from ..controllers.payable_controller import PayableController
 from .supplier_edit_dialog import SupplierEditDialog
+from .payables_view import LedgerDialog
 
 PAGE_SIZE = 25
 # (label, sort key)
@@ -30,6 +32,7 @@ class SuppliersView(QWidget):
         super().__init__()
         self.ctx = ctx
         self.controller = SupplierController(ctx)
+        self.pay_ctl = PayableController(ctx)
         self._page = 0
         self._total = 0
         self._sort_by = "name"
@@ -93,6 +96,12 @@ class SuppliersView(QWidget):
         root.addWidget(self.table, 1)
 
         footer = QHBoxLayout()
+        ledger_btn = QPushButton("View ledger")
+        ledger_btn.setObjectName("Secondary")
+        ledger_btn.setToolTip("See this supplier's full ledger — purchases, "
+                              "payments, returns and balance owed")
+        ledger_btn.clicked.connect(self._open_ledger)
+        footer.addWidget(ledger_btn)
         edit_btn = QPushButton("Edit")
         edit_btn.setObjectName("Secondary")
         edit_btn.clicked.connect(self._edit_selected)
@@ -232,6 +241,14 @@ class SuppliersView(QWidget):
             self._sort_by, self._sort_dir = key, "asc"
         self._page = 0
         self._reload()
+
+    def _open_ledger(self) -> None:
+        sid = self._selected_id()
+        if sid is None:
+            QMessageBox.information(self, "Select a supplier",
+                                   "Please select a supplier first.")
+            return
+        LedgerDialog(self, self.pay_ctl, sid).exec()
 
     def _selected_id(self) -> int | None:
         row = self.table.currentRow()

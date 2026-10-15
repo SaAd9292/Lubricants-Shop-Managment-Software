@@ -343,17 +343,18 @@ class CashRecoveryView(QWidget):
 
 
 class RecoveryHistoryDialog(QDialog):
-    """List every recovery with a From/To filter and a per-selection Reverse."""
+    """List recoveries AND payouts (money in / money out) with a From/To filter,
+    an edit (recoveries only) and a per-selection Reverse for either."""
 
-    _COLS = ["Date", "Customer", "Amount", "Method", "Account", "Note"]
+    _COLS = ["Date", "Type", "Customer", "Amount", "Method", "Account", "Note"]
 
     def __init__(self, controller: CustomerController, pay_ctl=None,
                  parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
         self.pay_ctl = pay_ctl
-        self.setWindowTitle("Recovery history")
-        self.resize(760, 520)
+        self.setWindowTitle("Recovery & payout history")
+        self.resize(820, 520)
         root = QVBoxLayout(self)
 
         bar = QHBoxLayout()
@@ -388,7 +389,7 @@ class RecoveryHistoryDialog(QDialog):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._sync_btn)
         root.addWidget(self.table, 1)
 
@@ -400,10 +401,10 @@ class RecoveryHistoryDialog(QDialog):
         self.edit_btn.clicked.connect(self._edit)
         self.edit_btn.setEnabled(False)
         btns.addWidget(self.edit_btn)
-        self.reverse_btn = QPushButton("Reverse selected recovery")
+        self.reverse_btn = QPushButton("Reverse selected")
         self.reverse_btn.setObjectName("Secondary")
-        self.reverse_btn.setToolTip("Undo the selected recovery: the customer's "
-                                    "balance and cash both self-correct")
+        self.reverse_btn.setToolTip("Undo the selected recovery or payout: the "
+                                    "customer's balance and cash both self-correct")
         self.reverse_btn.clicked.connect(self._reverse)
         self.reverse_btn.setEnabled(False)
         btns.addWidget(self.reverse_btn)
@@ -418,25 +419,31 @@ class RecoveryHistoryDialog(QDialog):
         self._reload()
 
     def _sync_btn(self) -> None:
-        on = current_session.can("customers") and self.table.currentRow() >= 0
-        self.reverse_btn.setEnabled(on)
-        self.edit_btn.setEnabled(on)
+        can = current_session.can("customers")
+        sel = self._selected()
+        self.reverse_btn.setEnabled(bool(can and sel))
+        # only recoveries have an edit flow; payouts are reverse + re-add
+        self.edit_btn.setEnabled(bool(can and sel and sel[1] == "recovery"))
 
-    def _selected_id(self):
+    def _selected(self):
+        """Return (id, kind) for the selected row, or None. kind is
+        'recovery' or 'payout'."""
         row = self.table.currentRow()
         if row < 0:
             return None
         it = self.table.item(row, 0)
-        return it.data(Qt.UserRole) if it else None
+        data = it.data(Qt.UserRole) if it else None
+        return data  # (id, kind) tuple
 
     def _edit(self) -> None:
         if not current_session.can("customers"):
             QMessageBox.warning(self, "Not allowed",
                                 "You do not have the Customers privilege.")
             return
-        pid = self._selected_id()
-        if pid is None:
+        sel = self._selected()
+        if sel is None or sel[1] != "recovery":
             return
+        pid = sel[0]
         try:
             detail = self.controller.get_recovery(pid)
         except Exception as exc:
@@ -459,25 +466,44 @@ class RecoveryHistoryDialog(QDialog):
         d_from = self.d_from.date().toString("yyyy-MM-dd")
         d_to = self.d_to.date().toString("yyyy-MM-dd")
         try:
-            res = self.controller.recoveries(date_from=d_from, date_to=d_to)
-            rows = res["rows"]
-            total = res.get("sum_minor", 0)
+            rec = self.controller.recoveries(date_from=d_from, date_to=d_to)
+            rec_rows, rec_total = rec["rows"], rec.get("sum_minor", 0)
         except Exception:
-            rows, total = [], 0
+            rec_rows, rec_total = [], 0
+        try:
+            po = self.controller.payouts(date_from=d_from, date_to=d_to)
+            po_rows, po_total = po["rows"], po.get("sum_minor", 0)
+        except Exception:
+            po_rows, po_total = [], 0
+        # merge both, newest first (date is "YYYY-MM-DD HH:MM", sorts lexically)
+        merged = ([dict(r, _kind="recovery") for r in rec_rows]
+                  + [dict(r, _kind="payout") for r in po_rows])
+        merged.sort(key=lambda r: r.get("date", ""), reverse=True)
+
         self.table.setRowCount(0)
-        self.table.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            cells = [row["date"], row["customer"],
-                     self.controller.fmt(row["amount"]), row["method"],
+        self.table.setRowCount(len(merged))
+        for r, row in enumerate(merged):
+            kind = row["_kind"]
+            is_payout = kind == "payout"
+            amt = self.controller.fmt(row["amount"])
+            if is_payout:
+                amt = "− " + amt   # money out
+            cells = [row["date"], "Payout" if is_payout else "Recovery",
+                     row["customer"], amt, row["method"],
                      row["account"], row["notes"]]
             for c, val in enumerate(cells):
                 it = QTableWidgetItem(str(val))
                 if c == 0:
-                    it.setData(Qt.UserRole, row["id"])
-                if c == 2:
+                    it.setData(Qt.UserRole, (row["id"], kind))
+                if c == 3:
                     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                    if is_payout:
+                        it.setForeground(Qt.red)
                 self.table.setItem(r, c, it)
-        self.total_lbl.setText(f"{len(rows)} recovery(ies) · {self.controller.fmt(total)}")
+        self.total_lbl.setText(
+            f"In: {self.controller.fmt(rec_total)}   ·   "
+            f"Out: {self.controller.fmt(po_total)}   ·   "
+            f"Net: {self.controller.fmt(rec_total - po_total)}")
         self.reverse_btn.setEnabled(False)
         self.edit_btn.setEnabled(False)
 
@@ -486,27 +512,32 @@ class RecoveryHistoryDialog(QDialog):
             QMessageBox.warning(self, "Not allowed",
                                 "You do not have the Customers privilege.")
             return
+        sel = self._selected()
+        if sel is None:
+            return
+        pid, kind = sel
         row = self.table.currentRow()
-        if row < 0:
-            return
-        it = self.table.item(row, 0)
-        pid = it.data(Qt.UserRole) if it else None
-        if pid is None:
-            return
-        who = self.table.item(row, 1).text()
-        amt = self.table.item(row, 2).text()
+        who = self.table.item(row, 2).text()
+        amt = self.table.item(row, 3).text()
+        if kind == "payout":
+            prompt = (f"Reverse this payout of {amt} to {who}?\n\n"
+                      "The customer's balance comes back down and the cash is "
+                      "returned to the till. This cannot itself be undone.")
+        else:
+            prompt = (f"Reverse this recovery of {amt} from {who}?\n\n"
+                      "The customer's balance will go back up and the cash be "
+                      "removed. This cannot itself be undone.")
         confirm = QMessageBox.warning(
-            self, "Reverse recovery",
-            f"Reverse this recovery of {amt} from {who}?\n\n"
-            "The customer's balance will go back up and the cash be removed. "
-            "This cannot itself be undone.",
+            self, f"Reverse {kind}", prompt,
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirm != QMessageBox.Yes:
             return
-        ok, msg, _ = self.controller.reverse_recovery(pid)
+        if kind == "payout":
+            ok, msg, _ = self.controller.reverse_payout(pid)
+        else:
+            ok, msg, _ = self.controller.reverse_recovery(pid)
         if ok:
-            QMessageBox.information(self, "Reversed",
-                                    "The recovery was reversed.")
+            QMessageBox.information(self, "Reversed", f"The {kind} was reversed.")
             self._reload()
         else:
             QMessageBox.warning(self, "Could not reverse", msg)

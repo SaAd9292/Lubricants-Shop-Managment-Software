@@ -226,54 +226,125 @@ class LedgerDialog(QDialog):
     def __init__(self, parent, controller: PayableController, supplier_id: int) -> None:
         super().__init__(parent)
         self.controller = controller
-        data = controller.ledger(supplier_id)
-        sup = data["supplier"]
-        self.setWindowTitle(f"Ledger — {sup['name']}")
-        self.resize(680, 520)
+        self.supplier_id = supplier_id
+        # name for the title (all-time, no filter)
+        try:
+            name = controller.ledger(supplier_id)["supplier"]["name"]
+        except Exception:
+            name = ""
+        self.setWindowTitle(f"Ledger — {name}")
+        self.resize(720, 560)
         root = QVBoxLayout(self)
 
-        summary = QLabel(
-            f"Purchased: {controller.fmt(data['purchased'])}    "
-            f"Paid: {controller.fmt(data['paid'])}    "
-            f"Balance owed: {controller.fmt(data['balance'])}")
-        summary.setObjectName("PageTitle")
-        root.addWidget(summary)
+        # --- date filter bar ---
+        bar = QHBoxLayout()
+        self.all_cb = QCheckBox("All dates")
+        self.all_cb.setChecked(True)
+        self.all_cb.stateChanged.connect(self._on_toggle)
+        bar.addWidget(self.all_cb)
+        bar.addWidget(QLabel("From"))
+        self.d_from = QDateEdit()
+        self.d_from.setCalendarPopup(True)
+        self.d_from.setDisplayFormat("dd MMM yyyy")
+        self.d_from.setDate(QDate.currentDate().addMonths(-1))
+        self.d_from.setEnabled(False)
+        self.d_from.dateChanged.connect(lambda _=None: self._reload())
+        bar.addWidget(self.d_from)
+        bar.addWidget(QLabel("To"))
+        self.d_to = QDateEdit()
+        self.d_to.setCalendarPopup(True)
+        self.d_to.setDisplayFormat("dd MMM yyyy")
+        self.d_to.setDate(QDate.currentDate())
+        self.d_to.setEnabled(False)
+        self.d_to.dateChanged.connect(lambda _=None: self._reload())
+        bar.addWidget(self.d_to)
+        bar.addStretch(1)
+        root.addLayout(bar)
+
+        self.summary = QLabel("")
+        self.summary.setObjectName("PageTitle")
+        root.addWidget(self.summary)
 
         root.addWidget(QLabel("Purchases"))
-        pcols = ["Date", "Invoice", "Total", "Paid at purchase", "On credit"]
-        ptbl = DataTable(0, len(pcols))
-        ptbl.placeholder = "No purchases from this supplier."
-        ptbl.setHorizontalHeaderLabels(pcols)
-        ptbl.verticalHeader().setVisible(False)
-        ptbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        ptbl.setRowCount(len(data["purchases"]))
-        for r, p in enumerate(data["purchases"]):
-            ptbl.setItem(r, 0, QTableWidgetItem(p["date"]))
-            ptbl.setItem(r, 1, QTableWidgetItem(p["invoice"]))
-            ptbl.setItem(r, 2, _money_item(controller.fmt(p["total"])))
-            ptbl.setItem(r, 3, _money_item(controller.fmt(p["paid_at"])))
-            ptbl.setItem(r, 4, _money_item(controller.fmt(p["credit"])))
-        ptbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
-        root.addWidget(ptbl, 1)
+        self.ptbl = DataTable(0, 5)
+        self.ptbl.placeholder = "No purchases in this period."
+        self.ptbl.setHorizontalHeaderLabels(
+            ["Date", "Invoice", "Total", "Paid at purchase", "On credit"])
+        self.ptbl.verticalHeader().setVisible(False)
+        self.ptbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ptbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        root.addWidget(self.ptbl, 1)
 
         root.addWidget(QLabel("Payments"))
-        mcols = ["Date", "Amount", "Method", "Notes"]
-        mtbl = DataTable(0, len(mcols))
-        mtbl.placeholder = "No payments recorded yet."
-        mtbl.setHorizontalHeaderLabels(mcols)
-        mtbl.verticalHeader().setVisible(False)
-        mtbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        mtbl.setRowCount(len(data["payments"]))
-        for r, p in enumerate(data["payments"]):
-            mtbl.setItem(r, 0, QTableWidgetItem(p["date"]))
-            mtbl.setItem(r, 1, _money_item(controller.fmt(p["amount"])))
-            mtbl.setItem(r, 2, QTableWidgetItem(p["method"]))
-            mtbl.setItem(r, 3, QTableWidgetItem(p["notes"]))
-        mtbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
-        root.addWidget(mtbl, 1)
+        self.mtbl = DataTable(0, 4)
+        self.mtbl.placeholder = "No payments in this period."
+        self.mtbl.setHorizontalHeaderLabels(["Date", "Amount", "Method", "Notes"])
+        self.mtbl.verticalHeader().setVisible(False)
+        self.mtbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.mtbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        root.addWidget(self.mtbl, 1)
+
+        self.rlbl = QLabel("Returns to supplier (debit notes)")
+        root.addWidget(self.rlbl)
+        self.rtbl = DataTable(0, 3)
+        self.rtbl.placeholder = "No returns in this period."
+        self.rtbl.setHorizontalHeaderLabels(["Date", "Amount", "Note"])
+        self.rtbl.verticalHeader().setVisible(False)
+        self.rtbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.rtbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        root.addWidget(self.rtbl, 1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
         buttons.button(QDialogButtonBox.Close).clicked.connect(self.accept)
         root.addWidget(buttons)
+
+        self._reload()
+
+    def _on_toggle(self) -> None:
+        on = not self.all_cb.isChecked()
+        self.d_from.setEnabled(on)
+        self.d_to.setEnabled(on)
+        self._reload()
+
+    def _reload(self) -> None:
+        if self.all_cb.isChecked():
+            df = dt = None
+        else:
+            df = self.d_from.date().toString("yyyy-MM-dd")
+            dt = self.d_to.date().toString("yyyy-MM-dd")
+        data = self.controller.ledger(self.supplier_id, date_from=df, date_to=dt)
+        fmt = self.controller.fmt
+
+        scope = "all time" if df is None else f"{df} → {dt}"
+        summ = (f"Purchased: {fmt(data['purchased'])}    Paid: {fmt(data['paid'])}    ")
+        if data.get("returned", 0):
+            summ += f"Returned: {fmt(data['returned'])}    "
+        summ += (f"({scope})      "
+                 f"Current balance owed: {fmt(data['balance'])}")
+        self.summary.setText(summ)
+
+        purchases = data["purchases"]
+        self.ptbl.setRowCount(len(purchases))
+        for r, p in enumerate(purchases):
+            self.ptbl.setItem(r, 0, QTableWidgetItem(p["date"]))
+            self.ptbl.setItem(r, 1, QTableWidgetItem(p["invoice"]))
+            self.ptbl.setItem(r, 2, _money_item(fmt(p["total"])))
+            self.ptbl.setItem(r, 3, _money_item(fmt(p["paid_at"])))
+            self.ptbl.setItem(r, 4, _money_item(fmt(p["credit"])))
+
+        payments = data["payments"]
+        self.mtbl.setRowCount(len(payments))
+        for r, p in enumerate(payments):
+            self.mtbl.setItem(r, 0, QTableWidgetItem(p["date"]))
+            self.mtbl.setItem(r, 1, _money_item(fmt(p["amount"])))
+            self.mtbl.setItem(r, 2, QTableWidgetItem(p["method"]))
+            self.mtbl.setItem(r, 3, QTableWidgetItem(p["notes"]))
+
+        returns = data.get("returns", [])
+        self.rtbl.setRowCount(len(returns))
+        for r, rr in enumerate(returns):
+            self.rtbl.setItem(r, 0, QTableWidgetItem(rr["date"]))
+            self.rtbl.setItem(r, 1, _money_item(fmt(rr["amount"])))
+            self.rtbl.setItem(r, 2, QTableWidgetItem(rr.get("notes", "")))
