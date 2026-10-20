@@ -150,7 +150,7 @@ class NewPurchaseDialog(QDialog):
         self.unit.addItem("Piece", "piece")
         self.unit.addItem("Carton", "carton")
         self.unit.setMaximumWidth(120)
-        self.unit.currentIndexChanged.connect(self._update_unit_hint)
+        self.unit.currentIndexChanged.connect(self._on_unit_changed)
         self.unit_hint = QLabel("")
         self.unit_hint.setObjectName("Muted")
         qty_row = QHBoxLayout()
@@ -167,7 +167,8 @@ class NewPurchaseDialog(QDialog):
         self.cost.setMinimumHeight(self._FIELD_H)
         self.cost.setGroupSeparatorShown(True)
         self.cost.setPrefix(f"{self._symbol} ")
-        entry.addRow("Unit cost/pc", self.cost)
+        self._cost_label = QLabel("Unit cost/pc")
+        entry.addRow(self._cost_label, self.cost)
 
         self.line_disc = QDoubleSpinBox()
         self.line_disc.setRange(0, 1_000_000_000)
@@ -311,10 +312,28 @@ class NewPurchaseDialog(QDialog):
         if p:
             self.prod.setText(p["name"])
             self._update_unit_hint()
-            self.cost.setValue(float(p.get("purchase_price_minor") or 0) / self._minor_units)
+            self._apply_unit_cost(p)       # cost per piece OR per carton
             self.line_disc.setValue(0)
             self.qty.setFocus()
             self.qty.selectAll()
+
+    def _on_unit_changed(self) -> None:
+        """Keep the Unit cost in step with the Piece/Carton choice: Carton shows
+        the cost PER CARTON; switching back shows per piece."""
+        self._update_unit_hint()
+        self._apply_unit_cost()
+
+    def _apply_unit_cost(self, p: dict | None = None) -> None:
+        """Set the cost field to the product's purchase price for the CURRENT unit
+        (per piece, or per carton = piece cost × units-per-carton) and relabel it."""
+        p = p or self._current_product()
+        carton = self.unit.currentData() == "carton"
+        self._cost_label.setText("Unit cost/carton" if carton else "Unit cost/pc")
+        if not p:
+            return
+        upc = max(1, int(p.get("units_per_carton") or 1))
+        piece = float(p.get("purchase_price_minor") or 0) / self._minor_units
+        self.cost.setValue(piece * upc if carton else piece)
 
     def _pieces(self) -> int:
         entered = int(self.qty.value())
@@ -374,19 +393,32 @@ class NewPurchaseDialog(QDialog):
             QMessageBox.information(self, "Quantity needed", "Enter a quantity.")
             self.qty.setFocus()
             return
-        cost_minor = money.to_minor(self.cost.value(), self._minor_units)
         disc_minor = money.to_minor(self.line_disc.value(), self._minor_units)
+        carton = self.unit.currentData() == "carton"
+        if carton:
+            # the cost field holds the price PER CARTON. Store a per-piece cost
+            # (stock + line totals stay piece-based), rounding UP and absorbing the
+            # paisa remainder into the line discount so the LINE TOTAL equals
+            # exactly cartons * carton cost (e.g. 26,904 / 12 doesn't divide evenly).
+            entered = int(self.qty.value())
+            upc = max(1, int(p.get("units_per_carton") or 1))
+            carton_minor = money.to_minor(self.cost.value(), self._minor_units)
+            cost_minor = -(-carton_minor // upc)          # ceil division
+            disc_minor += qty * cost_minor - entered * carton_minor
+        else:
+            cost_minor = money.to_minor(self.cost.value(), self._minor_units)
         gross = qty * cost_minor
         if disc_minor > gross:
             QMessageBox.information(self, "Discount too high",
                                    "The line discount can't exceed the line total.")
             self.line_disc.setFocus()
             return
-        # same product already in the cart? bump its quantity
+        # same product at the same per-piece cost? merge — adding BOTH quantities
+        # and discounts so an absorbed carton remainder stays exact across repeats
         for ln in self._cart:
-            if ln["product_id"] == p["id"] and ln["cost_minor"] == cost_minor \
-                    and ln["disc_minor"] == disc_minor:
+            if ln["product_id"] == p["id"] and ln["cost_minor"] == cost_minor:
                 ln["qty"] += qty
+                ln["disc_minor"] += disc_minor
                 break
         else:
             self._cart.append({"product_id": p["id"], "name": p["name"], "qty": qty,
