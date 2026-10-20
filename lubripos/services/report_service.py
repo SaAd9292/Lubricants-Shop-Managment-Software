@@ -198,6 +198,36 @@ class ReportService:
                WHERE po.payout_date LIKE ? ORDER BY po.id""", (like,))]
         payout_total = sum(r["amount"] for r in payout_rows)
 
+        # purchases received today (stock in) — supplier, bill no, total, what was
+        # paid at purchase, and what's left on credit. Cash paid at purchase is a
+        # separate cash-drawer line; this section is the stock-in record.
+        purchase_rows = [dict(r) for r in self.db.query(
+            """SELECT substr(p.purchase_date,12,5) AS time,
+                  COALESCE(s.name,'(no supplier)') AS supplier,
+                  COALESCE(p.supplier_invoice_no,'') AS invoice,
+                  p.total_minor AS total, p.amount_paid_minor AS paid,
+                  (p.total_minor - p.amount_paid_minor) AS credit
+               FROM purchases p
+               LEFT JOIN suppliers s ON s.id = p.supplier_id
+               WHERE p.purchase_date LIKE ? ORDER BY p.id""", (like,))]
+        purchase_total = sum(r["total"] for r in purchase_rows)
+
+        # money moved between cash and bank/wallet accounts today. These are
+        # INTERNAL moves (total money unchanged); shown so the owner can see the
+        # evening "sweep" (e.g. JazzCash -> cash) on the sheet. 'Cash' is the NULL
+        # side. Only the cash leg hits the drawer (added below); this section is
+        # the full record of both-direction moves.
+        transfer_rows = [dict(r) for r in self.db.query(
+            """SELECT substr(t.transfer_date,12,5) AS time,
+                  COALESCE(af.name,'Cash') AS from_name,
+                  COALESCE(at.name,'Cash') AS to_name,
+                  t.amount_minor AS amount
+               FROM money_transfers t
+               LEFT JOIN payment_accounts af ON af.id = t.from_account_id
+               LEFT JOIN payment_accounts at ON at.id = t.to_account_id
+               WHERE t.transfer_date LIKE ? ORDER BY t.id""", (like,))]
+        transfer_total = sum(r["amount"] for r in transfer_rows)
+
         # header-level aggregates (grand totals include tax, net of discount)
         agg = self.db.query_one(
             """SELECT COUNT(*) n, COALESCE(SUM(subtotal_minor),0) sub,
@@ -205,7 +235,6 @@ class ReportService:
                   COALESCE(SUM(grand_total_minor),0) total
                FROM sales WHERE status='completed' AND sale_date LIKE ?""", (like,))
         gross = agg["total"]
-        net = gross - refunds_total - expense_total
 
         # Cash in hand is now a RUNNING drawer balance that carries across days
         # (opening float + every cash movement since), not a same-day figure.
@@ -227,8 +256,10 @@ class ReportService:
             ("Purchase payments", "purchase_payments", -1),
             ("Supplier payments", "supplier_payments", -1),
             ("Customer payouts", "customer_payouts", -1),
+            ("Transfers into cash (from accounts)", "transfers_in", 1),
+            ("Transfers out of cash (to accounts)", "transfers_out", -1),
         ):
-            if recon[key]:
+            if recon.get(key):
                 cash_rows.append({"item": label, "amount": sign * recon[key]})
         day_net = recon["cash_in"] - recon["cash_out"]
         cash_rows.append({"item": "Today's cash (in − out)", "amount": day_net})
@@ -293,6 +324,20 @@ class ReportService:
                              _col("amount", "Amount", "right", True)],
                  "rows": payout_rows,
                  "total_label": "Total customer payouts", "total": payout_total},
+                {"name": "Purchases (stock received)",
+                 "columns": [_col("time", "Time"), _col("supplier", "Supplier"),
+                             _col("invoice", "Bill no"),
+                             _col("total", "Total", "right", True),
+                             _col("paid", "Paid now", "right", True),
+                             _col("credit", "On credit", "right", True)],
+                 "rows": purchase_rows,
+                 "total_label": "Total purchases", "total": purchase_total},
+                {"name": "Account transfers (cash ↔ bank/wallet)",
+                 "columns": [_col("time", "Time"), _col("from_name", "From"),
+                             _col("to_name", "To"),
+                             _col("amount", "Amount", "right", True)],
+                 "rows": transfer_rows,
+                 "total_label": "Total moved", "total": transfer_total},
                 {"name": "Money received",
                  "columns": [_col("method", "Account"), _col("sales", "Sales", "right"),
                              _col("amount", "Amount", "right", True)],
@@ -321,7 +366,6 @@ class ReportService:
                  "value": recon["cash_in"] - recon["cash_out"], "money": True},
                 {"label": "Cash in hand", "value": cash_in_hand, "money": True},
                 {"label": "Recoveries", "value": repay_today, "money": True},
-                {"label": "Net", "value": net, "money": True},
             ],
         }
 

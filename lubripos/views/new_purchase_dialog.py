@@ -185,9 +185,22 @@ class NewPurchaseDialog(QDialog):
         entry.addRow("Disc (line)", disc_wrap)
         root.addLayout(entry)
 
-        # Enter flows Product -> Qty -> Cost -> Disc -> (add)
-        for w in (self.prod, self.qty, self.cost, self.line_disc):
+        # Enter flows through the WHOLE form: Supplier -> Date -> Bill no ->
+        # Notes -> Product -> Qty -> Cost -> Disc(adds). Each field is tagged with
+        # its chain index on the C++ object, so the handler resolves it even when
+        # the key arrives on a spin box's internal editor (whose Python wrapper
+        # wouldn't match a dict). Buttons are kept out of Enter so it never opens
+        # Browse / Add by accident.
+        self._enter_chain = [self.supplier, self.date, self.invoice_no, self.notes,
+                             self.prod, self.qty, self.cost, self.line_disc]
+        for i, w in enumerate(self._enter_chain):
+            w.setProperty("_np_idx", i)
             w.installEventFilter(self)
+            inner = w.findChild(QLineEdit)
+            if inner is not None and inner is not w:
+                inner.installEventFilter(self)
+        for b in (browse, add_btn):
+            b.setAutoDefault(False); b.setDefault(False)
 
         # ---- cart ----
         self.table = QTableWidget(0, len(CART_COLS))
@@ -326,16 +339,24 @@ class NewPurchaseDialog(QDialog):
         if event.type() == QEvent.KeyPress:
             key = event.key()
             if key in (Qt.Key_Return, Qt.Key_Enter):
-                if obj is self.prod:
-                    if self._current_product() is not None:
-                        self._on_pick(self.prod.text())
+                # resolve which chain field this key belongs to (the event may
+                # arrive on a spin box / date edit's inner line editor)
+                idx = obj.property("_np_idx") if obj is not None else None
+                if idx is None and obj is not None and obj.parent() is not None:
+                    idx = obj.parent().property("_np_idx")
+                if idx is not None:
+                    field = self._enter_chain[idx]
+                    if field is self.prod:
+                        if self._current_product() is not None:
+                            self._on_pick(self.prod.text())
+                        return True
+                    if field is self.line_disc:
+                        self._add_line(); return True
+                    nxt = self._enter_chain[idx + 1]
+                    nxt.setFocus()
+                    if hasattr(nxt, "selectAll"):
+                        nxt.selectAll()
                     return True
-                if obj is self.qty:
-                    self.cost.setFocus(); self.cost.selectAll(); return True
-                if obj is self.cost:
-                    self.line_disc.setFocus(); self.line_disc.selectAll(); return True
-                if obj is self.line_disc:
-                    self._add_line(); return True
             if (obj is self.table and key == Qt.Key_Delete):
                 self._remove_selected(); return True
         return super().eventFilter(obj, event)

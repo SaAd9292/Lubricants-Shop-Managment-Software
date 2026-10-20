@@ -63,7 +63,7 @@ class CustomerController:
                 customer_id, money.to_minor(amount_major or 0, mu),
                 method=method, account_id=account_id, account_name=account_name,
                 notes=notes, user_id=uid, payment_date=payment_date)
-        return self._guarded(op)
+        return self._guarded(op, "recovery")
 
     def record_payout(self, customer_id: int, amount_major: float, *,
                       method: str | None = None, account_id: int | None = None,
@@ -77,7 +77,7 @@ class CustomerController:
                 customer_id, money.to_minor(amount_major or 0, mu),
                 method=method, account_id=account_id, account_name=account_name,
                 notes=notes, user_id=uid, payout_date=payout_date)
-        return self._guarded(op)
+        return self._guarded(op, "recovery")
 
     # -- recovery history + reversal ---------------------------------
     def recoveries(self, *, date_from=None, date_to=None, limit=500, offset=0):
@@ -96,7 +96,8 @@ class CustomerController:
     def reverse_payout(self, payout_id: int):
         """Undo a payout (gated by the Customers privilege). (ok, msg, data)."""
         return self._guarded(
-            lambda uid: self.customers.reverse_payout(payout_id, user_id=uid))
+            lambda uid: self.customers.reverse_payout(payout_id, user_id=uid),
+            "record.delete")
 
     def get_recovery(self, payment_id: int):
         """Full detail of one recovery (for prefilling the edit dialog)."""
@@ -115,12 +116,13 @@ class CustomerController:
                 payment_id, customer_id=customer_id, amount_minor=amt, method=method,
                 account_id=account_id, account_name=account_name,
                 payment_date=payment_date, notes=notes, user_id=uid)
-        return self._guarded(op)
+        return self._guarded(op, "record.edit")
 
     def reverse_recovery(self, payment_id: int):
         """Undo a recovery (gated by the Customers privilege). (ok, msg, data)."""
         return self._guarded(
-            lambda uid: self.customers.reverse_payment(payment_id, user_id=uid))
+            lambda uid: self.customers.reverse_payment(payment_id, user_id=uid),
+            "record.delete")
 
     def payment_receipt(self, payment_id: int, dest: str | None = None):
         """Build a printable PDF receipt for a repayment. If dest is None a temp
@@ -153,21 +155,22 @@ class CustomerController:
                 return self.customers.create(form, user_id=uid)
             self.customers.update(customer_id, form, user_id=uid)
             return customer_id
-        return self._guarded(op)
+        # creating a customer uses the Customers grant; editing one needs Edit records
+        return self._guarded(op, "customers" if customer_id is None else "record.edit")
 
     def remove(self, customer_id: int):
         return self._guarded(
             lambda uid: self.customers.set_active(customer_id, False, user_id=uid)
-            or customer_id)
+            or customer_id, "record.delete")
 
     def reactivate(self, customer_id: int):
         return self._guarded(
             lambda uid: self.customers.set_active(customer_id, True, user_id=uid)
-            or customer_id)
+            or customer_id, "record.edit")
 
     def hard_delete(self, customer_id: int):
         try:
-            user = current_session.require_role("admin")
+            user = current_session.require_permission("record.delete")
             self.customers.delete(customer_id, user_id=user.id)
             return True, "ok", customer_id
         except LubriPosError as exc:
@@ -176,9 +179,12 @@ class CustomerController:
             log.exception("Customer delete failed")
             return False, f"Unexpected error: {exc}", None
 
-    def _guarded(self, op):
+    def _guarded(self, op, perm: str = "customers"):
+        """Run a write under `perm` (admins always pass). Creating a customer uses
+        the Customers screen grant; edits/deletes/recoveries pass the matching
+        app-wide action grant instead (record.edit / record.delete / recovery)."""
         try:
-            user = current_session.require_permission("customers")
+            user = current_session.require_permission(perm)
             return True, "ok", op(user.id)
         except LubriPosError as exc:
             return False, str(exc), None

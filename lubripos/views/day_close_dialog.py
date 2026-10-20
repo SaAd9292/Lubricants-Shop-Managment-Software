@@ -18,11 +18,12 @@ from .day_close_widget import DayCloseWidget
 
 
 class DayCloseDialog(QDialog):
-    def __init__(self, ctx: AppContext, parent=None) -> None:
+    def __init__(self, ctx: AppContext, parent=None, day: str | None = None) -> None:
         super().__init__(parent)
         self.ctx = ctx
         self.controller = ReportController(ctx)
         self._report: dict | None = None
+        self._init_day = day   # YYYY-MM-DD to open on, or None for today
         self.setWindowTitle("Day Close — Daily Sales Report")
         self.resize(1000, 720)
         self._build()
@@ -44,7 +45,8 @@ class DayCloseDialog(QDialog):
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("dd MMM yyyy")
         self.date.setMaximumDate(QDate.currentDate())
-        self.date.setDate(QDate.currentDate())
+        qd = QDate.fromString(self._init_day, "yyyy-MM-dd") if self._init_day else None
+        self.date.setDate(qd if (qd and qd.isValid()) else QDate.currentDate())
         self.date.dateChanged.connect(self._reload)
         bar.addWidget(self.date)
         bar.addStretch(1)

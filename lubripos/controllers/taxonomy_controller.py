@@ -25,17 +25,21 @@ class TaxonomyController:
         return self._guarded(lambda uid: op(name, user_id=uid))
 
     def rename(self, table: str, item_id: int, new_name: str):
-        return self._guarded(lambda uid: self.tax.rename(table, item_id, new_name, user_id=uid) or item_id)
+        return self._guarded(lambda uid: self.tax.rename(table, item_id, new_name, user_id=uid) or item_id,
+                             "record.edit")
 
     def set_active(self, table: str, item_id: int, active: bool):
-        return self._guarded(lambda uid: self.tax.set_active(table, item_id, active, user_id=uid) or item_id)
+        return self._guarded(lambda uid: self.tax.set_active(table, item_id, active, user_id=uid) or item_id,
+                             "record.edit" if active else "record.delete")
 
     def delete(self, table: str, item_id: int):
-        return self._guarded(lambda uid: self.tax.delete(table, item_id, user_id=uid) or item_id)
+        return self._guarded(lambda uid: self.tax.delete(table, item_id, user_id=uid) or item_id,
+                             "record.delete")
 
-    def _guarded(self, op):
+    def _guarded(self, op, perm: str | None = None):
         try:
-            user = current_session.require_role("admin")
+            user = (current_session.require_permission(perm) if perm
+                    else current_session.require_role("admin"))
             return True, "ok", op(user.id)
         except LubriPosError as exc:
             return False, str(exc), None

@@ -77,6 +77,10 @@ def main() -> int:
           "DSR has a separate udhaar (credit) section")
     check(secs["Money received"]["total"] == 101790, "money received total 101790")
     check(secs["Expenses"]["total"] == 500000, "expenses section total 500000")
+    check("Purchases (stock received)" in secs, "DSR has a Purchases section")
+    check(secs["Purchases (stock received)"]["total"] == 10 * 24000
+          and len(secs["Purchases (stock received)"]["rows"]) == 1,
+          "purchases section lists today's purchase with its total")
 
     print("\n[report] monthly sales (by day + by product)")
     m = rs.monthly_sales(int(today[:4]), int(today[5:7]))

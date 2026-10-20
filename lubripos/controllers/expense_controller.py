@@ -54,16 +54,17 @@ class ExpenseController:
                 return self.expenses.create(data, user_id=uid)
             self.expenses.update(expense_id, data, user_id=uid)
             return expense_id
-        return self._guarded(op)
+        return self._guarded(op, None if expense_id is None else "record.edit")
 
     def delete(self, expense_id: int):
         return self._guarded(
-            lambda uid: self.expenses.delete(expense_id, user_id=uid) or expense_id
-        )
+            lambda uid: self.expenses.delete(expense_id, user_id=uid) or expense_id,
+            "record.delete")
 
-    def _guarded(self, op):
+    def _guarded(self, op, perm: str | None = None):
         try:
-            user = current_session.require_role("admin")
+            user = (current_session.require_permission(perm) if perm
+                    else current_session.require_role("admin"))
             return True, "ok", op(user.id)
         except LubriPosError as exc:
             return False, str(exc), None

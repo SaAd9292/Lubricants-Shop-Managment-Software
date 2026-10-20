@@ -145,43 +145,85 @@ class DashboardService:
         return [dict(r) for r in rows]
 
     def chart_series(self, date_from: str | None = None,
-                     date_to: str | None = None) -> list[dict[str, Any]]:
-        """Gross-sales bars across the range: one bar per DAY for ranges up to
-        ~two months, otherwise one bar per calendar MONTH so a long range stays
-        readable."""
+                     date_to: str | None = None,
+                     granularity: str = "auto") -> list[dict[str, Any]]:
+        """Gross-sales series across the range. Each point:
+        {date, label, total, n, cash_net} where n is the invoice count and
+        cash_net is that bucket's DSR cash movement (cash in − out), used to
+        colour the bar (0 = balanced/green, >0 = yellow, <0 = red). granularity:
+          'auto'  -> per day up to ~2 months, else per month (default),
+          'day'   -> one point per day,
+          'week'  -> one point per calendar week (Mon-start),
+          'month' -> one point per calendar month."""
         fd, td = self._range(date_from, date_to)
         days = (td - fd).days + 1
         s_ts, e_ts = self._bounds(fd, td)
-        if days <= 62:
-            rows = self.db.query(
-                "SELECT substr(sale_date,1,10) AS k, "
-                "COALESCE(SUM(grand_total_minor),0) AS total "
+        g = granularity if granularity in ("day", "week", "month") else (
+            "day" if days <= 62 else "month")
+
+        def _rows(keylen):
+            return {r["k"]: (r["total"], r["n"]) for r in self.db.query(
+                f"SELECT substr(sale_date,1,{keylen}) AS k, "
+                "COALESCE(SUM(grand_total_minor),0) AS total, COUNT(*) AS n "
                 "FROM sales WHERE status='completed' AND sale_date >= ? AND sale_date <= ? "
-                "GROUP BY k", (s_ts, e_ts))
-            by = {r["k"]: r["total"] for r in rows}
+                "GROUP BY k", (s_ts, e_ts))}
+
+        # one pass over cash movements for the whole range -> net (in − out) per
+        # calendar day, so colouring bars costs a single query, not one
+        # reconciliation() per bar.
+        net_by_day: dict[str, int] = {}
+        try:
+            for mv in CashService(self.db).movements(fd.isoformat(), td.isoformat()):
+                day = (mv["date"] or "")[:10]
+                if day:
+                    net_by_day[day] = net_by_day.get(day, 0) + (
+                        (mv.get("cash_in") or 0) - (mv.get("cash_out") or 0))
+        except Exception:
+            net_by_day = {}
+
+        out: list[dict[str, Any]] = []
+        if g == "day":
+            by = _rows(10)
             fmt = "%a" if days <= 7 else "%d/%m"
-            out = []
             for i in range(days):
                 d = fd + timedelta(days=i)
+                t, n = by.get(d.isoformat(), (0, 0))
                 out.append({"date": d.isoformat(), "label": d.strftime(fmt),
-                            "total": by.get(d.isoformat(), 0)})
-            return out
-        # monthly buckets
-        rows = self.db.query(
-            "SELECT substr(sale_date,1,7) AS k, "
-            "COALESCE(SUM(grand_total_minor),0) AS total "
-            "FROM sales WHERE status='completed' AND sale_date >= ? AND sale_date <= ? "
-            "GROUP BY k", (s_ts, e_ts))
-        by = {r["k"]: r["total"] for r in rows}
-        out = []
-        y, m = fd.year, fd.month
-        while (y, m) <= (td.year, td.month):
-            key = f"{y:04d}-{m:02d}"
-            out.append({"date": key + "-01", "label": date(y, m, 1).strftime("%b %y"),
-                        "total": by.get(key, 0)})
-            m += 1
-            if m > 12:
-                m, y = 1, y + 1
+                            "total": t, "n": n,
+                            "cash_net": net_by_day.get(d.isoformat(), 0)})
+        elif g == "week":
+            # bucket each day into its week start (Monday); sum per bucket
+            buckets: dict[str, list] = {}
+            by = _rows(10)
+            for i in range(days):
+                d = fd + timedelta(days=i)
+                ws = d - timedelta(days=d.weekday())   # Monday of that week
+                t, n = by.get(d.isoformat(), (0, 0))
+                b = buckets.setdefault(ws.isoformat(), [ws, 0, 0, 0])
+                b[1] += t; b[2] += n
+                b[3] += net_by_day.get(d.isoformat(), 0)
+            for ws in sorted(buckets):
+                wd, t, n, cn = buckets[ws]
+                out.append({"date": wd.isoformat(),
+                            "label": "wk " + wd.strftime("%d/%m"),
+                            "total": t, "n": n, "cash_net": cn})
+        else:  # month
+            by = _rows(7)
+            # pre-sum daily nets by month key
+            net_by_month: dict[str, int] = {}
+            for dd, v in net_by_day.items():
+                net_by_month[dd[:7]] = net_by_month.get(dd[:7], 0) + v
+            y, m = fd.year, fd.month
+            while (y, m) <= (td.year, td.month):
+                key = f"{y:04d}-{m:02d}"
+                t, n = by.get(key, (0, 0))
+                out.append({"date": key + "-01",
+                            "label": date(y, m, 1).strftime("%b %y"),
+                            "total": t, "n": n,
+                            "cash_net": net_by_month.get(key, 0)})
+                m += 1
+                if m > 12:
+                    m, y = 1, y + 1
         return out
 
     def last_cash_count(self) -> dict | None:

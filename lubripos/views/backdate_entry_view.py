@@ -51,7 +51,6 @@ class BackdateEntryView(QWidget):
         self._cart: list[dict] = []          # {product_id, name, qty, up_minor}
         self._name_index: dict[str, dict] = {}
         self._cust_index: dict[str, dict] = {}    # name.lower -> {id, name, phone}
-        self._watch: dict[object, QWidget] = {}   # focus-chain event routing
         self._build_ui()
         self._refresh_products()
         self._refresh_customers()
@@ -150,6 +149,7 @@ class BackdateEntryView(QWidget):
         _pr.addWidget(self.paid_method)
         self._paid_label = QLabel(tr("Paid now"))
         self._paid_wrap = _paid_wrap
+        self._form = form
         form.addRow(self._paid_label, _paid_wrap)
 
         # Description / paper bill number (optional; searchable in Sales History)
@@ -167,7 +167,14 @@ class BackdateEntryView(QWidget):
         self._suggest.setMaxVisibleItems(10)
         self.prod.setCompleter(self._suggest)
         self._suggest.activated[str].connect(self._on_pick)
-        form.addRow(tr("Product"), self.prod)
+        # show the on-hand stock of the chosen product right next to its name
+        prod_row = QHBoxLayout()
+        prod_row.addWidget(self.prod, 1)
+        self.stock_hint = QLabel("")
+        self.stock_hint.setObjectName("Muted")
+        prod_row.addWidget(self.stock_hint)
+        prod_wrap = QWidget(); prod_wrap.setLayout(prod_row)
+        form.addRow(tr("Product"), prod_wrap)
 
         # Qty + unit (Piece / Carton). Carton multiplies by the product's
         # units-per-carton; price stays per piece. Stock is always pieces.
@@ -261,6 +268,8 @@ class BackdateEntryView(QWidget):
         # one-key day change (no re-typing D/M/Y) — Alt+Right = next day, Alt+Left = prev
         QShortcut(QKeySequence("Alt+Right"), self, activated=lambda: self._shift_date(1))
         QShortcut(QKeySequence("Alt+Left"), self, activated=lambda: self._shift_date(-1))
+        # F3 — quick price update without leaving this screen
+        QShortcut(QKeySequence("F3"), self, activated=self._open_quick_price)
 
         # Enter-to-advance focus chain (no mouse required). Description sits
         # between Customer and Product so Enter no longer skips it.
@@ -288,17 +297,27 @@ class BackdateEntryView(QWidget):
         self._update_totals()
         self.d_day.setFocus()
 
+    def _open_quick_price(self) -> None:
+        from .quick_price_dialog import QuickPriceDialog
+        QuickPriceDialog(self.ctx, self).exec()
+        self._refresh_products()      # pick up any price just changed
+
     # -- keyboard focus chain ----------------------------------------
     def _install_enter(self, field: QWidget) -> None:
         """Route Enter on `field` (and its inner line edit, for spin boxes) to
-        _advance, so a single handler drives the whole chain."""
+        _advance, so a single handler drives the whole chain.
+
+        Spin boxes deliver the key press to an INTERNAL QLineEdit, and PySide6
+        hands event filters a fresh Python wrapper for that child each time — so
+        a dict keyed by the widget never matches. Instead we tag each field with
+        a dynamic property (stored on the C++ object, readable from any wrapper)
+        and resolve the owning field from obj — or its parent — in eventFilter."""
+        idx = self._chain.index(field)
+        field.setProperty("_chain_idx", idx)
         field.installEventFilter(self)
-        self._watch[field] = field
-        le_getter = getattr(field, "lineEdit", None)
-        le = le_getter() if callable(le_getter) else None
-        if le is not None:
-            le.installEventFilter(self)
-            self._watch[le] = field
+        inner = field.findChild(QLineEdit)
+        if inner is not None and inner is not field:
+            inner.installEventFilter(self)
 
     def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
         if event.type() == QEvent.KeyPress:
@@ -318,9 +337,13 @@ class BackdateEntryView(QWidget):
                 if obj in (self.reset_btn, self.save_btn):
                     obj.click()
                     return True
-                field = self._watch.get(obj)
-                if field is not None:
-                    self._advance(field)
+                # resolve the owning chain field from the widget's dynamic tag,
+                # falling back to its parent (for a spin box's inner editor)
+                idx = obj.property("_chain_idx") if obj is not None else None
+                if idx is None and obj is not None and obj.parent() is not None:
+                    idx = obj.parent().property("_chain_idx")
+                if idx is not None:
+                    self._advance(self._chain[idx])
                     return True
         return super().eventFilter(obj, event)
 
@@ -338,6 +361,7 @@ class BackdateEntryView(QWidget):
                 return
             self.price.setValue((p.get("sale_price_minor") or 0) / self._mu())
             self._update_unit_hint()
+            self._update_stock_hint()
             self.qty.setFocus()
             self.qty.selectAll()
             return
@@ -355,14 +379,25 @@ class BackdateEntryView(QWidget):
         elif hasattr(widget, "selectAll"):
             widget.selectAll()
 
+    def showEvent(self, e) -> None:  # noqa: N802
+        # QFormLayout.setRowVisible is a no-op before the widget is first shown,
+        # so re-apply the Paid-now visibility now that it is.
+        super().showEvent(e)
+        self._on_method_changed()
+
     # -- header helpers ----------------------------------------------
     def _on_method_changed(self) -> None:
         credit = self.method.currentData() == "Debt"
         self.cust_name.setPlaceholderText(
             tr("Customer name (required)") if credit else tr("Walk-in"))
-        # 'Paid now' (partial payment) only makes sense for a credit bill
-        self._paid_label.setVisible(credit)
-        self._paid_wrap.setVisible(credit)
+        # 'Paid now' (partial payment) only makes sense for a credit (udhaar)
+        # bill. Hide the whole form row via the layout (setVisible on the widgets
+        # alone doesn't reliably collapse a QFormLayout row).
+        try:
+            self._form.setRowVisible(self._paid_wrap, credit)
+        except (AttributeError, RuntimeError):
+            self._paid_label.setVisible(credit)
+            self._paid_wrap.setVisible(credit)
         if not credit:
             self.paid_now.setValue(0)
 
@@ -453,6 +488,7 @@ class BackdateEntryView(QWidget):
         if p:
             self.price.setValue((p.get("sale_price_minor") or 0) / self._mu())
             self._update_unit_hint()
+            self._update_stock_hint()
             self.qty.setFocus()
             self.qty.selectAll()
 
@@ -467,6 +503,24 @@ class BackdateEntryView(QWidget):
             self.unit_hint.setText(tr("(not sold in cartons)"))
         else:
             self.unit_hint.setText("")
+
+    def _update_stock_hint(self) -> None:
+        """Show how many pieces of the chosen product are on hand (red if none/
+        negative, amber at/below the minimum level, muted otherwise)."""
+        p = self._current_product()
+        if not p:
+            self.stock_hint.setText("")
+            return
+        qty = int(p.get("stock_qty") or 0)
+        minlvl = int(p.get("min_stock_level") or 0)
+        if qty <= 0:
+            color = "#dc2626"
+        elif minlvl > 0 and qty <= minlvl:
+            color = "#b45309"
+        else:
+            color = "#16a34a"
+        self.stock_hint.setText(tr("In stock:") + f" {qty} " + tr("pcs"))
+        self.stock_hint.setStyleSheet(f"color:{color}; font-weight:700;")
 
     def _mu(self) -> int:
         _, mu = self.controller.currency()
@@ -493,6 +547,7 @@ class BackdateEntryView(QWidget):
         self._update_totals()
         # reset the item fields, cursor back on Product for the next item
         self.prod.clear()
+        self.stock_hint.setText("")
         self.qty.setValue(1)
         self.price.setValue(0)
         self.prod.setFocus()

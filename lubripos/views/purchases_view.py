@@ -1,7 +1,12 @@
 """Purchases page: purchase history + create new purchase + view details."""
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, Qt
+import os
+import tempfile
+from datetime import datetime
+
+from PySide6.QtCore import QDate, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDateEdit, QDialog,
     QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView,
@@ -11,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from ..app_context import AppContext
 from ..core.session import current_session
+from ..reports.report_exporter import to_pdf
 from ..ui.widgets import DataTable
 from ..controllers.purchase_controller import PurchaseController
 from .new_purchase_dialog import NewPurchaseDialog
@@ -48,6 +54,12 @@ class PurchasesView(QWidget):
                                "what you owe them). No cash moves.")
             ret_btn.clicked.connect(self._return_to_supplier)
             header.addWidget(ret_btn)
+            rets_btn = QPushButton("Supplier returns")
+            rets_btn.setObjectName("Secondary")
+            rets_btn.setToolTip("List all goods returned to suppliers; edit or "
+                                "delete one")
+            rets_btn.clicked.connect(self._open_supplier_returns)
+            header.addWidget(rets_btn)
         new_btn = QPushButton("+ New Purchase")
         new_btn.clicked.connect(self._new_purchase)
         header.addWidget(new_btn)
@@ -207,12 +219,16 @@ class PurchasesView(QWidget):
         if PurchaseReturnDialog(self.controller, supplier_id=supplier_id).exec():
             self._reset_and_reload()
 
+    def _open_supplier_returns(self) -> None:
+        SupplierReturnsDialog(self.controller, self.ctx, self).exec()
+        self._reset_and_reload()      # stock/payables may have changed
+
     def _view_details(self) -> None:
         pid = self._selected_id()
         if pid is None:
             return
         data = self.controller.get(pid)
-        PurchaseDetailDialog(data, self.controller.fmt).exec()
+        PurchaseDetailDialog(data, self.controller.fmt, self.ctx).exec()
 
     def _edit_selected(self) -> None:
         pid = self._selected_id()
@@ -257,10 +273,16 @@ class PurchasesView(QWidget):
 
 
 class PurchaseDetailDialog(QDialog):
-    def __init__(self, purchase: dict, fmt_fn) -> None:
+    def __init__(self, purchase: dict, fmt_fn, ctx: AppContext | None = None) -> None:
         super().__init__()
         self._fmt = fmt_fn
+        self._ctx = ctx
+        self._purchase = purchase
         self.setWindowTitle(f"Purchase #{purchase['id']}")
+        # a normal OS window: minimise / maximise / resize
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.setSizeGripEnabled(True)
         self.setMinimumSize(620, 460)
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 20, 20, 20)
@@ -316,9 +338,71 @@ class PurchaseDetailDialog(QDialog):
         summary.setStyleSheet("font-size: 14px;")
         root.addWidget(summary)
 
+        btns = QHBoxLayout()
+        self.print_btn = QPushButton("Print / PDF")
+        self.print_btn.setObjectName("Secondary")
+        self.print_btn.clicked.connect(self._print)
+        self.print_btn.setEnabled(ctx is not None)
+        btns.addWidget(self.print_btn)
+        btns.addStretch(1)
         close = QPushButton("Close")
         close.clicked.connect(self.accept)
-        root.addWidget(close)
+        btns.addWidget(close)
+        root.addLayout(btns)
+
+    def _report(self) -> dict:
+        """A purchase 'voucher' report: header meta in the subtitle, one row per
+        line, and the gross→discount→tax→total breakdown in the summary — the same
+        shape the shared PDF/Excel exporter already knows how to render."""
+        p = self._purchase
+        items = p.get("items", [])
+        rows = [{
+            "product": it.get("product_name") or "(removed product)",
+            "qty": it["qty"],
+            "unit_cost": it["unit_cost_minor"],
+            "disc": (it.get("discount_minor", 0) or 0),
+            "line_total": it["line_total_minor"],
+        } for it in items]
+        gross = sum(it["qty"] * it["unit_cost_minor"] for it in items)
+        line_disc = sum((it.get("discount_minor", 0) or 0) for it in items)
+        bill_disc = p.get("discount_minor", 0) or 0
+        adv_tax = p.get("tax_minor", 0) or 0
+        summary = [{"label": "Subtotal (before discount)", "value": gross, "money": True}]
+        if line_disc:
+            summary.append({"label": "Line discounts", "value": -line_disc, "money": True})
+        if bill_disc:
+            summary.append({"label": "Bill discount", "value": -bill_disc, "money": True})
+        if adv_tax:
+            summary.append({"label": "Advance tax", "value": adv_tax, "money": True})
+        summary.append({"label": "Total", "value": p["total_minor"], "money": True})
+        return {
+            "key": "purchase", "title": f"Purchase #{p['id']}",
+            "subtitle": (f"Supplier: {p.get('supplier_name') or '—'}   ·   "
+                         f"Date: {(p.get('purchase_date') or '')[:16]}   ·   "
+                         f"Invoice #: {p.get('supplier_invoice_no') or '—'}"),
+            "orientation": "portrait",
+            "columns": [
+                {"key": "product", "label": "Product"},
+                {"key": "qty", "label": "Qty", "align": "right"},
+                {"key": "unit_cost", "label": "Unit cost", "align": "right", "money": True},
+                {"key": "disc", "label": "Disc", "align": "right", "money": True},
+                {"key": "line_total", "label": "Line total", "align": "right", "money": True},
+            ],
+            "rows": rows, "summary": summary,
+        }
+
+    def _print(self) -> None:
+        if self._ctx is None:
+            return
+        company = self._ctx.company.get_company()
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            path = to_pdf(self._report(), company, os.path.join(
+                tempfile.gettempdir(),
+                f"purchase_{self._purchase['id']}_{stamp}.pdf"))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Print failed", str(exc))
 
 
 class PurchaseEditDialog(QDialog):
@@ -437,4 +521,256 @@ class PurchaseEditDialog(QDialog):
                 "amount_paid": self.paid.value(),
                 "discount": self.bill_disc.value(),
                 "tax": self.adv_tax.value(),
+                "notes": self.notes.text().strip()}
+
+
+class SupplierReturnsDialog(QDialog):
+    """History of goods returned to suppliers (debit notes), with a date filter,
+    View items, Edit (date/note) and Delete (reverse — restores stock & payable).
+    A resizable window like the other history dialogs."""
+
+    _COLS = ["Date", "Supplier", "Lines", "Total", "Note"]
+
+    def __init__(self, controller: PurchaseController, ctx: AppContext, parent=None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.ctx = ctx
+        self.setWindowTitle("Supplier returns")
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.setSizeGripEnabled(True)
+        self.setMinimumSize(760, 440)
+        self.resize(860, 560)
+        root = QVBoxLayout(self)
+
+        bar = QHBoxLayout()
+        self.all_dates = QCheckBox("All dates")
+        self.all_dates.setChecked(True)
+        self.all_dates.stateChanged.connect(self._on_toggle)
+        bar.addWidget(self.all_dates)
+        bar.addWidget(QLabel("From"))
+        self.d_from = QDateEdit()
+        self.d_from.setCalendarPopup(True)
+        self.d_from.setDisplayFormat("dd MMM yyyy")
+        self.d_from.setDate(QDate.currentDate().addMonths(-3))
+        self.d_from.setEnabled(False)
+        self.d_from.dateChanged.connect(lambda _=None: self._reload())
+        bar.addWidget(self.d_from)
+        bar.addWidget(QLabel("To"))
+        self.d_to = QDateEdit()
+        self.d_to.setCalendarPopup(True)
+        self.d_to.setDisplayFormat("dd MMM yyyy")
+        self.d_to.setDate(QDate.currentDate())
+        self.d_to.setEnabled(False)
+        self.d_to.dateChanged.connect(lambda _=None: self._reload())
+        bar.addWidget(self.d_to)
+        bar.addStretch(1)
+        self.total_lbl = QLabel("")
+        self.total_lbl.setStyleSheet("font-weight:700;")
+        bar.addWidget(self.total_lbl)
+        root.addLayout(bar)
+
+        self.table = QTableWidget(0, len(self._COLS))
+        self.table.setHorizontalHeaderLabels(self._COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self._sync_btns)
+        self.table.doubleClicked.connect(lambda: self._view())
+        root.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        self.view_btn = QPushButton("View items")
+        self.view_btn.setObjectName("Secondary")
+        self.view_btn.clicked.connect(self._view)
+        self.view_btn.setEnabled(False)
+        self.edit_btn = QPushButton("Edit selected")
+        self.edit_btn.setObjectName("Secondary")
+        self.edit_btn.setToolTip("Correct the return's date or note")
+        self.edit_btn.clicked.connect(self._edit)
+        self.edit_btn.setEnabled(False)
+        self.del_btn = QPushButton("Delete selected")
+        self.del_btn.setObjectName("Secondary")
+        self.del_btn.setToolTip("Reverse this return: stock comes back and the "
+                                "supplier balance goes back up")
+        self.del_btn.clicked.connect(self._delete)
+        self.del_btn.setEnabled(False)
+        btns.addWidget(self.view_btn)
+        btns.addWidget(self.edit_btn)
+        btns.addWidget(self.del_btn)
+        btns.addStretch(1)
+        close = QPushButton("Close")
+        close.setObjectName("Secondary")
+        close.clicked.connect(self.accept)
+        btns.addWidget(close)
+        root.addLayout(btns)
+
+        self._reload()
+
+    def _on_toggle(self) -> None:
+        on = not self.all_dates.isChecked()
+        self.d_from.setEnabled(on)
+        self.d_to.setEnabled(on)
+        self._reload()
+
+    def _reload(self) -> None:
+        kw = {}
+        if not self.all_dates.isChecked():
+            kw["date_from"] = self.d_from.date().toString("yyyy-MM-dd")
+            kw["date_to"] = self.d_to.date().toString("yyyy-MM-dd")
+        try:
+            data = self.controller.list_returns(**kw)
+            rows = data["rows"]
+        except Exception:
+            rows, data = [], {"total": 0}
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            cells = [row["date"], row["supplier_name"], str(row["lines"]),
+                     self.controller.fmt(row["total_minor"]), row.get("notes") or ""]
+            for c, val in enumerate(cells):
+                it = QTableWidgetItem(str(val))
+                if c == 0:
+                    it.setData(Qt.UserRole, row["id"])
+                if c in (2, 3):
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(r, c, it)
+        self.total_lbl.setText(
+            f"{len(rows)} return(s)  ·  total {self.controller.fmt(data['total'])}")
+        self._sync_btns()
+
+    def _sync_btns(self) -> None:
+        sel = self._selected_id() is not None
+        self.view_btn.setEnabled(sel)
+        self.edit_btn.setEnabled(sel and current_session.can("record.edit"))
+        self.del_btn.setEnabled(sel and current_session.can("record.delete"))
+
+    def _selected_id(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        return it.data(Qt.UserRole) if it else None
+
+    def _view(self) -> None:
+        rid = self._selected_id()
+        if rid is None:
+            return
+        try:
+            d = self.controller.get_return(rid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not open", str(exc))
+            return
+        lines = "\n".join(
+            f"  • {it['product_name']}   ×{it['qty']}   @ "
+            f"{self.controller.fmt(it['unit_cost_minor'])}   = "
+            f"{self.controller.fmt(it['line_total_minor'])}"
+            for it in d.get("items", []))
+        QMessageBox.information(
+            self, f"Return to {d.get('supplier_name')}",
+            f"Date: {(d.get('return_date') or '')[:16]}\n"
+            f"Supplier: {d.get('supplier_name')}\n"
+            f"Note: {d.get('notes') or '—'}\n\nItems:\n{lines}\n\n"
+            f"Total: {self.controller.fmt(d.get('total_minor') or 0)}")
+
+    def _edit(self) -> None:
+        rid = self._selected_id()
+        if rid is None:
+            return
+        if not current_session.can("record.edit"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the Edit records privilege.")
+            return
+        try:
+            d = self.controller.get_return(rid)
+        except Exception as exc:
+            QMessageBox.warning(self, "Could not open", str(exc))
+            return
+        dlg = _ReturnEditDialog(self.controller, d, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        v = dlg.values()
+        ok, msg, _ = self.controller.edit_return(
+            rid, return_date=v["date"] + " 12:00:00", notes=v["notes"])
+        if ok:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not save", msg)
+
+    def _delete(self) -> None:
+        rid = self._selected_id()
+        if rid is None:
+            return
+        if not current_session.can("record.delete"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the Delete/reverse privilege.")
+            return
+        row = self.table.currentRow()
+        who = self.table.item(row, 1).text()
+        amt = self.table.item(row, 3).text()
+        confirm = QMessageBox.warning(
+            self, "Delete return",
+            f"Delete this return of {amt} to {who}?\n\n"
+            "The returned stock comes back and what you owe the supplier goes "
+            "back up. This cannot itself be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        ok, msg, _ = self.controller.reverse_return(rid)
+        if ok:
+            self._reload()
+        else:
+            QMessageBox.warning(self, "Could not delete", msg)
+
+
+class _ReturnEditDialog(QDialog):
+    """Edit a supplier return's date / note (items are read-only — reverse and
+    re-enter to change quantities)."""
+
+    def __init__(self, controller: PurchaseController, data: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle(f"Edit return — {data.get('supplier_name')}")
+        self.setMinimumWidth(460)
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        qd = QDate.fromString((data.get("return_date") or "")[:10], "yyyy-MM-dd")
+        self.date.setDate(qd if qd.isValid() else QDate.currentDate())
+        form.addRow("Return date", self.date)
+
+        self.notes = QLineEdit(data.get("notes") or "")
+        form.addRow("Note", self.notes)
+        root.addLayout(form)
+
+        items = QTableWidget(0, 3)
+        items.setHorizontalHeaderLabels(["Product", "Qty", "Line total"])
+        items.verticalHeader().setVisible(False)
+        items.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        items.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        rows = data.get("items", [])
+        items.setRowCount(len(rows))
+        for r, it in enumerate(rows):
+            cells = [it["product_name"], str(it["qty"]),
+                     self.controller.fmt(it["line_total_minor"])]
+            for c, val in enumerate(cells):
+                cell = QTableWidgetItem(val)
+                if c in (1, 2):
+                    cell.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                items.setItem(r, c, cell)
+        root.addWidget(QLabel("Items (read-only):"))
+        root.addWidget(items, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def values(self) -> dict:
+        return {"date": self.date.date().toString("yyyy-MM-dd"),
                 "notes": self.notes.text().strip()}

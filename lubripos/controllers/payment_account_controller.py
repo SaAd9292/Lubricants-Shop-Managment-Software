@@ -29,19 +29,23 @@ class PaymentAccountController:
 
     def update(self, account_id, data):
         return self._guarded(
-            lambda uid: self.accounts.update(account_id, data, user_id=uid) or account_id)
+            lambda uid: self.accounts.update(account_id, data, user_id=uid) or account_id,
+            "record.edit")
 
     def set_active(self, account_id, active):
         return self._guarded(
-            lambda uid: self.accounts.set_active(account_id, active, user_id=uid) or account_id)
+            lambda uid: self.accounts.set_active(account_id, active, user_id=uid) or account_id,
+            "record.edit" if active else "record.delete")
 
     def delete(self, account_id):
         return self._guarded(
-            lambda uid: self.accounts.delete(account_id, user_id=uid) or account_id)
+            lambda uid: self.accounts.delete(account_id, user_id=uid) or account_id,
+            "record.delete")
 
-    def _guarded(self, op):
+    def _guarded(self, op, perm: str | None = None):
         try:
-            user = current_session.require_role("admin")
+            user = (current_session.require_permission(perm) if perm
+                    else current_session.require_role("admin"))
             return True, "ok", op(user.id)
         except LubriPosError as exc:
             return False, str(exc), None

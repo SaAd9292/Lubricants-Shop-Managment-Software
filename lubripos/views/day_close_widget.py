@@ -96,14 +96,17 @@ class DayCloseWidget(QWidget):
         self._fmt = fmt
         summ = {s["label"]: s["value"] for s in report.get("summary", [])}
 
+        net_today = summ.get("Today's cash (net)", 0)
         self._fill_cards(self.kpi_row, [
             ("Gross sales", fmt(summ.get("Gross sales", 0)), _ACCENT),
             ("Money received", fmt(summ.get("Money received", 0)), _GREEN),
             ("Opening cash", fmt(summ.get("Opening cash", 0)), _MUTED),
-            ("Cash in hand", fmt(summ.get("Cash in hand", 0)), "#0f172a"),
+            ("Today's cash (in − out)", fmt(net_today),
+             _GREEN if net_today >= 0 else _RED),
+            ("Cash in hand", fmt(summ.get("Cash in hand", 0)),
+             "#0f172a" if summ.get("Cash in hand", 0) >= 0 else _RED),
             ("Refunds", fmt(summ.get("Refunds", 0)), _RED),
             ("Expenses", fmt(summ.get("Expenses", 0)), _RED),
-            ("Net", fmt(summ.get("Net", 0)), _GREEN),
             ("Invoices", str(summ.get("Invoices", 0)), _MUTED),
         ])
 
@@ -116,9 +119,20 @@ class DayCloseWidget(QWidget):
         # breaks when a section is renamed or added.
         self._clear_layout(self._left)
         self._clear_layout(self._right)
+        left_secs, right_secs = [], []
         for sec in report.get("sections", []):
-            on_left = sec.get("name", "").startswith(("Cash & paid", "Udhaar"))
-            self._add_section(self._left if on_left else self._right, sec)
+            if sec.get("name", "").startswith(("Cash & paid", "Udhaar")):
+                left_secs.append(sec)
+            else:
+                right_secs.append(sec)
+        # the Cash drawer (cash in − out → closing) is what the owner checks most,
+        # so render it FIRST in the right column instead of at the very bottom.
+        right_secs.sort(key=lambda s: 0 if s.get("name", "").startswith("Cash drawer")
+                        else 1)
+        for sec in left_secs:
+            self._add_section(self._left, sec)
+        for sec in right_secs:
+            self._add_section(self._right, sec)
         self._left.addStretch(1)
         self._right.addStretch(1)
 

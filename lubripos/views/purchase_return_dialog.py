@@ -66,6 +66,14 @@ class PurchaseReturnDialog(QDialog):
                 self.supplier.setCurrentIndex(self.supplier.count() - 1)
         form.addRow("Supplier", self.supplier)
 
+        # Return date — kept at the TOP so it's set before the items are added
+        self.ret_date = QDateEdit()
+        self.ret_date.setCalendarPopup(True)
+        self.ret_date.setDisplayFormat("dd MMM yyyy")
+        self.ret_date.setMaximumDate(QDate.currentDate())
+        self.ret_date.setDate(QDate.currentDate())
+        form.addRow("Return date", self.ret_date)
+
         # Product type-ahead
         self.prod = QLineEdit()
         self.prod.setPlaceholderText("Type product name…")
@@ -123,15 +131,9 @@ class PurchaseReturnDialog(QDialog):
         self.cart.cellClicked.connect(self._on_cell)
         root.addWidget(self.cart, 1)
 
-        # date + notes
+        # note (date lives at the top now)
         meta = QFormLayout()
         meta.setHorizontalSpacing(16)
-        self.ret_date = QDateEdit()
-        self.ret_date.setCalendarPopup(True)
-        self.ret_date.setDisplayFormat("dd MMM yyyy")
-        self.ret_date.setMaximumDate(QDate.currentDate())
-        self.ret_date.setDate(QDate.currentDate())
-        meta.addRow("Return date", self.ret_date)
         self.notes = QLineEdit()
         self.notes.setPlaceholderText("Reason / note (optional)")
         meta.addRow("Note", self.notes)

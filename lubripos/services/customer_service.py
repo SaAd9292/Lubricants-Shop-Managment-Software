@@ -337,8 +337,15 @@ class CustomerService:
         return pid
 
     def debt_ledger(self, customer_id: int) -> dict[str, Any]:
-        """Combined, date-ordered ledger for one customer: each 'Debt' sale
-        (money owed, +) and each repayment (money in, -), plus running totals."""
+        """Full, date-ordered money ledger for one customer, covering EVERY kind
+        of transaction:
+          * Udhaar (credit) sales  -> they owe more   (debit, +)
+          * Opening balance        -> they owe more   (debit, +)
+          * Recoveries (payments)  -> they owe less    (credit, −)
+          * Return credits         -> they owe less    (credit, −)
+          * Payouts (cash back)    -> they owe more    (debit, +)  (settles our
+                                      debt when they were in credit)
+        balance = charged + paid_out − paid, matching balance_owed()."""
         cust = self.get(customer_id)
         charges = [dict(r) for r in self.db.query(
             "SELECT s.id, substr(s.sale_date,1,16) AS date, s.invoice_no AS ref, "
@@ -354,13 +361,19 @@ class CustomerService:
                                "amount": opening})
         payments = [dict(r) for r in self.db.query(
             "SELECT id, substr(payment_date,1,16) AS date, method, notes, "
-            "amount_minor AS amount FROM customer_payments "
+            "amount_minor AS amount, return_id FROM customer_payments "
             "WHERE customer_id = ? ORDER BY payment_date", (customer_id,))]
+        payouts = [dict(r) for r in self.db.query(
+            "SELECT id, substr(payout_date,1,16) AS date, method, notes, "
+            "amount_minor AS amount FROM customer_payouts "
+            "WHERE customer_id = ? ORDER BY payout_date", (customer_id,))]
         charged = sum(c["amount"] for c in charges)
         paid = sum(p["amount"] for p in payments)
+        paid_out = sum(po["amount"] for po in payouts)
         return {"customer": cust, "charges": charges, "payments": payments,
-                "charged_total": charged, "paid_total": paid,
-                "balance": charged - paid}
+                "payouts": payouts, "charged_total": charged, "paid_total": paid,
+                "payout_total": paid_out,
+                "balance": charged + paid_out - paid}
 
     def get_payment(self, payment_id: int) -> dict[str, Any]:
         """Full detail of one repayment (for its receipt): customer, amount,

@@ -380,6 +380,48 @@ class PurchaseService:
                 {where} ORDER BY pr.return_date DESC, pr.id DESC""", tuple(params))]
         return {"rows": rows, "total": sum(r["total_minor"] for r in rows)}
 
+    def get_purchase_return(self, return_id: int) -> dict[str, Any]:
+        """One purchase return with its line items (for the detail/edit view)."""
+        head = self.db.query_one(
+            """SELECT pr.id, pr.supplier_id, pr.purchase_id, pr.return_date,
+                   pr.total_minor, pr.notes,
+                   COALESCE(s.name,'(removed)') AS supplier_name
+               FROM purchase_returns pr
+               LEFT JOIN suppliers s ON s.id = pr.supplier_id
+               WHERE pr.id = ?""", (return_id,))
+        if head is None:
+            raise NotFoundError(f"Purchase return {return_id} not found")
+        items = [dict(r) for r in self.db.query(
+            "SELECT product_id, product_name, qty, unit_cost_minor, line_total_minor "
+            "FROM purchase_return_items WHERE return_id = ? ORDER BY id", (return_id,))]
+        out = dict(head)
+        out["items"] = items
+        return out
+
+    def update_purchase_return(self, return_id: int, *,
+                               return_date: str | None = None,
+                               notes: str | None = None,
+                               user_id: int | None = None) -> None:
+        """Edit a purchase return's header (date / note) — NOT its quantities, so
+        stock and the supplier payable are untouched. To change the items,
+        reverse the return and record a fresh one."""
+        if not self.db.query_one("SELECT id FROM purchase_returns WHERE id = ?",
+                                 (return_id,)):
+            raise NotFoundError(f"Purchase return {return_id} not found")
+        sets, params = [], []
+        if return_date is not None:
+            sets.append("return_date = ?"); params.append(return_date)
+        if notes is not None:
+            sets.append("notes = ?"); params.append(notes or None)
+        if sets:
+            params.append(return_id)
+            self.db.execute(
+                f"UPDATE purchase_returns SET {', '.join(sets)} WHERE id = ?",
+                tuple(params))
+        self.audit.record(action="EDIT_PURCHASE_RETURN", user_id=user_id,
+                          entity_type="purchase_return", entity_id=return_id)
+        log.info("Edited purchase return id=%s (header)", return_id)
+
     # -- reads --------------------------------------------------------
     def list_purchases(
         self,

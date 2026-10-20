@@ -7,13 +7,14 @@ hover read-out.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QDate, QRectF, Qt
+from PySide6.QtCore import QDate, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
-    QColor, QFont, QLinearGradient, QPainter, QPainterPath, QPen,
+    QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen,
 )
 from PySide6.QtWidgets import (
-    QDateEdit, QFrame, QGraphicsDropShadowEffect, QGridLayout,
-    QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QButtonGroup, QDateEdit, QFrame, QGraphicsDropShadowEffect, QGridLayout,
+    QHBoxLayout, QLabel, QPushButton, QScrollArea, QScrollBar, QVBoxLayout,
+    QWidget,
 )
 
 from datetime import datetime, timedelta
@@ -308,29 +309,94 @@ class _ListCard(QFrame):
 
 
 class _SalesChart(QWidget):
-    """A polished, dependency-free bar chart: gradient rounded bars, a currency
-    y-axis with gridlines, per-bar value labels, and a hover read-out."""
+    """A polished, dependency-free sales chart. Toggles between BAR and LINE/AREA.
+    Features a currency y-axis with gridlines, peak + hover value labels, a hover
+    tooltip (sales + invoices), the best day highlighted, and a `clicked(date)`
+    signal (emitted in day granularity) so a click opens that day's DSR."""
+
+    clicked = Signal(str)   # the clicked point's date (YYYY-MM-DD)
 
     def __init__(self) -> None:
         super().__init__()
         self._series: list[dict] = []
         self._sym = "Rs"
         self._mu = 100
+        self._mode = "bar"          # 'bar' or 'line'
+        self._granularity = "day"
         self._hover = -1
-        self._bars: list[QRectF] = []
-        self.setMinimumHeight(240)
+        self._slots: dict[int, QRectF] = {}   # global index -> hover/click column
+        self._pts: dict[int, QPointF] = {}    # global index -> line marker centre
+        self._vis_start = 0                   # first visible point (pan offset)
+        self.setMinimumHeight(260)
         self.setMouseTracking(True)
+        # When a range has more bars than fit comfortably, the chart shows a
+        # readable WINDOW of them and this scrollbar pans it. Hidden when it fits.
+        self.hbar = QScrollBar(Qt.Horizontal, self)
+        self.hbar.hide()
+        self.hbar.valueChanged.connect(self._on_scroll)
+        self._stick_end = True                # new data starts scrolled to latest
 
-    def set_series(self, series, sym: str = "Rs", mu: int = 100) -> None:
+    def _on_scroll(self, _v) -> None:
+        self._stick_end = False
+        self.update()
+
+    def set_series(self, series, sym="Rs", mu=100, granularity="day") -> None:
         self._series = series or []
         self._sym = sym
         self._mu = mu
+        self._granularity = granularity
         self._hover = -1
+        self._stick_end = True                # show the most recent window first
+        self.update()
+
+    def set_mode(self, mode: str) -> None:
+        self._mode = "line" if mode == "line" else "bar"
         self.update()
 
     def _plot_rect(self) -> QRectF:
-        return QRectF(56, 20, self.width() - 56 - 14, self.height() - 20 - 28)
+        # reserve bottom room for the zoom scrollbar when it's showing
+        reserve = 18 if self.hbar.isVisible() else 0
+        return QRectF(56, 22, self.width() - 56 - 16,
+                      self.height() - 22 - 30 - reserve)
 
+    # min pixels per bar/point before we switch to a scrollable window
+    _MIN_SLOT = 26.0
+
+    def _window(self, plot) -> tuple[int, int]:
+        """Decide the visible slice [start, start+count). When everything fits,
+        the whole series is shown and the scrollbar is hidden; otherwise a fixed
+        auto-sized window of the widest readable size is shown and the scrollbar
+        pans it."""
+        n = len(self._series)
+        count = max(8, int(plot.width() // self._MIN_SLOT))
+        if count >= n:
+            self.hbar.hide()
+            self._vis_start = 0
+            return 0, n
+        max_start = n - count
+        self.hbar.blockSignals(True)
+        self.hbar.setMinimum(0)
+        self.hbar.setMaximum(max_start)
+        self.hbar.setPageStep(count)
+        self.hbar.setSingleStep(1)
+        if self._stick_end:
+            self.hbar.setValue(max_start)         # newest window by default
+        self.hbar.blockSignals(False)
+        start = min(self.hbar.value(), max_start)
+        self._vis_start = start
+        self.hbar.setGeometry(int(plot.left()), self.height() - 16,
+                              int(plot.width()), 14)
+        self.hbar.show()
+        return start, count
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        self.update()
+
+    def _full_money(self, minor: int) -> str:
+        return format_money(int(minor or 0), self._sym, self._mu)
+
+    # -- paint --------------------------------------------------------
     def paintEvent(self, e) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -338,50 +404,99 @@ class _SalesChart(QWidget):
         totals = [x.get("total", 0) for x in self._series]
 
         if not self._series or max(totals, default=0) == 0:
+            self.hbar.hide()
             p.setPen(QColor(_FAINT))
             f = QFont(); f.setPointSize(10); p.setFont(f)
             p.drawText(self.rect(), Qt.AlignCenter, "No sales in this period.")
             p.end()
             return
 
+        # Decide the visible window first (this shows/positions the zoom scrollbar),
+        # then recompute the plot so its height accounts for the scrollbar strip.
+        plot = self._plot_rect()
+        vis_start, vis_count = self._window(plot)
+        plot = self._plot_rect()
+        vis_end = vis_start + vis_count
+
+        # y-axis is scaled to the WHOLE range's peak so bars don't jump height as
+        # you pan the window.
         top = _nice_ceil(max(totals))
         grid_pen = QPen(QColor(0, 0, 0, 16)); grid_pen.setWidthF(1.0)
-        lbl_font = QFont(); lbl_font.setPointSize(8)
-        p.setFont(lbl_font)
-        # gridlines + y-axis labels (0 .. top in 4 steps)
+        small = QFont(); small.setPointSize(8)
+        p.setFont(small)
         for i in range(5):
             frac = i / 4
             y = plot.bottom() - frac * plot.height()
             p.setPen(grid_pen)
-            p.drawLine(QRectF(plot.left(), y, plot.width(), 0).topLeft(),
-                       QRectF(plot.right(), y, 0, 0).topLeft())
+            p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
             p.setPen(QColor(_FAINT))
             p.drawText(QRectF(0, y - 8, plot.left() - 8, 16),
                        Qt.AlignRight | Qt.AlignVCenter,
                        _short_money(int(top * frac), self._mu, self._sym))
 
-        n = len(self._series)
-        slot = plot.width() / n
-        bar_w = min(46.0, slot * 0.52)
-        self._bars = []
-        val_font = QFont(); val_font.setPointSize(8); val_font.setBold(True)
-        day_font = QFont(); day_font.setPointSize(8)
+        slot = plot.width() / vis_count
+        self._slots = {}
+        self._pts = {}
+        # the peak label is shown on the best day WITHIN the visible window
+        best = max(range(vis_start, vis_end),
+                   key=lambda i: self._series[i]["total"])
+        # x-label thinning across the visible count so dates never collide
+        fit = max(1, int(plot.width() // 62))
+        lbl_step = max(1, -(-vis_count // fit))   # ceil(vis_count / fit)
 
-        for i, x in enumerate(self._series):
-            cx = plot.left() + slot * (i + 0.5)
-            bx = cx - bar_w / 2
+        if self._mode == "line":
+            self._paint_line(p, plot, top, best, slot, lbl_step, vis_start, vis_count)
+        else:
+            self._paint_bars(p, plot, top, best, slot, lbl_step, vis_start, vis_count)
+
+        p.setPen(QPen(QColor(0, 0, 0, 32), 1.0))
+        p.drawLine(plot.bottomLeft(), plot.bottomRight())
+
+        if self._hover in self._slots or self._hover in self._pts:
+            self._paint_tooltip(p, plot)
+        p.end()
+
+    def _bar_label(self, p, cx, slot, by, total, strong, plot) -> None:
+        f = QFont(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+        p.setPen(QColor(_INK) if strong else QColor(_MUTE))
+        # give the value its own comfortable width and keep it inside the plot so
+        # the peak label never gets clipped at the chart's left/right edge
+        w = 64.0
+        left = min(max(cx - w / 2, plot.left()), plot.right() - w)
+        p.drawText(QRectF(left, by - 17, w, 15),
+                   Qt.AlignHCenter | Qt.AlignBottom,
+                   _short_money(total, self._mu, self._sym))
+
+    def _paint_bars(self, p, plot, top, best, slot, lbl_step, vis_start, vis_count) -> None:
+        bar_w = min(46.0, slot * 0.6)
+        dayf = QFont(); dayf.setPointSize(8)
+        for li in range(vis_count):
+            i = vis_start + li
+            x = self._series[i]
+            cx = plot.left() + slot * (li + 0.5)
+            self._slots[i] = QRectF(plot.left() + slot * li, plot.top(),
+                                    slot, plot.height())
             bh = (x["total"] / top) * plot.height() if top else 0
             by = plot.bottom() - bh
-            bar = QRectF(bx, by, bar_w, max(bh, 0.0))
-            self._bars.append(QRectF(bx, plot.top(), bar_w, plot.height()))
-
+            bar = QRectF(cx - bar_w / 2, by, bar_w, max(bh, 0.0))
             hovered = (i == self._hover)
+            is_best = (i == best)
+            # Colour by the day/bucket's DSR cash net (in − out):
+            #   0  -> green  (balanced — the money nets out)
+            #   >0 -> yellow (cash left over / positive)
+            #   <0 -> red    (short / negative)
+            a0 = 255 if hovered else 235
+            a1 = 255 if hovered else 205
+            net = x.get("cash_net", 0)
+            if net > 0:
+                top0, bot0 = QColor(234, 179, 8, a0), QColor(253, 224, 71, a1)
+            elif net < 0:
+                top0, bot0 = QColor(220, 38, 38, a0), QColor(248, 113, 113, a1)
+            else:
+                top0, bot0 = QColor(22, 163, 74, a0), QColor(74, 222, 128, a1)
             grad = QLinearGradient(0, by, 0, plot.bottom())
-            c_top = QColor(37, 99, 235, 255 if hovered else 235)
-            c_bot = QColor(96, 165, 250, 255 if hovered else 205)
-            grad.setColorAt(0, c_top)
-            grad.setColorAt(1, c_bot)
-
+            grad.setColorAt(0, top0)
+            grad.setColorAt(1, bot0)
             if bh > 0.5:
                 path = QPainterPath()
                 r = min(6.0, bar_w / 2, bh)
@@ -392,42 +507,129 @@ class _SalesChart(QWidget):
                 path.quadTo(bar.right(), bar.top(), bar.right(), bar.top() + r)
                 path.lineTo(bar.right(), bar.bottom())
                 path.closeSubpath()
-                p.setPen(Qt.NoPen)
-                p.fillPath(path, grad)
+                p.setPen(Qt.NoPen); p.fillPath(path, grad)
+            # value label only on the peak + hovered (keeps it uncluttered)
+            if x["total"] > 0 and (is_best or hovered):
+                self._bar_label(p, cx, slot, by, x["total"], hovered or is_best, plot)
+            if li % lbl_step == 0 or hovered:
+                p.setFont(dayf)
+                p.setPen(QColor(_INK) if hovered else QColor(_FAINT))
+                lw = slot * lbl_step           # room up to the next shown label
+                p.drawText(QRectF(cx - lw / 2, plot.bottom() + 6, lw, 18),
+                           Qt.AlignHCenter | Qt.AlignTop, str(x.get("label", "")))
 
-            # value label above the bar
-            if x["total"] > 0:
-                p.setFont(val_font)
-                p.setPen(QColor(_INK) if hovered else QColor(_MUTE))
-                p.drawText(QRectF(cx - slot / 2, by - 17, slot, 15),
-                           Qt.AlignHCenter | Qt.AlignBottom,
-                           _short_money(x["total"], self._mu, self._sym))
+    def _paint_line(self, p, plot, top, best, slot, lbl_step, vis_start, vis_count) -> None:
+        self._pts = {}
+        order = []
+        for li in range(vis_count):
+            i = vis_start + li
+            x = self._series[i]
+            cx = plot.left() + slot * (li + 0.5)
+            cy = plot.bottom() - (x["total"] / top) * plot.height() if top else plot.bottom()
+            pt = QPointF(cx, cy)
+            self._pts[i] = pt
+            self._slots[i] = QRectF(plot.left() + slot * li, plot.top(),
+                                    slot, plot.height())
+            order.append(pt)
+        # area fill under the line
+        area = QPainterPath()
+        area.moveTo(order[0].x(), plot.bottom())
+        for pt in order:
+            area.lineTo(pt.x(), pt.y())
+        area.lineTo(order[-1].x(), plot.bottom())
+        area.closeSubpath()
+        grad = QLinearGradient(0, plot.top(), 0, plot.bottom())
+        grad.setColorAt(0, QColor(37, 99, 235, 90))
+        grad.setColorAt(1, QColor(37, 99, 235, 10))
+        p.fillPath(area, grad)
+        # the line
+        line = QPainterPath(); line.moveTo(order[0])
+        for pt in order[1:]:
+            line.lineTo(pt)
+        p.setPen(QPen(QColor(37, 99, 235), 2.2)); p.drawPath(line)
+        # markers + labels
+        dayf = QFont(); dayf.setPointSize(8)
+        for li in range(vis_count):
+            i = vis_start + li
+            pt = self._pts[i]
+            hovered = (i == self._hover); is_best = (i == best)
+            if hovered or is_best:
+                p.setBrush(QColor(22, 163, 74) if is_best else QColor(37, 99, 235))
+                p.setPen(QPen(QColor("white"), 1.5))
+                p.drawEllipse(pt, 4.2, 4.2)
+                self._bar_label(p, pt.x(), slot, pt.y(), self._series[i]["total"],
+                                True, plot)
+            if li % lbl_step == 0 or hovered:
+                p.setFont(dayf)
+                p.setPen(QColor(_INK) if hovered else QColor(_FAINT))
+                lw = slot * lbl_step
+                p.drawText(QRectF(pt.x() - lw / 2, plot.bottom() + 6, lw, 18),
+                           Qt.AlignHCenter | Qt.AlignTop, str(self._series[i].get("label", "")))
 
-            # day label
-            p.setFont(day_font)
-            p.setPen(QColor(_INK) if hovered else QColor(_FAINT))
-            p.drawText(QRectF(cx - slot / 2, plot.bottom() + 6, slot, 18),
-                       Qt.AlignHCenter | Qt.AlignTop, str(x.get("label", "")))
+    def _paint_tooltip(self, p, plot) -> None:
+        x = self._series[self._hover]
+        net = x.get("cash_net", 0)
+        net_word = "balanced" if net == 0 else ("positive" if net > 0 else "short")
+        lines = [str(x.get("label", "")),
+                 "Sales: " + self._full_money(x.get("total", 0)),
+                 f"Invoices: {x.get('n', 0)}",
+                 f"Cash in−out: {self._full_money(net)} ({net_word})"]
+        fm = QFontMetrics(QFont())
+        w = max(fm.horizontalAdvance(s) for s in lines) + 18
+        h = 18 * len(lines) + 10
+        if self._mode == "line" and self._hover in self._pts:
+            anchor = self._pts[self._hover]
+        else:
+            r = self._slots.get(self._hover)
+            if r is None:
+                return
+            anchor = QPointF(r.center().x(), plot.top() + 10)
+        tx = min(max(anchor.x() + 10, plot.left()), plot.right() - w)
+        ty = max(anchor.y() - h - 8, plot.top())
+        box = QRectF(tx, ty, w, h)
+        p.setBrush(QColor(17, 24, 39, 235)); p.setPen(Qt.NoPen)
+        p.drawRoundedRect(box, 6, 6)
+        p.setPen(QColor("white"))
+        f = QFont(); f.setPointSize(8); f.setBold(True); p.setFont(f)
+        p.drawText(QRectF(tx + 9, ty + 5, w - 18, 18), Qt.AlignLeft, lines[0])
+        f.setBold(False); p.setFont(f)
+        for k, s in enumerate(lines[1:], start=1):
+            p.drawText(QRectF(tx + 9, ty + 5 + 18 * k, w - 18, 18), Qt.AlignLeft, s)
 
-        # baseline
-        p.setPen(QPen(QColor(0, 0, 0, 32), 1.0))
-        p.drawLine(plot.bottomLeft(), plot.bottomRight())
-        p.end()
+    # -- interaction --------------------------------------------------
+    def _idx_at(self, x) -> int:
+        for i, r in self._slots.items():
+            if r.left() <= x <= r.right():
+                return i
+        return -1
 
     def mouseMoveEvent(self, e) -> None:  # noqa: N802
-        idx = -1
-        for i, r in enumerate(self._bars):
-            if r.left() <= e.position().x() <= r.right():
-                idx = i
-                break
+        idx = self._idx_at(e.position().x())
         if idx != self._hover:
             self._hover = idx
+            self.setCursor(Qt.PointingHandCursor if (idx >= 0 and self._granularity == "day")
+                           else Qt.ArrowCursor)
             self.update()
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        idx = self._idx_at(e.position().x())
+        if idx >= 0 and self._granularity == "day":
+            self.clicked.emit(self._series[idx].get("date", ""))
 
     def leaveEvent(self, e) -> None:  # noqa: N802
         if self._hover != -1:
             self._hover = -1
+            self.setCursor(Qt.ArrowCursor)
             self.update()
+
+    def wheelEvent(self, e) -> None:  # noqa: N802
+        # when windowed (scrollbar visible), the wheel pans the window
+        if self.hbar.isVisible():
+            step = -1 if e.angleDelta().y() > 0 else 1
+            self.hbar.setValue(self.hbar.value() + step * 3)
+            e.accept()
+        else:
+            super().wheelEvent(e)
 
 
 class DashboardView(QWidget):
@@ -575,14 +777,31 @@ class DashboardView(QWidget):
         cl = QVBoxLayout(chart_card)
         cl.setContentsMargins(20, 16, 20, 14)
         cl.setSpacing(2)
+
+        chead = QHBoxLayout()
+        tbox = QVBoxLayout(); tbox.setSpacing(1)
         self._chart_title = QLabel("Sales")
         self._chart_title.setStyleSheet(f"font-size:15px;font-weight:700;color:{_INK};")
-        ct = self._chart_title
         self._chart_sub = QLabel("")
         self._chart_sub.setStyleSheet(f"color:{_FAINT};font-size:11px;")
-        cl.addWidget(ct)
-        cl.addWidget(self._chart_sub)
+        tbox.addWidget(self._chart_title)
+        tbox.addWidget(self._chart_sub)
+        chead.addLayout(tbox)
+        chead.addStretch(1)
+        # segmented toggles: chart type (bar/line) and granularity (D/W/M)
+        self._chart_mode = "bar"
+        self._chart_gran = "day"
+        self._mode_grp, mode_w = self._segmented(
+            [("Bar", "bar"), ("Line", "line")], "bar", self._on_mode)
+        chead.addWidget(mode_w)
+        chead.addSpacing(10)
+        self._gran_grp, gran_w = self._segmented(
+            [("Day", "day"), ("Week", "week"), ("Month", "month")], "day", self._on_gran)
+        chead.addWidget(gran_w)
+        cl.addLayout(chead)
+
         self.chart = _SalesChart()
+        self.chart.clicked.connect(self._open_day_from_chart)
         cl.addWidget(self.chart, 1)
         root.addWidget(chart_card)
 
@@ -611,6 +830,58 @@ class DashboardView(QWidget):
     def _open_day_close(self) -> None:
         from .day_close_dialog import DayCloseDialog
         DayCloseDialog(self.ctx, self).exec()
+
+    # -- sales chart toggles ------------------------------------------
+    def _segmented(self, options, default, on_change):
+        """Build a small segmented toggle (checkable buttons in a group). Returns
+        (QButtonGroup, container QWidget). on_change(value) fires on selection."""
+        wrap = QWidget()
+        row = QHBoxLayout(wrap)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        grp = QButtonGroup(wrap)
+        grp.setExclusive(True)
+        for label, value in options:
+            b = QPushButton(label)
+            b.setObjectName("Chip")
+            b.setCheckable(True)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setChecked(value == default)
+            b.setProperty("seg_value", value)
+            grp.addButton(b)
+            row.addWidget(b)
+        grp.buttonClicked.connect(
+            lambda btn: on_change(btn.property("seg_value")))
+        return grp, wrap
+
+    def _on_mode(self, value) -> None:
+        self._chart_mode = value
+        self.chart.set_mode(value)
+
+    def _on_gran(self, value) -> None:
+        self._chart_gran = value
+        self._apply_chart()
+
+    def _apply_chart(self) -> None:
+        """(Re)build the sales series for the current window + granularity and
+        push it to the chart. Called on refresh and whenever a toggle changes."""
+        if not hasattr(self, "_win_from"):
+            return
+        series = self.svc.chart_series(self._win_from, self._win_to, self._chart_gran)
+        total = sum(x.get("total", 0) for x in series)
+        per = {"day": "day", "week": "week", "month": "month"}[self._chart_gran]
+        self._chart_sub.setText(
+            f"Gross sales per {per}  ·  total "
+            + format_money(total, self._chart_sym, self._chart_mu))
+        self.chart.set_series(series, self._chart_sym, self._chart_mu,
+                              granularity=self._chart_gran)
+        self.chart.set_mode(self._chart_mode)
+
+    def _open_day_from_chart(self, day: str) -> None:
+        if not day:
+            return
+        from .day_close_dialog import DayCloseDialog
+        DayCloseDialog(self.ctx, self, day=day).exec()
 
     def _apply_preset(self, preset: str) -> None:
         """Fill the From/To pickers from a quick preset, then refresh once."""
@@ -746,12 +1017,11 @@ class DashboardView(QWidget):
                  for r in low]
         self.low_card.set_rows(rows[:8], "Nothing low on stock.")
 
-        series = self.svc.chart_series(d_from, d_to)
-        total = sum(x.get("total", 0) for x in series)
+        # remember the window + currency so the chart toggles can re-fetch
+        self._win_from, self._win_to, self._win_lbl = d_from, d_to, win_lbl
+        self._chart_sym, self._chart_mu = sym, mu
         self._chart_title.setText(f"Sales — {win_lbl}")
-        self._chart_sub.setText(f"Gross sales per {'month' if len(series) > 62 else 'day'}"
-                                f"  ·  total {m(total)}")
-        self.chart.set_series(series, sym, mu)
+        self._apply_chart()
 
     @staticmethod
     def _window_label(start: str | None, end: str | None) -> str:

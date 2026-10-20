@@ -17,6 +17,7 @@ SCREEN_PERMISSIONS = [
     ("sales", "Sales History"),
     ("returns", "Returns"),
     ("customers", "Customers"),
+    ("recovery", "Cash Recovery"),
     ("products", "Products"),
     ("taxonomy", "Categories & Brands"),
     ("suppliers", "Suppliers"),
@@ -31,6 +32,9 @@ ACTION_PERMISSIONS = [
     ("sale.void", "Void / reverse a sale"),
     ("sale.discount", "Give a discount at checkout"),
     ("sale.edit_price", "Change a price on a sale line"),
+    ("money.transfer", "Move money between cash & accounts"),
+    ("record.edit", "Edit saved records (app-wide)"),
+    ("record.delete", "Delete / reverse records (app-wide)"),
 ]
 
 SCREEN_KEYS = [k for k, _ in SCREEN_PERMISSIONS]

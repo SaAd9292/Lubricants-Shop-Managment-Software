@@ -380,12 +380,14 @@ class POSView(QWidget):
 
     @staticmethod
     def _suggest_label(p: dict) -> str:
-        """Type-ahead text: always show the brand alongside the product name, so
-        the cashier can tell same-named products apart (and can type the brand to
-        filter). Falls back to just the name when a product has no brand."""
+        """Type-ahead text: product name, brand (so same-named products can be told
+        apart and filtered by brand), and the on-hand stock so the cashier sees
+        how many are available before picking."""
         name = p.get("name") or ""
         brand = (p.get("brand_name") or "").strip()
-        return f"{name}  ·  {brand}" if brand else name
+        qty = int(p.get("stock_qty") or 0)
+        base = f"{name}  ·  {brand}" if brand else name
+        return f"{base}  ·  Stock: {qty}"
 
     def _on_suggestion(self, text: str) -> None:
         """A product was picked from the type-ahead list -> add it."""

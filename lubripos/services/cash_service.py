@@ -109,6 +109,16 @@ class CashService:
         return self._sum("supplier_payments", "amount_minor", "payment_date",
                          d_from, d_to)
 
+    def _transfers_in(self, d_from, d_to) -> int:
+        # money swept INTO the till from a bank/wallet account (to side = cash)
+        return self._sum("money_transfers", "amount_minor", "transfer_date",
+                         d_from, d_to, "to_account_id IS NULL")
+
+    def _transfers_out(self, d_from, d_to) -> int:
+        # cash moved OUT of the till into a bank/wallet account (from side = cash)
+        return self._sum("money_transfers", "amount_minor", "transfer_date",
+                         d_from, d_to, "from_account_id IS NULL")
+
     # -- public: point-in-time balance -------------------------------
     def balance_as_of(self, as_of: str | None = None) -> int:
         """Running cash in the drawer at the end of `as_of` (YYYY-MM-DD, default
@@ -117,12 +127,14 @@ class CashService:
         opening, o_date = self._opening()
         d_from = o_date
         cash_in = (self._cash_sales(d_from, as_of)
-                   + self._cash_repayments(d_from, as_of))
+                   + self._cash_repayments(d_from, as_of)
+                   + self._transfers_in(d_from, as_of))
         cash_out = (self._cash_refunds(d_from, as_of)
                     + self._expenses(d_from, as_of)
                     + self._purchase_payments(d_from, as_of)
                     + self._supplier_payments(d_from, as_of)
-                    + self._customer_payouts(d_from, as_of))
+                    + self._customer_payouts(d_from, as_of)
+                    + self._transfers_out(d_from, as_of))
         return opening + cash_in - cash_out
 
     def current(self) -> int:
@@ -234,6 +246,31 @@ class CashService:
             add(r["d"], "Supplier payment" + (f" — {r['snm']}" if r["snm"] else ""),
                 0, r["amt"])
 
+        # cash paid BACK to customers (we owed them) — a till out-flow, same as
+        # reconciliation() counts; only cash-method payouts leave the drawer
+        for r in self.db.query(
+            "SELECT po.payout_date d, po.amount_minor amt, "
+            "COALESCE(c.name,'(customer)') nm FROM customer_payouts po "
+            "LEFT JOIN customers c ON c.id = po.customer_id "
+            "WHERE COALESCE(po.method,'Cash')='Cash' "
+            "AND substr(po.payout_date,1,10) BETWEEN ? AND ?", rng):
+            add(r["d"], f"Paid out — {r['nm']}", 0, r["amt"])
+
+        # transfers touching cash: into the till (+), out of the till (-)
+        for r in self.db.query(
+            "SELECT t.transfer_date d, t.amount_minor amt, "
+            "COALESCE(a.name,'account') nm, "
+            "CASE WHEN t.to_account_id IS NULL THEN 1 ELSE 0 END AS into_cash "
+            "FROM money_transfers t "
+            "LEFT JOIN payment_accounts a ON a.id = "
+            "  CASE WHEN t.to_account_id IS NULL THEN t.from_account_id ELSE t.to_account_id END "
+            "WHERE (t.from_account_id IS NULL OR t.to_account_id IS NULL) "
+            "AND substr(t.transfer_date,1,10) BETWEEN ? AND ?", rng):
+            if r["into_cash"]:
+                add(r["d"], f"Transfer from {r['nm']}", r["amt"], 0)
+            else:
+                add(r["d"], f"Transfer to {r['nm']}", 0, r["amt"])
+
         out.sort(key=lambda x: x["date"])
         return out
 
@@ -252,8 +289,11 @@ class CashService:
         purchase_pay = self._purchase_payments(day, day)
         supplier_pay = self._supplier_payments(day, day)
         cust_payouts = self._customer_payouts(day, day)
-        cash_in = cash_sales + repayments
-        cash_out = refunds + expenses + purchase_pay + supplier_pay + cust_payouts
+        transfers_in = self._transfers_in(day, day)
+        transfers_out = self._transfers_out(day, day)
+        cash_in = cash_sales + repayments + transfers_in
+        cash_out = (refunds + expenses + purchase_pay + supplier_pay
+                    + cust_payouts + transfers_out)
         closing = self.balance_as_of(day)
         opening = closing - cash_in + cash_out
         return {
@@ -265,6 +305,8 @@ class CashService:
             "purchase_payments": purchase_pay,
             "supplier_payments": supplier_pay,
             "customer_payouts": cust_payouts,
+            "transfers_in": transfers_in,
+            "transfers_out": transfers_out,
             "cash_in": cash_in,
             "cash_out": cash_out,
             "closing": closing,

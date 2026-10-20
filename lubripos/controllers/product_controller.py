@@ -92,40 +92,45 @@ class ProductController:
             self.products.update(product_id, data, user_id=uid)
             return product_id
 
-        return self._guarded(op)
+        return self._guarded(op, None if product_id is None else "record.edit")
 
     def restore(self, product_id: int, fields: dict[str, Any]) -> tuple[bool, str, int | None]:
         """Write already-normalised fields (minor units / bps) straight back —
         used by the Products 'Undo' to revert an edit or price change."""
         return self._guarded(
-            lambda uid: self.products.update(product_id, fields, user_id=uid) or product_id)
+            lambda uid: self.products.update(product_id, fields, user_id=uid) or product_id,
+            "record.edit")
 
     def adjust_stock(self, product_id: int, new_qty: int,
                      reason: str) -> tuple[bool, str, int | None]:
         return self._guarded(
-            lambda uid: self.products.adjust_stock(product_id, new_qty, reason, user_id=uid))
+            lambda uid: self.products.adjust_stock(product_id, new_qty, reason, user_id=uid),
+            "record.edit")
 
     def delete(self, product_id: int) -> tuple[bool, str, int | None]:
         return self._guarded(
-            lambda uid: self.products.set_active(product_id, False, user_id=uid) or product_id
-        )
+            lambda uid: self.products.set_active(product_id, False, user_id=uid) or product_id,
+            "record.delete")
 
     def reactivate(self, product_id: int) -> tuple[bool, str, int | None]:
         return self._guarded(
-            lambda uid: self.products.set_active(product_id, True, user_id=uid) or product_id
-        )
+            lambda uid: self.products.set_active(product_id, True, user_id=uid) or product_id,
+            "record.edit")
 
     def hard_delete(self, product_id: int) -> tuple[bool, str, int | None]:
-        """Permanently delete a deactivated product with no history (admin)."""
+        """Permanently delete a deactivated product with no history."""
         return self._guarded(
-            lambda uid: self.products.hard_delete(product_id, user_id=uid) or product_id
-        )
+            lambda uid: self.products.hard_delete(product_id, user_id=uid) or product_id,
+            "record.delete")
 
     # -- internal -----------------------------------------------------
-    def _guarded(self, op) -> tuple[bool, str, int | None]:
-        """Run a write op under admin-role enforcement, mapping errors to UI."""
+    def _guarded(self, op, perm: str | None = None) -> tuple[bool, str, int | None]:
+        """Run a write op under the given privilege, mapping errors to UI.
+        perm=None means admin-only (creates); an edit/delete passes the matching
+        app-wide action grant (record.edit / record.delete)."""
         try:
-            user = current_session.require_role("admin")
+            user = (current_session.require_permission(perm) if perm
+                    else current_session.require_role("admin"))
             result_id = op(user.id)
             return True, "ok", result_id
         except LubriPosError as exc:

@@ -157,6 +157,18 @@ def main() -> int:
     check(len(cs.list_payouts(date_from="2026-09-01", date_to="2026-09-30")["rows"]) == 0,
           "reversed payout no longer listed")
 
+    print("\n[ledger] customer ledger shows every transaction type + right balance")
+    led = cs.debt_ledger(poid)
+    # this customer has: a 5000 recovery (credit). after the payout reversal, that's it.
+    cs.record_payout(poid, 2000, method="Cash", payout_date="2026-09-20 12:00:00")
+    led = cs.debt_ledger(poid)
+    check("payouts" in led and len(led["payouts"]) == 1 and led["payouts"][0]["amount"] == 2000,
+          "ledger includes payouts")
+    check(len(led["payments"]) == 1, "ledger includes the recovery")
+    # balance = charged(0) + payout(2000) − paid(5000) = −3000 (we still owe 3000)
+    check(led["balance"] == -3000 and led["balance"] == cs.balance_owed(poid),
+          "ledger balance includes payouts and matches balance_owed")
+
     ctx.shutdown()
     n = sum(_r); print(f"\n==== {n}/{len(_r)} checks passed ====")
     return 0 if n == len(_r) else 1

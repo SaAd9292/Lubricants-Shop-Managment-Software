@@ -46,25 +46,27 @@ class SupplierController:
                 return self.suppliers.create(form, user_id=uid)
             self.suppliers.update(supplier_id, form, user_id=uid)
             return supplier_id
-        return self._guarded(op)
+        return self._guarded(op, None if supplier_id is None else "record.edit")
 
     def delete(self, supplier_id: int):
         return self._guarded(
-            lambda uid: self.suppliers.set_active(supplier_id, False, user_id=uid) or supplier_id
-        )
+            lambda uid: self.suppliers.set_active(supplier_id, False, user_id=uid) or supplier_id,
+            "record.delete")
 
     def reactivate(self, supplier_id: int):
         return self._guarded(
-            lambda uid: self.suppliers.set_active(supplier_id, True, user_id=uid) or supplier_id
-        )
+            lambda uid: self.suppliers.set_active(supplier_id, True, user_id=uid) or supplier_id,
+            "record.edit")
 
     def hard_delete(self, supplier_id: int):
         return self._guarded(
-            lambda uid: self.suppliers.delete(supplier_id, user_id=uid) or supplier_id)
+            lambda uid: self.suppliers.delete(supplier_id, user_id=uid) or supplier_id,
+            "record.delete")
 
-    def _guarded(self, op):
+    def _guarded(self, op, perm: str | None = None):
         try:
-            user = current_session.require_role("admin")
+            user = (current_session.require_permission(perm) if perm
+                    else current_session.require_role("admin"))
             return True, "ok", op(user.id)
         except LubriPosError as exc:
             return False, str(exc), None

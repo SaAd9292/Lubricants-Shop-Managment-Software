@@ -210,9 +210,9 @@ class MainWindow(QMainWindow):
                 if not is_admin:          # sensitive screens: admins only
                     continue
             else:
-                # Cash Recovery rides on the Customers privilege (it's a customer
-                # debt action), so it doesn't need its own grantable key.
-                perm = "customers" if key == "cash_recovery" else key
+                # Cash Recovery has its own grantable 'recovery' privilege, so a
+                # cashier can be given it without full Customers access.
+                perm = "recovery" if key == "cash_recovery" else key
                 if not (is_admin or current_session.can(perm)):
                     continue              # grantable screen the user lacks
             btn = QPushButton(tr(label))

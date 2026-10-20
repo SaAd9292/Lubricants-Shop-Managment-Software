@@ -153,17 +153,31 @@ class PayablesView(QWidget):
     # -- actions ------------------------------------------------------
     def _record_payment(self, supplier_id: int, name: str, balance: int) -> None:
         _, mu = self.controller.currency()
-        dlg = RecordPaymentDialog(self, name, balance / mu)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        data = dlg.values()
-        ok, msg, _ = self.controller.record_payment(
-            supplier_id, data["amount"], method=data["method"],
-            notes=data["notes"], payment_date=data["date"])
-        if ok:
+        # One "Save & add another" button records a payment then re-opens with the
+        # REFRESHED balance; the user closes with the window's X when done. The
+        # chosen date and method CARRY OVER to the next entry (so a run of same-day
+        # payments doesn't reset the date back to today each time).
+        bal = balance
+        last_date = QDate.currentDate()
+        last_method = _METHODS[0]
+        while True:
+            dlg = RecordPaymentDialog(self, name, bal / mu,
+                                      init_date=last_date, init_method=last_method)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            data = dlg.values()
+            ok, msg, _ = self.controller.record_payment(
+                supplier_id, data["amount"], method=data["method"],
+                notes=data["notes"], payment_date=data["date"])
+            if not ok:
+                QMessageBox.warning(self, "Payment failed", msg)
+                return
             self._reload()
-        else:
-            QMessageBox.warning(self, "Payment failed", msg)
+            # carry the date + method forward, and start the next round from what
+            # is still owed after this payment
+            last_date = QDate.fromString(data["date"], "yyyy-MM-dd")
+            last_method = data["method"]
+            bal = bal - int(round(data["amount"] * mu))
 
     def _open_ledger(self) -> None:
         sel = self._selected()
@@ -173,7 +187,8 @@ class PayablesView(QWidget):
 
 
 class RecordPaymentDialog(QDialog):
-    def __init__(self, parent, supplier_name: str, balance_dec: float) -> None:
+    def __init__(self, parent, supplier_name: str, balance_dec: float,
+                 init_date: QDate | None = None, init_method: str | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Record payment — {supplier_name}")
         self.setMinimumWidth(360)
@@ -188,27 +203,33 @@ class RecordPaymentDialog(QDialog):
 
         self.method = QComboBox()
         self.method.addItems(_METHODS)
+        if init_method:
+            i = self.method.findText(init_method)
+            if i >= 0:
+                self.method.setCurrentIndex(i)
         form.addRow("Method", self.method)
 
         self.date = QDateEdit()
         self.date.setCalendarPopup(True)
         self.date.setDisplayFormat("yyyy-MM-dd")
-        self.date.setDate(QDate.currentDate())
+        self.date.setDate(init_date if init_date else QDate.currentDate())
         form.addRow("Date", self.date)
 
         self.notes = QLineEdit()
         self.notes.setPlaceholderText("Optional note (cheque no, reference…)")
         form.addRow("Notes", self.notes)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        save = buttons.button(QDialogButtonBox.Save)
-        save.setText("Record payment")
-        save.setObjectName("Success")
-        buttons.accepted.connect(self._on_accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        # A single commit button. Each click records this payment and the caller
+        # re-opens the dialog for the next one; the window's X ends the run.
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        self.again_btn = QPushButton("Save && add another")
+        self.again_btn.setObjectName("Success")
+        self.again_btn.clicked.connect(self._on_add_another)
+        bar.addWidget(self.again_btn)
+        form.addRow(bar)
 
-    def _on_accept(self) -> None:
+    def _on_add_another(self) -> None:
         if self.amount.value() <= 0:
             QMessageBox.information(self, "Amount required",
                                     "Enter a payment amount greater than zero.")

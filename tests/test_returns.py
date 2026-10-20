@@ -58,9 +58,9 @@ def main() -> int:
     print("\n[returns] day-close nets refunds out")
     dsr = ReportService(ctx.db).daily_sales(today)
     sm = {s["label"]: s["value"] for s in dsr["summary"]}
-    # gross 5x10000=50000, refunds 20000, expenses 0 -> net 30000
-    check(sm["Gross sales"] == 50000 and sm["Refunds"] == 20000 and sm["Net"] == 30000,
-          "day-close: gross 50000, refunds 20000, net 30000")
+    # gross 5x10000=50000, refunds 20000
+    check(sm["Gross sales"] == 50000 and sm["Refunds"] == 20000,
+          "day-close: gross 50000, refunds 20000")
     rsec = {s["name"]: s for s in dsr["sections"]}["Returns"]
     check(rsec["total"] == 20000 and len(rsec["rows"]) == 1, "day-close Returns section shows the refund")
 

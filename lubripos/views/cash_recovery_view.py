@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from ..app_context import AppContext
 from ..controllers.customer_controller import CustomerController
 from ..controllers.payment_account_controller import PaymentAccountController
+from ..controllers.transfer_controller import TransferController
 from ..core.session import current_session
 from ..ui.toast import show_toast
 from ..ui.widgets import FlowLayout
@@ -37,6 +38,7 @@ class CashRecoveryView(QWidget):
         self.ctx = ctx
         self.controller = CustomerController(ctx)
         self.pay_ctl = PaymentAccountController(ctx)
+        self.transfer_ctl = TransferController(ctx)
         self._index: dict[str, dict] = {}     # name.lower -> customer row
         self._customer: dict | None = None
         self._build_ui()
@@ -52,6 +54,13 @@ class CashRecoveryView(QWidget):
         title.setObjectName("PageTitle")
         title_row.addWidget(title)
         title_row.addStretch(1)
+        self.transfer_btn = QPushButton("Move money")
+        self.transfer_btn.setObjectName("Secondary")
+        self.transfer_btn.setToolTip(
+            "Move the shop's own money between cash and a bank/wallet account "
+            "(e.g. sweep today's JazzCash into cash)")
+        self.transfer_btn.clicked.connect(self._open_transfers)
+        title_row.addWidget(self.transfer_btn)
         self.history_btn = QPushButton("Recovery history")
         self.history_btn.setObjectName("Secondary")
         self.history_btn.setToolTip("List all recoveries, filter by date, and reverse one")
@@ -273,9 +282,9 @@ class CashRecoveryView(QWidget):
 
     # -- record -------------------------------------------------------
     def _record(self) -> None:
-        if not current_session.can("customers"):
+        if not current_session.can("recovery"):
             QMessageBox.warning(self, "Not allowed",
-                                "You do not have the Customers privilege.")
+                                "You do not have the Cash Recovery privilege.")
             return
         if not self._customer:
             QMessageBox.information(self, "Pick a customer",
@@ -340,6 +349,11 @@ class CashRecoveryView(QWidget):
         # a reversal changes balances — refresh the current customer view
         self._refresh_customers()
         self._sync_customer()
+
+    # -- money transfers ---------------------------------------------
+    def _open_transfers(self) -> None:
+        dlg = TransferDialog(self.transfer_ctl, self)
+        dlg.exec()
 
 
 class RecoveryHistoryDialog(QDialog):
@@ -419,11 +433,12 @@ class RecoveryHistoryDialog(QDialog):
         self._reload()
 
     def _sync_btn(self) -> None:
-        can = current_session.can("customers")
         sel = self._selected()
-        self.reverse_btn.setEnabled(bool(can and sel))
+        self.reverse_btn.setEnabled(
+            bool(current_session.can("record.delete") and sel))
         # only recoveries have an edit flow; payouts are reverse + re-add
-        self.edit_btn.setEnabled(bool(can and sel and sel[1] == "recovery"))
+        self.edit_btn.setEnabled(bool(
+            current_session.can("record.edit") and sel and sel[1] == "recovery"))
 
     def _selected(self):
         """Return (id, kind) for the selected row, or None. kind is
@@ -436,9 +451,9 @@ class RecoveryHistoryDialog(QDialog):
         return data  # (id, kind) tuple
 
     def _edit(self) -> None:
-        if not current_session.can("customers"):
+        if not current_session.can("record.edit"):
             QMessageBox.warning(self, "Not allowed",
-                                "You do not have the Customers privilege.")
+                                "You do not have the Edit records privilege.")
             return
         sel = self._selected()
         if sel is None or sel[1] != "recovery":
@@ -508,9 +523,9 @@ class RecoveryHistoryDialog(QDialog):
         self.edit_btn.setEnabled(False)
 
     def _reverse(self) -> None:
-        if not current_session.can("customers"):
+        if not current_session.can("record.delete"):
             QMessageBox.warning(self, "Not allowed",
-                                "You do not have the Customers privilege.")
+                                "You do not have the Delete/reverse privilege.")
             return
         sel = self._selected()
         if sel is None:
@@ -657,3 +672,230 @@ class RecoveryEditDialog(QDialog):
                 "account_id": acct_id, "account_name": acct_name,
                 "date": self.date.date().toString("yyyy-MM-dd"),
                 "notes": self.note.text().strip()}
+
+
+class TransferDialog(QDialog):
+    """Move the shop's own money between the cash till and a bank/wallet account.
+
+    This is an INTERNAL move — total money on hand doesn't change, only where it
+    sits. The classic case: the day's JazzCash/EasyPaisa collections get swept
+    into cash in the evening, and sometimes that gets forgotten, so recording it
+    here keeps both the cash-in-hand and each account balance honest.
+
+    'Cash' is offered in the From/To pickers as the None option, because the till
+    is not a row in payment_accounts — the service stores NULL for the cash side.
+    Both pickers list the same places; we just block choosing the same one twice.
+    """
+
+    _COLS = ["Date", "From", "To", "Amount", "Note"]
+
+    def __init__(self, controller: TransferController, parent=None) -> None:
+        super().__init__(parent)
+        self.controller = controller
+        self.setWindowTitle("Move money")
+        self.resize(760, 560)
+        root = QVBoxLayout(self)
+        root.setSpacing(12)
+
+        intro = QLabel("Move your own money between cash and a bank/wallet "
+                       "account. This doesn't change how much money you have — "
+                       "only where it is.")
+        intro.setObjectName("Muted")
+        intro.setWordWrap(True)
+        root.addWidget(intro)
+
+        # live balances strip (derived, refreshes after every write/reverse)
+        self.balances_lbl = QLabel("")
+        self.balances_lbl.setWordWrap(True)
+        self.balances_lbl.setStyleSheet("font-weight:700;")
+        root.addWidget(self.balances_lbl)
+
+        # the entry form
+        form = QFormLayout()
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(10)
+        self.from_combo = QComboBox()
+        self.to_combo = QComboBox()
+        form.addRow("From", self.from_combo)
+        form.addRow("To", self.to_combo)
+
+        sym, _ = self.controller.currency()
+        self.amount = QDoubleSpinBox()
+        self.amount.setMaximum(99_999_999)
+        self.amount.setDecimals(2)
+        self.amount.setButtonSymbols(QDoubleSpinBox.NoButtons)
+        self.amount.setPrefix(f"{sym} ")
+        form.addRow("Amount", self.amount)
+
+        self.date = QDateEdit()
+        self.date.setCalendarPopup(True)
+        self.date.setDisplayFormat("dd MMM yyyy")
+        self.date.setMaximumDate(QDate.currentDate())
+        self.date.setDate(QDate.currentDate())
+        form.addRow("Date", self.date)
+
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("Optional note (e.g. 'evening JazzCash sweep')")
+        form.addRow("Note", self.note)
+        root.addLayout(form)
+
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        self.record_btn = QPushButton("Move money")
+        self.record_btn.setObjectName("Success")
+        self.record_btn.setMinimumHeight(36)
+        self.record_btn.clicked.connect(self._record)
+        bar.addWidget(self.record_btn)
+        root.addLayout(bar)
+
+        # history + reverse
+        hist_lbl = QLabel("Recent transfers")
+        hist_lbl.setStyleSheet("font-weight:700;")
+        root.addWidget(hist_lbl)
+        self.table = QTableWidget(0, len(self._COLS))
+        self.table.setHorizontalHeaderLabels(self._COLS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.table.itemSelectionChanged.connect(self._sync_btn)
+        root.addWidget(self.table, 1)
+
+        btns = QHBoxLayout()
+        self.reverse_btn = QPushButton("Reverse selected")
+        self.reverse_btn.setObjectName("Secondary")
+        self.reverse_btn.setToolTip("Undo the selected transfer — both balances "
+                                    "self-correct")
+        self.reverse_btn.clicked.connect(self._reverse)
+        self.reverse_btn.setEnabled(False)
+        btns.addWidget(self.reverse_btn)
+        btns.addStretch(1)
+        close = QDialogButtonBox(QDialogButtonBox.Close)
+        close.rejected.connect(self.reject)
+        close.button(QDialogButtonBox.Close).clicked.connect(self.accept)
+        btns.addWidget(close)
+        root.addLayout(btns)
+
+        self._reload_places()
+        self._reload_balances()
+        self._reload_history()
+
+    # -- population ---------------------------------------------------
+    def _reload_places(self) -> None:
+        """Fill both pickers with Cash (None) + every active account. Keep the
+        current selections if still valid so a refresh doesn't jump them."""
+        accts = self.controller.active_accounts()
+        items = [("Cash", None)] + [
+            (f"{a['method']} — {a['name']}", a["id"]) for a in accts]
+        for combo, default in ((self.from_combo, None), (self.to_combo, None)):
+            prev = combo.currentData() if combo.count() else default
+            combo.blockSignals(True)
+            combo.clear()
+            for label, data in items:
+                combo.addItem(label, data)
+            idx = next((i for i, (_, d) in enumerate(items) if d == prev), 0)
+            combo.setCurrentIndex(idx)
+            combo.blockSignals(False)
+        # sensible default: To = first non-cash account (so it isn't Cash→Cash)
+        if self.to_combo.currentData() is None and self.to_combo.count() > 1:
+            self.to_combo.setCurrentIndex(1)
+
+    def _reload_balances(self) -> None:
+        try:
+            bals = self.controller.account_balances()
+        except Exception:
+            bals = []
+        if not bals:
+            self.balances_lbl.setText("No bank/wallet accounts yet "
+                                      "(add them in Settings → Payment Accounts).")
+            return
+        parts = [f"{b['method']} — {b['name']}: {self.controller.fmt(b['balance'])}"
+                 for b in bals]
+        self.balances_lbl.setText("Account balances:   " + "      ".join(parts))
+
+    def _reload_history(self) -> None:
+        try:
+            data = self.controller.history()
+            rows = data["rows"]
+        except Exception:
+            rows = []
+        self.table.setRowCount(0)
+        self.table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            cells = [row["date"], row["from_name"], row["to_name"],
+                     self.controller.fmt(row["amount"]), row["notes"]]
+            for c, val in enumerate(cells):
+                it = QTableWidgetItem(str(val))
+                if c == 0:
+                    it.setData(Qt.UserRole, row["id"])
+                if c == 3:
+                    it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.table.setItem(r, c, it)
+        self.reverse_btn.setEnabled(False)
+
+    # -- actions ------------------------------------------------------
+    def _sync_btn(self) -> None:
+        self.reverse_btn.setEnabled(
+            current_session.can("record.delete") and self.table.currentRow() >= 0)
+
+    def _selected_id(self):
+        row = self.table.currentRow()
+        if row < 0:
+            return None
+        it = self.table.item(row, 0)
+        return it.data(Qt.UserRole) if it else None
+
+    def _record(self) -> None:
+        if not current_session.can("money.transfer"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the Move money privilege.")
+            return
+        frm = self.from_combo.currentData()
+        to = self.to_combo.currentData()
+        if frm == to:
+            QMessageBox.information(self, "Pick two places",
+                                    "Choose two different places to move between.")
+            return
+        if self.amount.value() <= 0:
+            QMessageBox.information(self, "Enter amount",
+                                    "Enter an amount greater than zero.")
+            return
+        ok, msg, _tid = self.controller.create(
+            from_account_id=frm, to_account_id=to, amount=self.amount.value(),
+            transfer_date=self.date.date().toString("yyyy-MM-dd"),
+            notes=self.note.text().strip())
+        if not ok:
+            QMessageBox.warning(self, "Could not move money", msg)
+            return
+        show_toast(self, "Money moved")
+        self.amount.setValue(0)
+        self.note.clear()
+        self._reload_balances()
+        self._reload_history()
+
+    def _reverse(self) -> None:
+        if not current_session.can("record.delete"):
+            QMessageBox.warning(self, "Not allowed",
+                                "You do not have the Delete/reverse privilege.")
+            return
+        tid = self._selected_id()
+        if tid is None:
+            return
+        row = self.table.currentRow()
+        frm = self.table.item(row, 1).text()
+        to = self.table.item(row, 2).text()
+        amt = self.table.item(row, 3).text()
+        confirm = QMessageBox.warning(
+            self, "Reverse transfer",
+            f"Reverse the move of {amt} from {frm} to {to}?\n\n"
+            "Both balances will self-correct. This cannot itself be undone.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirm != QMessageBox.Yes:
+            return
+        ok, msg, _ = self.controller.reverse(tid)
+        if ok:
+            self._reload_balances()
+            self._reload_history()
+        else:
+            QMessageBox.warning(self, "Could not reverse", msg)

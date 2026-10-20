@@ -36,6 +36,11 @@ class SupplierPaymentsDialog(QDialog):
         self.controller = PayableController(ctx)
         self._rows: list[dict] = []
         self.setWindowTitle("Supplier payments")
+        # a normal OS window: minimise / maximise / resize, not a fixed modal box
+        self.setWindowFlags(Qt.Window | Qt.WindowMinimizeButtonHint
+                            | Qt.WindowMaximizeButtonHint | Qt.WindowCloseButtonHint)
+        self.setSizeGripEnabled(True)
+        self.setMinimumSize(720, 420)
         self.resize(820, 600)
         self._build()
         self._reload()

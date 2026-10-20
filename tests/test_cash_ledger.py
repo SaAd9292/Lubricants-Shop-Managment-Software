@@ -79,6 +79,24 @@ def main() -> int:
           "sale, expense and purchase payment each listed")
     check("Bank" not in kinds, "the bank sale is NOT in the cash ledger")
 
+    print("\n[cashledger] a cash payout to a customer is an out-flow (ties out)")
+    from lubripos.services.customer_service import CustomerService
+    cserv = CustomerService(ctx.db, ctx.audit)
+    cu = cserv.create({"name": "Adv"})
+    cserv.record_payout(cu, 150000, method="Cash", payout_date="2026-03-05")   # -1500
+    rep3 = rs.cash_ledger("2026-03-01", "2026-03-31")
+    det3 = " ".join(r["details"] for r in rep3["rows"])
+    s3 = {s["label"]: s["value"] for s in rep3["summary"]}
+    check("Paid out" in det3, "the cash payout is listed in the cash ledger")
+    check(s3["Total cash out"] == 450000, "payout adds to cash out (3,000 + 1,500)")
+    check(s3["Closing (Cash in Hand)"] == cash.balance_as_of("2026-03-31"),
+          "closing still ties to balance_as_of after a payout")
+    # movements (what the dashboard chart colours by) must match reconciliation
+    mnet = sum(m["cash_in"] - m["cash_out"] for m in cash.movements("2026-03-05", "2026-03-05"))
+    rec = cash.reconciliation("2026-03-05")
+    check(mnet == rec["cash_in"] - rec["cash_out"],
+          "movements net == reconciliation net on a payout day")
+
     print("\n[cashledger] renders to PDF + Excel")
     company = ctx.company.get_company()
     d = tempfile.mkdtemp()

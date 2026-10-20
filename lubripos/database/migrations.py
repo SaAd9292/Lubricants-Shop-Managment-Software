@@ -14,7 +14,7 @@ from .connection import Database
 
 log = get_logger(__name__)
 
-CURRENT_VERSION = 34
+CURRENT_VERSION = 35
 
 
 def run_migrations(db: Database) -> None:
@@ -49,6 +49,7 @@ def run_migrations(db: Database) -> None:
     _migration_32_customer_opening_date(db)
     _migration_33_purchase_tax(db)
     _migration_34_purchase_returns(db)
+    _migration_35_money_transfers(db)
     db.execute(
         "INSERT INTO app_meta (key, value) VALUES ('schema_version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -468,6 +469,31 @@ def _migration_29_cash_counts(db: Database) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS idx_cashcounts_date "
                "ON cash_counts(count_date)")
     log.info("Migration: added cash_counts table")
+
+
+def _migration_35_money_transfers(db: Database) -> None:
+    """v35: moving money between the cash till and a bank/wallet account (e.g.
+    sweeping a JazzCash balance into cash in the evening). A transfer is internal
+    — it changes WHERE money sits, not the total. NULL from/to = the cash till
+    (which is not a row in payment_accounts). Purely additive."""
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS money_transfers ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " from_account_id INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,"
+        " to_account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,"
+        " amount_minor    INTEGER NOT NULL CHECK (amount_minor > 0),"
+        " transfer_date   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+        " notes           TEXT,"
+        " created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+        " created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),"
+        # the two sides must differ: cash<->account, or account A<->account B.
+        # (NULL IS NOT NULL would evaluate NULL, so compare with IS to catch
+        #  cash<->cash too.)
+        " CHECK (from_account_id IS NOT to_account_id)"
+        ")")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_transfer_date "
+               "ON money_transfers(transfer_date)")
+    log.info("Migration: added money_transfers (cash <-> account moves)")
 
 
 def _migration_34_purchase_returns(db: Database) -> None:

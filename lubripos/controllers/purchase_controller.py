@@ -101,7 +101,7 @@ class PurchaseController:
                 supplier_invoice_no=supplier_invoice_no, notes=notes,
                 amount_paid_minor=amt, discount_minor=disc, tax_minor=tx, user_id=uid)
             return purchase_id
-        return self._guarded(op)
+        return self._guarded(op, "record.edit")
 
     def create_return(self, *, supplier_id: int | None, lines: list[dict[str, Any]],
                       purchase_id: int | None = None, return_date: str | None = None,
@@ -125,26 +125,40 @@ class PurchaseController:
             return self.purchases.create_purchase_return(
                 supplier_id=supplier_id, items=items, purchase_id=purchase_id,
                 return_date=return_date, notes=notes, user_id=uid)
-        return self._guarded(op)
+        return self._guarded(op, "record.delete")
 
     def list_returns(self, **kwargs):
         return self.purchases.list_purchase_returns(**kwargs)
 
+    def get_return(self, return_id: int):
+        """One purchase return with its items (for the detail/edit dialog)."""
+        return self.purchases.get_purchase_return(return_id)
+
+    def edit_return(self, return_id: int, *, return_date=None, notes=None):
+        """Edit a purchase return's date/note (not its items). (ok, msg, id)."""
+        return self._guarded(
+            lambda uid: self.purchases.update_purchase_return(
+                return_id, return_date=return_date, notes=notes, user_id=uid)
+            or return_id, "record.edit")
+
     def reverse_return(self, return_id: int):
         return self._guarded(
             lambda uid: self.purchases.reverse_purchase_return(return_id, user_id=uid)
-            or return_id)
+            or return_id, "record.delete")
 
     def delete(self, purchase_id: int):
         """Permanently delete a purchase and reverse its stock (admin only). The
         UI also requires the admin's password before calling this."""
         return self._guarded(
             lambda uid: self.purchases.delete_purchase(purchase_id, user_id=uid)
-            or purchase_id)
+            or purchase_id, "record.delete")
 
-    def _guarded(self, op):
+    def _guarded(self, op, perm: str | None = None):
+        """perm=None is admin-only (new purchases); edits/returns/deletes pass the
+        matching app-wide action grant instead."""
         try:
-            user = current_session.require_role("admin")
+            user = (current_session.require_permission(perm) if perm
+                    else current_session.require_role("admin"))
             return True, "ok", op(user.id)
         except LubriPosError as exc:
             return False, str(exc), None

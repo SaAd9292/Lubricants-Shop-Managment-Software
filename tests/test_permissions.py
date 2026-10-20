@@ -88,6 +88,50 @@ def main() -> int:
     check(not ok and "discount" in msg.lower(),
           "cashier WITHOUT sale.discount is blocked from discounting")
 
+    print("\n[perms] recovery / money.transfer / record.edit / record.delete")
+    from lubripos.controllers.customer_controller import CustomerController
+    from lubripos.controllers.transfer_controller import TransferController
+    from lubripos.services.customer_service import CustomerService
+    from lubripos.services.payment_account_service import PaymentAccountService
+
+    # as admin: set up a customer with debt + a payment account
+    current_session.login(CurrentUser(id=1, username="admin", full_name="A", role="admin"))
+    cust_id = CustomerService(ctx.db).create({"name": "Debtor",
+                                             "opening_debt_minor": 500000})
+    acc = PaymentAccountService(ctx.db).create({"method": "JazzCash", "name": "JC"})
+
+    # cashier with recovery grant (but NOT record.delete/edit/transfer)
+    us.create_user(username="rec", password="pass123", role="cashier",
+                   permissions=["dashboard", "recovery"])
+    cur = auth.authenticate("rec", "pass123")
+    current_session.login(cur)
+    cc = CustomerController(ctx)
+    ok, _, pay_id = cc.record_payment(cust_id, 1000.0, method="Cash")
+    check(ok, "cashier WITH recovery can record a recovery")
+    ok, _, _ = cc.reverse_recovery(pay_id)
+    check(not ok, "recovery grant alone does NOT allow reversing (needs record.delete)")
+    ok, _, _ = cc.edit_recovery(pay_id, amount_major=900.0)
+    check(not ok, "recovery grant alone does NOT allow editing (needs record.edit)")
+    ok, _, _ = TransferController(ctx).create(
+        from_account_id=acc, to_account_id=None, amount=100.0)
+    check(not ok, "no money.transfer grant blocks moving money")
+
+    # cashier with the action grants
+    us.create_user(username="pow", password="pass123", role="cashier",
+                   permissions=["dashboard", "recovery", "record.edit",
+                                "record.delete", "money.transfer"])
+    cup = auth.authenticate("pow", "pass123")
+    current_session.login(cup)
+    ccp = CustomerController(ctx)
+    ok, _, pay2 = ccp.record_payment(cust_id, 500.0, method="Cash")
+    ok, _, _ = ccp.edit_recovery(pay2, amount_major=400.0)
+    check(ok, "record.edit grant allows editing a recovery")
+    ok, _, _ = ccp.reverse_recovery(pay2)
+    check(ok, "record.delete grant allows reversing a recovery")
+    ok, _, _ = TransferController(ctx).create(
+        from_account_id=acc, to_account_id=None, amount=100.0)
+    check(ok, "money.transfer grant allows moving money")
+
     ctx.shutdown()
     n = sum(_r)
     print(f"\n==== {n}/{len(_r)} checks passed ====")

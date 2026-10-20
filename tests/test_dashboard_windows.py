@@ -74,6 +74,14 @@ def main() -> int:
     check(len(cs) == 11 and cs[0]["date"] == "2026-06-10", "11 daily bars")
     cm = ds.chart_series("2026-01-01", "2026-12-31")
     check(len(cm) == 12 and cm[0]["label"].startswith("Jan"), "full year -> 12 monthly bars")
+    check(all("n" in b for b in cs), "each chart point carries an invoice count (n)")
+    check(all("cash_net" in b for b in cs),
+          "each chart point carries a DSR cash net (cash_net) for colouring")
+    cw = ds.chart_series("2026-06-10", "2026-06-20", granularity="week")
+    check(all(b["label"].startswith("wk ") for b in cw) and 1 <= len(cw) <= 3,
+          "weekly granularity buckets by week")
+    cday_long = ds.chart_series("2026-01-01", "2026-12-31", granularity="day")
+    check(len(cday_long) == 365, "forced daily granularity overrides the auto-monthly default")
 
     print("\n[dash] window-scoped lists")
     lst = ds.sales_in_window("2026-06-25", "2026-06-25", 6)

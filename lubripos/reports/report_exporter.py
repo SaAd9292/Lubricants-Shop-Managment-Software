@@ -22,7 +22,7 @@ from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+    KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
 from ..core.money import format_money
@@ -132,7 +132,6 @@ def _multi_pdf(story, report, symbol, mu, cell, with_cards, avail=760):
         story.append(Spacer(1, 10))
 
     for sec in report.get("sections", []):
-        story.append(Paragraph(f"<b>{sec['name']}</b>", hsec))
         cols = sec["columns"]
         data = [[Paragraph(f"<b>{c['label']}</b>", cell) for c in cols]]
         for row in sec["rows"]:
@@ -165,8 +164,10 @@ def _multi_pdf(story, report, symbol, mu, cell, with_cards, avail=760):
         for idx, a in enumerate(aligns):
             style.append(("ALIGN", (idx, 0), (idx, -1), a))
         tbl.setStyle(TableStyle(style))
-        story.append(tbl)
-        story.append(Spacer(1, 4))
+        # keep the section heading with its table so a section never breaks across
+        # pages (if a section is taller than a whole page, ReportLab still flows it)
+        story.append(KeepTogether([
+            Paragraph(f"<b>{sec['name']}</b>", hsec), tbl, Spacer(1, 4)]))
 
     if not with_cards:
         summ_rows = []

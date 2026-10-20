@@ -58,7 +58,7 @@ class PayableController:
     def reverse_payment(self, payment_id: int):
         """Undo a supplier payment (admin only). Returns (ok, msg, data)."""
         try:
-            user = current_session.require_role("admin")
+            user = current_session.require_permission("record.delete")
             data = self.payables.reverse_payment(payment_id, user_id=user.id)
             return True, "ok", data
         except LubriPosError as exc:
@@ -79,7 +79,7 @@ class PayableController:
             except (ValueError, ArithmeticError):
                 return False, "Invalid payment amount.", None
         try:
-            user = current_session.require_role("admin")
+            user = current_session.require_permission("record.edit")
             data = self.payables.update_payment(
                 payment_id, supplier_id=supplier_id, amount_minor=amt, method=method,
                 notes=notes, payment_date=payment_date, user_id=user.id)

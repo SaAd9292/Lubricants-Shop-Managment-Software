@@ -233,6 +233,22 @@ CREATE TABLE IF NOT EXISTS payment_accounts (
 );
 CREATE INDEX IF NOT EXISTS idx_payacct_method ON payment_accounts(method);
 
+-- ---------- Money transfers (cash <-> bank/wallet account) -----------
+-- Internal moves of the shop's own money between the cash till and a named
+-- account (e.g. sweeping JazzCash into cash). NULL from/to = the cash till.
+CREATE TABLE IF NOT EXISTS money_transfers (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_account_id INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,
+    to_account_id   INTEGER REFERENCES payment_accounts(id) ON DELETE SET NULL,
+    amount_minor    INTEGER NOT NULL CHECK (amount_minor > 0),
+    transfer_date   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    notes           TEXT,
+    created_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now')),
+    CHECK (from_account_id IS NOT to_account_id)   -- the two sides must differ
+);
+CREATE INDEX IF NOT EXISTS idx_transfer_date ON money_transfers(transfer_date);
+
 -- ---------- Sales (stock out / invoices) -----------------------------
 -- Optional customer directory: attach a customer to a sale so their purchase
 -- history (which products/oil they bought) can be looked up on a return visit.

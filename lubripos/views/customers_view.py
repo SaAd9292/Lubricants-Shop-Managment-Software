@@ -587,25 +587,39 @@ class CustomerLedgerDialog(QDialog):
             bcell.setForeground(QColor("#dc2626" if running > 0 else "#16a34a"))
             self.tbl.setItem(r, 4, bcell)
 
+        debit_total = data.get("charged_total", 0) + data.get("payout_total", 0)
         self.totals_lbl.setText(
-            f"Total debit (charged):  {fmt(data.get('charged_total', 0))}"
-            f"      Total credit (paid):  {fmt(data.get('paid_total', 0))}"
+            f"Total debit (sales + payouts):  {fmt(debit_total)}"
+            f"      Total credit (recoveries + returns):  {fmt(data.get('paid_total', 0))}"
             f"      Balance owed:  {fmt(bal)}")
 
     @staticmethod
     def _ledger_entries(data: dict) -> list[tuple]:
-        """One date-ordered list of (date, details, debit_minor, credit_minor):
-        charges are debits (owe more), payments are credits (owe less)."""
+        """One date-ordered list of (date, details, debit_minor, credit_minor)
+        covering every transaction type:
+          udhaar sales + opening + payouts -> debit  (owe more)
+          recoveries + return credits      -> credit (owe less)."""
         entries = []
         for c in data["charges"]:
             ref = c.get("ref") or ""
-            details = ref if ref.startswith("Opening") else f"Purchase — Invoice {ref}"
+            details = ref if ref.startswith("Opening") else f"Udhaar sale — Invoice {ref}"
             entries.append((c["date"], details, int(c["amount"]), 0))
         for p in data["payments"]:
-            detail = p.get("method") or "Payment"
+            method = p.get("method") or ""
+            is_return = bool(p.get("return_id")) or method == "Return credit"
+            if is_return:
+                detail = "Return credit"
+            else:
+                detail = "Recovery" + (f" ({method})" if method else "")
             if p.get("notes"):
                 detail = (detail + " — " + p["notes"]).strip(" —")
             entries.append((p["date"], detail, 0, int(p["amount"])))
+        for po in data.get("payouts", []):
+            method = po.get("method") or ""
+            detail = "Paid out (cash back)" + (f" ({method})" if method else "")
+            if po.get("notes"):
+                detail = (detail + " — " + po["notes"]).strip(" —")
+            entries.append((po["date"], detail, int(po["amount"]), 0))
         entries.sort(key=lambda e: e[0])
         return entries
 

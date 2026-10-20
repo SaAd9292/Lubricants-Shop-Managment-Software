@@ -162,6 +162,17 @@ def main() -> int:
         check(False, "returning more than stock should raise")
     except ValidationError:
         check(True, "can't return more than is in stock")
+    # get + edit the return header (date/note) without touching stock/payable
+    det = pu.get_purchase_return(rr["return_id"])
+    check(det["total_minor"] == 20000 and len(det["items"]) == 1,
+          "get_purchase_return returns the header + items")
+    pu.update_purchase_return(rr["return_id"], return_date="2026-07-01 12:00:00",
+                              notes="damaged")
+    det2 = pu.get_purchase_return(rr["return_id"])
+    check(det2["notes"] == "damaged" and det2["return_date"][:10] == "2026-07-01",
+          "editing a return updates date/note only")
+    check(_bal(pay, sidr)["balance"] == 80000 and ps.get(rpid)["stock_qty"] == 16,
+          "editing the header leaves stock + payable unchanged")
     pu.reverse_purchase_return(rr["return_id"])
     check(_bal(pay, sidr)["balance"] == 100000 and ps.get(rpid)["stock_qty"] == 20,
           "reversing the return restores balance and stock")
