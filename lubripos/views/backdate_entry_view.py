@@ -185,7 +185,7 @@ class BackdateEntryView(QWidget):
         self.unit.addItem(tr("Piece"), "piece")
         self.unit.addItem(tr("Carton"), "carton")
         self.unit.setMaximumWidth(120)
-        self.unit.currentIndexChanged.connect(self._update_unit_hint)
+        self.unit.currentIndexChanged.connect(self._on_unit_changed)
         self.unit_hint = QLabel("")
         self.unit_hint.setObjectName("Muted")
         qty_row = QHBoxLayout()
@@ -208,7 +208,8 @@ class BackdateEntryView(QWidget):
         add_btn.clicked.connect(self._add_line)
         amount_row.addWidget(add_btn)
         amount_wrap = QWidget(); amount_wrap.setLayout(amount_row)
-        form.addRow(tr("Amount (each)"), amount_wrap)
+        self._amount_label = QLabel(tr("Amount (each)"))
+        form.addRow(self._amount_label, amount_wrap)
         root.addLayout(form)
 
         # cart of items on this bill. Kept SHORT so an empty bill doesn't make
@@ -359,7 +360,7 @@ class BackdateEntryView(QWidget):
             if p is None:
                 self._say(tr("Pick a product from the list first."), error=True)
                 return
-            self.price.setValue((p.get("sale_price_minor") or 0) / self._mu())
+            self._apply_unit_price(p)
             self._update_unit_hint()
             self._update_stock_hint()
             self.qty.setFocus()
@@ -486,11 +487,31 @@ class BackdateEntryView(QWidget):
     def _on_pick(self, text: str) -> None:
         p = self._name_index.get((text or "").strip().lower())
         if p:
-            self.price.setValue((p.get("sale_price_minor") or 0) / self._mu())
+            self._apply_unit_price(p)      # price per piece OR per carton
             self._update_unit_hint()
             self._update_stock_hint()
             self.qty.setFocus()
             self.qty.selectAll()
+
+    def _on_unit_changed(self) -> None:
+        """Keep the Amount field in step with the Piece/Carton choice: switching
+        to Carton shows the price PER CARTON, switching back shows per piece."""
+        self._update_unit_hint()
+        self._apply_unit_price()
+
+    def _apply_unit_price(self, p: dict | None = None) -> None:
+        """Set the Amount field to the selected product's price for the CURRENT
+        unit: per piece, or per carton (piece price × units-per-carton). Also
+        relabels the field so it's clear what the number means."""
+        p = p or self._current_product()
+        carton = self.unit.currentData() == "carton"
+        self._amount_label.setText(
+            tr("Amount (per carton)") if carton else tr("Amount (each)"))
+        if not p:
+            return
+        upc = max(1, int(p.get("units_per_carton") or 1))
+        piece = (p.get("sale_price_minor") or 0) / self._mu()
+        self.price.setValue(piece * upc if carton else piece)
 
     def _update_unit_hint(self) -> None:
         """Show the carton size (pieces per carton) of the selected product next
@@ -534,14 +555,27 @@ class BackdateEntryView(QWidget):
             self.prod.setFocus()
             return
         mu = self._mu()
-        up_minor = money.to_minor(self.price.value(), mu)   # price is per PIECE
         upc = max(1, int(p.get("units_per_carton") or 1))
         entered = int(self.qty.value())
-        # Carton qty converts to pieces; price stays per piece. Stock is pieces.
-        pieces = entered * upc if self.unit.currentData() == "carton" else entered
+        carton = self.unit.currentData() == "carton"
+        pieces = entered * upc if carton else entered
+        # Carton: qty is cartons -> pieces, and the Amount field holds the price
+        # PER CARTON. Stock + line totals stay piece-based, so we store a per-piece
+        # price — but a carton price rarely divides evenly (e.g. 39,500 / 24). To
+        # keep the LINE TOTAL exactly what was typed per carton, round the per-piece
+        # price UP and record the few-paisa remainder as a per-line discount, so
+        #   pieces*up_minor - disc == cartons*carton_price   exactly.
+        if carton:
+            carton_minor = money.to_minor(self.price.value(), mu)
+            up_minor = -(-carton_minor // upc)          # ceil division
+            disc_minor = pieces * up_minor - entered * carton_minor
+        else:
+            up_minor = money.to_minor(self.price.value(), mu)
+            disc_minor = 0
         self._cart.append({
             "product_id": p["id"], "name": p["name"],
             "qty": pieces, "up_minor": up_minor, "upc": upc,
+            "disc_minor": disc_minor,
         })
         self._render_cart()
         self._update_totals()
@@ -556,7 +590,7 @@ class BackdateEntryView(QWidget):
         self.cart.setRowCount(len(self._cart))
         number_rows(self.cart, 1)
         for r, ln in enumerate(self._cart):
-            line_minor = ln["qty"] * ln["up_minor"]
+            line_minor = ln["qty"] * ln["up_minor"] - ln.get("disc_minor", 0)
             cells = [
                 ln["name"], fmt_packs(ln["qty"], ln.get("upc", 1)),
                 self.controller.fmt(ln["up_minor"]),
@@ -578,7 +612,8 @@ class BackdateEntryView(QWidget):
             self._update_totals()
 
     def _subtotal_minor(self) -> int:
-        return sum(ln["qty"] * ln["up_minor"] for ln in self._cart)
+        return sum(ln["qty"] * ln["up_minor"] - ln.get("disc_minor", 0)
+                   for ln in self._cart)
 
     def _update_totals(self) -> None:
         sub = self._subtotal_minor()
@@ -626,7 +661,8 @@ class BackdateEntryView(QWidget):
             return
         customer_id = self._resolve_customer_id()
         lines = [{"product_id": ln["product_id"], "qty": ln["qty"],
-                  "unit_price": ln["up_minor"] / self._mu()} for ln in self._cart]
+                  "unit_price": ln["up_minor"] / self._mu(),
+                  "discount_minor": ln.get("disc_minor", 0)} for ln in self._cart]
         paid_now = self.paid_now.value() if method == "Debt" else 0
         ok, msg, summary = self.controller.record_backdated_sale(
             lines=lines, sale_date=sale_date, discount=disc,

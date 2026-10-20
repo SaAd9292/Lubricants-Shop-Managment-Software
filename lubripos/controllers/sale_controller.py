@@ -164,6 +164,10 @@ class SaleController:
                 item = {"product_id": ln["product_id"], "qty": int(ln["qty"])}
                 if ln.get("unit_price") is not None:
                     item["unit_price_minor"] = money.to_minor(ln["unit_price"], mu)
+                # a per-line discount in minor units (used to absorb the paisa
+                # remainder when a carton price doesn't divide evenly per piece)
+                if ln.get("discount_minor"):
+                    item["discount_minor"] = int(ln["discount_minor"])
                 items.append(item)
             discount_minor = money.to_minor(discount or 0, mu)
             down_payment_minor = money.to_minor(down_payment or 0, mu)
