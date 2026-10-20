@@ -13,7 +13,7 @@ import time
 
 from PySide6.QtCore import Qt, QDate, QEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QApplication, QCheckBox, QComboBox,
+    QAbstractItemView, QAbstractSpinBox, QApplication, QComboBox,
     QDateEdit, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,

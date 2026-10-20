@@ -11,7 +11,6 @@ actually uses it — expenses are entered many times a day, reviewed occasionall
 """
 from __future__ import annotations
 
-from decimal import Decimal
 from typing import Any
 
 from PySide6.QtCore import QDate, QEvent, Qt, QTimer
