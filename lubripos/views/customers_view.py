@@ -603,6 +603,8 @@ class CustomerLedgerDialog(QDialog):
         for c in data["charges"]:
             ref = c.get("ref") or ""
             details = ref if ref.startswith("Opening") else f"Udhaar sale — Invoice {ref}"
+            if c.get("notes"):                      # the sale's description/paper no
+                details = (details + " — " + c["notes"]).strip(" —")
             entries.append((c["date"], details, int(c["amount"]), 0))
         for p in data["payments"]:
             method = p.get("method") or ""

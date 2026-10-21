@@ -12,7 +12,7 @@ the Day-Close report automatically.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QDate, QStringListModel, QUrl
+from PySide6.QtCore import Qt, QDate, QEvent, QStringListModel, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDateEdit, QDialog,
@@ -175,6 +175,8 @@ class CashRecoveryView(QWidget):
         self.record_btn = QPushButton("Record recovery")
         self.record_btn.setObjectName("Success")
         self.record_btn.setMinimumHeight(38)
+        self.record_btn.setAutoDefault(False)
+        self.record_btn.setDefault(False)       # Enter must not record on its own
         self.record_btn.clicked.connect(self._record)
         bar.addWidget(self.record_btn)
         cl.addLayout(bar)
@@ -184,7 +186,36 @@ class CashRecoveryView(QWidget):
         root.addLayout(center)
         root.addStretch(1)
 
+        # Enter walks Customer -> Amount -> Date -> Note, and Enter on Note records.
+        # Tagged on the C++ object so it resolves through spin/date inner editors.
+        self._enter_chain = [self.cust, self.amount, self.date, self.note]
+        for i, w in enumerate(self._enter_chain):
+            w.setProperty("_cr_idx", i)
+            w.installEventFilter(self)
+            inner = w.findChild(QLineEdit)
+            if inner is not None and inner is not w:
+                inner.installEventFilter(self)
+
         self._reload_accounts()
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
+        if event.type() == QEvent.KeyPress and event.key() in (
+                Qt.Key_Return, Qt.Key_Enter):
+            idx = obj.property("_cr_idx") if obj is not None else None
+            if idx is None and obj is not None and obj.parent() is not None:
+                idx = obj.parent().property("_cr_idx")
+            if idx is not None:
+                if idx == 0:                     # Customer: resolve then advance
+                    self._sync_customer()
+                if idx < len(self._enter_chain) - 1:
+                    nxt = self._enter_chain[idx + 1]
+                    nxt.setFocus()
+                    if hasattr(nxt, "selectAll"):
+                        nxt.selectAll()
+                else:
+                    self._record()               # Enter on Note = record
+                return True
+        return super().eventFilter(obj, event)
 
     # -- nav hook -----------------------------------------------------
     def _reload(self) -> None:

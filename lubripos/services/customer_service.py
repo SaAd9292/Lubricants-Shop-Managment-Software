@@ -349,6 +349,7 @@ class CustomerService:
         cust = self.get(customer_id)
         charges = [dict(r) for r in self.db.query(
             "SELECT s.id, substr(s.sale_date,1,16) AS date, s.invoice_no AS ref, "
+            "COALESCE(s.notes,'') AS notes, "
             "s.grand_total_minor AS amount FROM sales s "
             "WHERE s.customer_id = ? AND s.status='completed' "
             "AND s.payment_method='Debt' ORDER BY s.sale_date", (customer_id,))]
@@ -358,6 +359,7 @@ class CustomerService:
                                "date": (cust.get("opening_debt_date")
                                         or cust.get("created_at") or "")[:16],
                                "ref": "Opening balance (from paper)",
+                               "notes": "",
                                "amount": opening})
         payments = [dict(r) for r in self.db.query(
             "SELECT id, substr(payment_date,1,16) AS date, method, notes, "

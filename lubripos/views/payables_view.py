@@ -7,15 +7,21 @@ non-admins).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QEvent, QTimer, QDate
+import os
+import tempfile
+from datetime import datetime
+
+from PySide6.QtCore import Qt, QEvent, QTimer, QDate, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDateEdit,
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from ..app_context import AppContext
+from ..reports.report_exporter import to_pdf
 from ..core.session import current_session
 from ..controllers.payable_controller import PayableController
 from ..ui.widgets import DataTable
@@ -31,6 +37,16 @@ def _money_item(text: str) -> QTableWidgetItem:
     it = QTableWidgetItem(text)
     it.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
     return it
+
+
+def _col(key: str, label: str, align: str = "left", money: bool = False) -> dict:
+    """A column spec for the shared report exporter."""
+    c = {"key": key, "label": label}
+    if align == "right":
+        c["align"] = "right"
+    if money:
+        c["money"] = True
+    return c
 
 
 class PayablesView(QWidget):
@@ -346,13 +362,81 @@ class LedgerDialog(QDialog):
         self.rtbl.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         root.addWidget(self.rtbl, 1)
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Close)
-        buttons.rejected.connect(self.reject)
-        buttons.accepted.connect(self.accept)
-        buttons.button(QDialogButtonBox.Close).clicked.connect(self.accept)
-        root.addWidget(buttons)
+        foot = QHBoxLayout()
+        self.print_btn = QPushButton("Print / PDF")
+        self.print_btn.setObjectName("Secondary")
+        self.print_btn.setToolTip("Print this supplier ledger (purchases, payments "
+                                  "and returns) as a PDF")
+        self.print_btn.clicked.connect(self._print)
+        foot.addWidget(self.print_btn)
+        foot.addStretch(1)
+        close = QPushButton("Close")
+        close.setObjectName("Secondary")
+        close.clicked.connect(self.accept)
+        foot.addWidget(close)
+        root.addLayout(foot)
 
+        self._data: dict | None = None
         self._reload()
+
+    def _report(self) -> dict:
+        """Build the printable supplier-ledger report from the current (filtered)
+        data: a purchases section, a payments section and a returns section, plus
+        a summary — the shape the shared PDF exporter already renders."""
+        d = self._data or {}
+        name = (d.get("supplier") or {}).get("name", "")
+        df = None if self.all_cb.isChecked() else self.d_from.date().toString("yyyy-MM-dd")
+        dt = None if self.all_cb.isChecked() else self.d_to.date().toString("yyyy-MM-dd")
+        scope = "all time" if df is None else f"{df} to {dt}"
+        purch = [{"date": p["date"], "invoice": p["invoice"], "total": p["total"],
+                  "paid_at": p["paid_at"], "credit": p["credit"]}
+                 for p in d.get("purchases", [])]
+        pays = [{"date": p["date"], "amount": p["amount"], "method": p["method"],
+                 "notes": p.get("notes") or ""} for p in d.get("payments", [])]
+        rets = [{"date": r["date"], "amount": r["amount"],
+                 "notes": r.get("notes") or ""} for r in d.get("returns", [])]
+        summary = [
+            {"label": "Purchased", "value": d.get("purchased", 0), "money": True},
+            {"label": "Paid", "value": d.get("paid", 0), "money": True}]
+        if d.get("returned", 0):
+            summary.append({"label": "Returned", "value": d["returned"], "money": True})
+        summary.append({"label": "Balance owed", "value": d.get("balance", 0),
+                        "money": True})
+        return {
+            "key": "supplier_ledger", "title": f"Supplier Ledger — {name}",
+            "subtitle": scope, "orientation": "portrait", "layout": "sections",
+            "sections": [
+                {"name": "Purchases",
+                 "columns": [_col("date", "Date"), _col("invoice", "Invoice"),
+                             _col("total", "Total", "right", True),
+                             _col("paid_at", "Paid at purchase", "right", True),
+                             _col("credit", "On credit", "right", True)],
+                 "rows": purch, "total_label": "Total purchased",
+                 "total": d.get("purchased", 0)},
+                {"name": "Payments",
+                 "columns": [_col("date", "Date"), _col("amount", "Amount", "right", True),
+                             _col("method", "Method"), _col("notes", "Notes")],
+                 "rows": pays, "total_label": "Total paid", "total": d.get("paid", 0)},
+                {"name": "Returns to supplier (debit notes)",
+                 "columns": [_col("date", "Date"), _col("amount", "Amount", "right", True),
+                             _col("notes", "Note")],
+                 "rows": rets, "total_label": "Total returned",
+                 "total": d.get("returned", 0)},
+            ],
+            "summary": summary,
+        }
+
+    def _print(self) -> None:
+        if not self._data:
+            return
+        try:
+            company = self.controller.ctx.company.get_company()
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = to_pdf(self._report(), company, os.path.join(
+                tempfile.gettempdir(), f"supplier_ledger_{stamp}.pdf"))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "Print failed", str(exc))
 
     def _on_toggle(self) -> None:
         on = not self.all_cb.isChecked()
@@ -367,6 +451,7 @@ class LedgerDialog(QDialog):
             df = self.d_from.date().toString("yyyy-MM-dd")
             dt = self.d_to.date().toString("yyyy-MM-dd")
         data = self.controller.ledger(self.supplier_id, date_from=df, date_to=dt)
+        self._data = data
         fmt = self.controller.fmt
 
         scope = "all time" if df is None else f"{df} → {dt}"

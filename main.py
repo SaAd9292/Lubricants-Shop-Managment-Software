@@ -81,6 +81,12 @@ def main() -> int:
     wheel_guard = WheelGuard()
     app.installEventFilter(wheel_guard)
 
+    # show money fields blank at zero (no misleading "0.00") — app-wide, so it
+    # also covers dialogs built later (must outlive the app -> local ref)
+    from lubripos.ui.money_blank_guard import MoneyBlankGuard
+    money_blank_guard = MoneyBlankGuard()
+    app.installEventFilter(money_blank_guard)
+
     icon = QIcon(str(resource_path("assets", "penguix.ico")))
     if not icon.isNull():
         app.setWindowIcon(icon)   # applies to every window + the taskbar

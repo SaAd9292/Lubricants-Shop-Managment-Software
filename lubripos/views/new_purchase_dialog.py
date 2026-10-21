@@ -274,12 +274,25 @@ class NewPurchaseDialog(QDialog):
         actions.addStretch(1)
         cancel = QPushButton("Cancel")
         cancel.setObjectName("Secondary")
+        cancel.setAutoDefault(False); cancel.setDefault(False)
         cancel.clicked.connect(self.reject)
         save = QPushButton("Save purchase")
+        save.setAutoDefault(False); save.setDefault(False)   # Enter must not save
         save.clicked.connect(self._save)
         actions.addWidget(cancel)
         actions.addWidget(save)
         root.addLayout(actions)
+
+        # Footer Enter chain: Bill discount -> Advance tax -> Amount paid now, and
+        # Enter on the last field (Amount paid) saves the purchase. Tagged on the
+        # C++ object so it resolves through spin boxes' inner editors too.
+        self._foot_chain = [self.bill_disc, self.adv_tax, self.paid]
+        for i, w in enumerate(self._foot_chain):
+            w.setProperty("_np_foot", i)
+            w.installEventFilter(self)
+            inner = w.findChild(QLineEdit)
+            if inner is not None and inner is not w:
+                inner.installEventFilter(self)
 
         self.prod.setFocus()
 
@@ -358,6 +371,19 @@ class NewPurchaseDialog(QDialog):
         if event.type() == QEvent.KeyPress:
             key = event.key()
             if key in (Qt.Key_Return, Qt.Key_Enter):
+                # footer chain: Bill discount -> Advance tax -> Amount paid (saves)
+                fidx = obj.property("_np_foot") if obj is not None else None
+                if fidx is None and obj is not None and obj.parent() is not None:
+                    fidx = obj.parent().property("_np_foot")
+                if fidx is not None:
+                    if fidx < len(self._foot_chain) - 1:
+                        nxt = self._foot_chain[fidx + 1]
+                        nxt.setFocus()
+                        if hasattr(nxt, "selectAll"):
+                            nxt.selectAll()
+                    else:
+                        self._save()            # Enter on Amount paid = save
+                    return True
                 # resolve which chain field this key belongs to (the event may
                 # arrive on a spin box / date edit's inner line editor)
                 idx = obj.property("_np_idx") if obj is not None else None
