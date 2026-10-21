@@ -5,5 +5,5 @@ One installation == one shop; shop identity is driven entirely by the
 company_settings table (no hardcoded business name anywhere).
 """
 
-__version__ = "2.4.4"
+__version__ = "2.4.5"
 __app_name__ = "Penguix"
