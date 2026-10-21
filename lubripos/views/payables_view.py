@@ -7,7 +7,7 @@ non-admins).
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, QDate
+from PySide6.QtCore import Qt, QEvent, QTimer, QDate
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QCheckBox, QComboBox, QDateEdit,
     QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
@@ -225,9 +225,40 @@ class RecordPaymentDialog(QDialog):
         bar.addStretch(1)
         self.again_btn = QPushButton("Save && add another")
         self.again_btn.setObjectName("Success")
+        # NOT a default button, so Enter moves between fields instead of saving
+        self.again_btn.setAutoDefault(False)
+        self.again_btn.setDefault(False)
         self.again_btn.clicked.connect(self._on_add_another)
         bar.addWidget(self.again_btn)
         form.addRow(bar)
+
+        # Enter walks Amount -> Method -> Date -> Notes, and Enter on Notes saves.
+        # Each field is tagged with its chain index so the handler resolves it even
+        # when the key arrives on a spin box / date edit's inner editor.
+        self._enter_chain = [self.amount, self.method, self.date, self.notes]
+        for i, w in enumerate(self._enter_chain):
+            w.setProperty("_rp_idx", i)
+            w.installEventFilter(self)
+            inner = w.findChild(QLineEdit)
+            if inner is not None and inner is not w:
+                inner.installEventFilter(self)
+
+    def eventFilter(self, obj, event):  # noqa: N802 (Qt signature)
+        if event.type() == QEvent.KeyPress and event.key() in (
+                Qt.Key_Return, Qt.Key_Enter):
+            idx = obj.property("_rp_idx") if obj is not None else None
+            if idx is None and obj is not None and obj.parent() is not None:
+                idx = obj.parent().property("_rp_idx")
+            if idx is not None:
+                if idx < len(self._enter_chain) - 1:
+                    nxt = self._enter_chain[idx + 1]
+                    nxt.setFocus()
+                    if hasattr(nxt, "selectAll"):
+                        nxt.selectAll()
+                else:
+                    self._on_add_another()      # Enter on Notes = save
+                return True
+        return super().eventFilter(obj, event)
 
     def _on_add_another(self) -> None:
         if self.amount.value() <= 0:
